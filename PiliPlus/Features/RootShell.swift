@@ -1,0 +1,93 @@
+import SwiftUI
+
+struct RootShell: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        NavigationStack(path: $model.path) {
+            TabView(selection: $model.selectedTab) {
+                Tab("首页", systemImage: "house.fill", value: 0) {
+                    HomeFeed()
+                }
+                Tab("动态", systemImage: "dot.radiowaves.left.and.right", value: 1) {
+                    DynamicsFeed()
+                }
+                .badge(model.flag("动态未读标记") ? 1 : 0)
+                Tab("我的", systemImage: "person.fill", value: 2) {
+                    MineSpace()
+                }
+            }
+            .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
+            .tabViewBottomAccessory {
+                if let video = model.nowPlaying {
+                    NowPlayingPill(video: video)
+                }
+            }
+            .navigationDestination(for: Route.self) { route in
+                destination(route)
+            }
+        }
+        .background(AuroraBackground())
+        .overlay(alignment: .top) {
+            if let toast = model.toast {
+                ToastBanner(text: toast)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.35), value: model.toast)
+        .task { if model.feed.isEmpty { await model.refreshHome() } }
+    }
+
+    @ViewBuilder
+    private func destination(_ route: Route) -> some View {
+        switch route {
+        case .search: SearchStudio()
+        case .video(let bvid): VideoStage(bvid: bvid)
+        case .live(let id): LiveStage(roomID: id)
+        case .settings: SettingsStudio()
+        case .setting(let name): SettingDetail(name: name)
+        case .messages: InboxView()
+        case .login: LoginGate()
+        case .feature(let title): FeaturePageView(title: title)
+        case .user(let mid, let name): MemberPage(mid: mid, name: name)
+        }
+    }
+}
+
+struct NowPlayingPill: View {
+    @Environment(AppModel.self) private var model
+    let video: VideoItem
+
+    var body: some View {
+        Button {
+            model.open(.video(video.bvid))
+        } label: {
+            HStack(spacing: 10) {
+                RemoteImage(url: video.cover, ratio: 1)
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(video.title).font(.footnote.weight(.semibold)).lineLimit(1)
+                    Text(model.isPlaying ? "正在播放 · \(video.ownerName)" : "已暂停 · \(video.ownerName)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    model.isPlaying.toggle()
+                    if model.isPlaying { model.player?.play() } else { model.player?.pause() }
+                } label: {
+                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+}
