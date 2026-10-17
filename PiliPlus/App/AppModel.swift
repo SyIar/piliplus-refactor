@@ -454,16 +454,19 @@ final class AppModel {
             guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
             let cid = detail.pages.first?.cid ?? detail.cid
             guard cid > 0 else { continue }
-            guard (try? await client.playback(
+            guard let offer = try? await client.playback(
                 bvid: detail.bvid,
                 cid: cid,
                 qn: qn,
                 tryLook: tryLook,
                 codecPreference: codec,
                 audioPreference: audio
-            )) != nil else { continue }
-            store(detail)
-            open(.video(detail.bvid))
+            ) else { continue }
+            var playable = detail
+            playable.apply(offer)
+            qualityName = offer.selectedName
+            store(playable)
+            open(.video(playable.bvid))
             return
         }
         if let first = feed.first { open(.video(first.bvid)) }

@@ -77,11 +77,14 @@ struct RootShell: View {
             if LaunchMode.screen == "video", let first = model.feed.first { model.open(.video(first.bvid)) }
             return
         }
+        if LaunchMode.screen == "playback" {
+            if model.feed.isEmpty { await model.loadRecommend(reset: true) }
+            await model.openFirstPlayable()
+            return
+        }
         if model.feed.isEmpty { await model.refreshHome() }
         await model.refreshProfile()
         switch LaunchMode.screen {
-        case "playback":
-            await model.openFirstPlayable()
         case "home":
             let firstCount = model.feed.count
             await model.loadRecommend(reset: false)
