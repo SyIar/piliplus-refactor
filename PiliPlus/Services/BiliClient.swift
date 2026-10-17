@@ -301,21 +301,66 @@ struct BiliClient: Sendable {
 
     func search(type: String, keyword: String, page: Int, order: String = "", duration: Int = 0, tid: Int = 0) async throws -> SearchPage {
         let form = SocialRequest.search(type: type, keyword: keyword, page: page, order: order, duration: duration, tid: tid)
-        let unsigned = try await fetchSearch(form, signed: false)
-        if !Self.searchIsEmpty(unsigned) { return unsigned }
-        // Bangumi (and sometimes other media types) now answers on the WBI route only.
-        do {
-            var signed = try await fetchSearch(form, signed: true)
-            if Self.searchIsEmpty(signed) {
-                signed.note = "wbi \(signed.note)"
-            }
-            if !Self.searchIsEmpty(signed) || !signed.note.isEmpty { return signed }
-        } catch {
-            var copy = unsigned
-            copy.note = "wbi \(error.localizedDescription) \(unsigned.note)"
-            return copy
+        var found = try await fetchSearch(form, signed: false)
+        if Self.searchIsEmpty(found), let signed = try? await fetchSearch(form, signed: true), !Self.searchIsEmpty(signed) {
+            found = signed
         }
-        return unsigned
+        let media = type == "media_bangumi" || type == "media_ft"
+        if Self.searchIsEmpty(found), media {
+            let grouped = (try? await groupedMedia(keyword: keyword, page: page, type: type)) ?? []
+            if !grouped.isEmpty {
+                found = SearchPage(videos: [], users: [], seasons: grouped, lives: [], articles: [])
+            }
+        }
+        // Type search answers with an empty list for bangumi on this network.
+        // The public PGC rank already includes the same shows, so match it by title.
+        if Self.searchIsEmpty(found), media {
+            let ranked = await rankedSeasons(matching: keyword, type: type)
+            if !ranked.isEmpty {
+                found = SearchPage(videos: [], users: [], seasons: ranked, lives: [], articles: [])
+            }
+        }
+        return found
+    }
+
+    private func groupedMedia(keyword: String, page: Int, type: String) async throws -> [SeasonItem] {
+        let encoded = PercentEncoding.encodeURIComponent(keyword)
+        guard let url = URL(string: "https://api.bilibili.com/x/web-interface/search/all/v2?keyword=\(encoded)&page=\(max(1, page))") else {
+            return []
+        }
+        let data = try await withGuest {
+            let data = try await getJSON(url, referer: "https://search.bilibili.com")
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        guard data["code"].int == 0 else { return [] }
+        let wanted = type == "media_ft" ? "media_ft" : "media_bangumi"
+        var seasons: [SeasonItem] = []
+        for group in data["data"]["result"].array ?? [] {
+            guard group["result_type"].string == wanted else { continue }
+            seasons.append(contentsOf: (group["data"].array ?? []).compactMap(Self.bangumi(fromSearch:)))
+        }
+        return seasons
+    }
+
+    private func rankedSeasons(matching keyword: String, type: String) async -> [SeasonItem] {
+        let word = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return [] }
+        let kinds = type == "media_ft" ? [2, 5] : [1, 4]
+        var items: [SeasonItem] = []
+        for kind in kinds {
+            if let page = try? await seasons(type: kind) {
+                items.append(contentsOf: page)
+            }
+        }
+        var seen = Set<Int>()
+        return items.filter { item in
+            let title = item.title
+            let hit = title.localizedStandardContains(word) || word.localizedStandardContains(title)
+            guard hit, seen.insert(item.seasonID).inserted else { return false }
+            return true
+        }
     }
 
     private func fetchSearch(_ form: SignedForm, signed: Bool) async throws -> SearchPage {
