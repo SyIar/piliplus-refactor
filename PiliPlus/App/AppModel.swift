@@ -569,7 +569,11 @@ final class AppModel {
         let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
         let audio = values["默认音质"] ?? "高码率"
         let tryLook = flag("免登录1080P") || qn >= 80
+        // The screenshot pass only waits about two minutes. Stop hunting after
+        // one slow streak and open a video so the player can still start.
+        let deadline = Date().addingTimeInterval(45)
         for item in (feed + rank).prefix(6) where !item.bvid.isEmpty {
+            if LaunchMode.screen == "playback", Date() >= deadline { break }
             guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
             let cid = detail.pages.first?.cid ?? detail.cid
             guard cid > 0 else { continue }

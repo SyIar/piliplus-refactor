@@ -154,7 +154,11 @@ capture_playback() {
   dir="$(container)"
   proof="$dir/Documents/playback-proof.json"
   rm -f "$proof" "$OUT/screenshots/playback.png" "$OUT/screenshots/playback-failed.png"
-  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen playback -perfLabel "$LABEL"
+  : > "$OUT/perf/playback.log"
+  : > "$OUT/perf/playback.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/playback.log" --stderr="$OUT/perf/playback.err" \
+    "$UDID" "$BUNDLE" -screen playback -perfLabel "$LABEL"
   for _ in $(seq 1 100); do
     if [[ -f "$proof" ]]; then
       cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
@@ -182,8 +186,13 @@ capture_playback() {
   fi
   if [[ "$advanced" -ne 1 ]]; then
     cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback-failed.png"
+    if [[ ! -f "$proof" ]]; then
+      echo "playback proof was not written" >&2
+    fi
     echo "playback clock did not advance by 0.8s" >&2
-    exit 1
+    tail -n 40 "$OUT/perf/playback.log" || true
+    tail -n 40 "$OUT/perf/playback.err" || true
+    return 1
   fi
   if ! python3 - "$OUT/screenshots/playback-a.png" "$OUT/screenshots/playback-b.png" <<'PY'
 import struct, sys, zlib
@@ -292,7 +301,7 @@ PY
   then
     cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback-failed.png"
     echo "player band did not show moving video" >&2
-    exit 1
+    return 1
   fi
   cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback.png"
   echo "saved playback.png"
@@ -705,6 +714,7 @@ suppress_apple_intelligence
 account_status=0
 social_status=0
 space_status=0
+playback_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
@@ -712,7 +722,10 @@ catalog_status=0
 for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
-    capture_playback
+    if ! capture_playback; then
+      echo "retrying playback capture" >&2
+      capture_playback || playback_status=1
+    fi
     continue
   fi
   if [[ "$screen" == "home" || "$screen" == "rank" || "$screen" == "bangumi" || "$screen" == "cinema" ]]; then
@@ -741,8 +754,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 ]]; then
-  echo "home data, account lists, social surfaces, user space, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, or warm scroll check failed" >&2
   exit 1
 fi
 
