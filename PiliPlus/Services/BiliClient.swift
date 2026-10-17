@@ -686,9 +686,9 @@ struct BiliClient: Sendable {
             app.append(LiveRequest.appFeed(page: page))
         } else {
             let parent = LiveRequest.parentID(for: area)
-            web.append(LiveRequest.legacyArea(parent: parent, page: page))
-            web.append(LiveRequest.area(parent: parent, page: page, sort: "online"))
-            web.append(LiveRequest.area(parent: parent, page: page))
+            web.append(LiveRequest.roomList(parent: parent, page: page))
+            web.append(Self.guardedArea(parent: parent, page: page, sort: "online"))
+            web.append(Self.guardedArea(parent: parent, page: page, sort: ""))
             app.append(LiveRequest.appArea(parent: parent, page: page))
         }
         var last = "没有直播"
@@ -720,6 +720,17 @@ struct BiliClient: Sendable {
         }
         if page > 1 { return [] }
         throw BiliError.message(last)
+    }
+
+    /// Area `getList` rejects a bare WBI query. The same dm_img fields used by space dynamics go with it.
+    private static func guardedArea(parent: Int, page: Int, sort: String) -> SignedForm {
+        var fields = LiveRequest.area(parent: parent, page: page, sort: sort).fields
+        fields["web_location"] = "444.8"
+        fields["dm_img_list"] = "[]"
+        fields["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
+        fields["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
+        fields["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+        return SignedForm(method: "GET", path: "/xlive/web-interface/v1/second/getList", fields: fields)
     }
 
     func liveRoomInfo(room: Int) async throws -> LiveRoom {

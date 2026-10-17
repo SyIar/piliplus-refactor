@@ -54,9 +54,10 @@ enum LiveRequest {
         SignedForm(method: "GET", path: "/xlive/app-interface/v2/index/feed", fields: appFields(page: page, extra: [:]))
     }
 
-    /// Older area list. `data` is the room array and it does not use WBI.
-    static func legacyArea(parent: Int, page: Int) -> SignedForm {
-        SignedForm(method: "GET", path: "/room/v1/Area/getList", fields: [
+    /// Room list for one parent area. `/room/v1/Area/getList` only returns the area tree.
+    static func roomList(parent: Int, page: Int) -> SignedForm {
+        SignedForm(method: "GET", path: "/room/v3/Area/getRoomList", fields: [
+            "platform": "web",
             "parent_area_id": "\(parent)",
             "area_id": "0",
             "page": "\(max(1, page))",
