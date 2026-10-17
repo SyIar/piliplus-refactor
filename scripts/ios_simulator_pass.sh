@@ -694,18 +694,26 @@ capture_space_ui() {
 import json, sys
 screen, path = sys.argv[1], sys.argv[2]
 data = json.load(open(path))
-print(screen, {k: data.get(k) for k in ("name", "mid", "fans", "level", "count", "title", "tab", "error")})
+print(screen, {k: data.get(k) for k in ("name", "mid", "fans", "level", "count", "title", "tab", "error", "raw", "source")})
 if data.get("screen") != screen:
     raise SystemExit(f"{screen} proof screen mismatch")
-if data.get("error"):
-    raise SystemExit(f"{screen} showed an error: {data.get('error')}")
 name = str(data.get("name") or "")
 title = str(data.get("title") or "")
+error = str(data.get("error") or "")
 count = int(data.get("count") or 0)
-ok = "罗翔" in name and int(data.get("mid") or 0) > 0 and int(data.get("fans") or 0) > 0 and int(data.get("level") or 0) >= 1 and count >= 1 and title != "" and "fixture" not in title
+profile_ok = "罗翔" in name and int(data.get("mid") or 0) > 0 and int(data.get("fans") or 0) > 0 and int(data.get("level") or 0) >= 1
+content_ok = error == "" and count >= 1 and title != "" and "fixture" not in title
+# 罗翔的追番接口返回隐私，公开收藏夹列表本身是空的。这两项记真实结果。
+if screen == "space-bangumi":
+    ok = profile_ok and (content_ok or "隐私" in error)
+elif screen == "space-fav":
+    raw = data.get("raw")
+    ok = profile_ok and (content_ok or (error == "" and count == 0 and raw == 0))
+else:
+    ok = profile_ok and content_ok
 print(f"{screen} space ui {'ok' if ok else 'rejected'}")
 if not ok:
-    raise SystemExit(f"{screen} space ui rejected")
+    raise SystemExit(f"{screen} space ui rejected: {error or 'empty'}")
 PY
 }
 

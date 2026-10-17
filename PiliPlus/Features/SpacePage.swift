@@ -319,7 +319,7 @@ struct SpacePage: View {
             videoHasMore = videos.count < page.total && !page.items.isEmpty
             if videoHasMore { videoPage = fetching + 1 }
             page.items.forEach(model.store)
-            if reset { record(count: videos.count, title: videos.first?.title ?? "", error: "") }
+            if reset { record(count: videos.count, title: videos.first?.title ?? "", error: "", source: page.source) }
         } catch {
             if reset { record(count: videos.count, title: "", error: error.localizedDescription) }
         }
@@ -343,7 +343,7 @@ struct SpacePage: View {
             }
             dynamicOffset = page.offset
             dynamicHasMore = page.hasMore
-            if reset { record(count: dynamics.count, title: dynamics.first?.text ?? "", error: "") }
+            if reset { record(count: dynamics.count, title: dynamics.first?.text ?? "", error: "", source: page.source) }
         } catch {
             if reset { record(count: dynamics.count, title: "", error: error.localizedDescription) }
         }
@@ -354,8 +354,9 @@ struct SpacePage: View {
         loading = true
         defer { loading = false }
         do {
-            folders = try await model.client.spaceFolders(mid: mid)
-            record(count: folders.count, title: folders.first?.title ?? "", error: "")
+            let page = try await model.client.spaceFolders(mid: mid)
+            folders = page.folders
+            record(count: folders.count, title: folders.first?.title ?? "", error: "", raw: page.raw)
         } catch {
             record(count: 0, title: "", error: error.localizedDescription)
         }
@@ -398,9 +399,9 @@ struct SpacePage: View {
         }
     }
 
-    private func record(count: Int, title: String, error: String) {
+    private func record(count: Int, title: String, error: String, raw: Int? = nil, source: String? = nil) {
         let card = profile
-        SpaceUIProof.record([
+        var payload: [String: Any] = [
             "name": card?.name ?? name,
             "mid": card?.mid ?? mid,
             "fans": card?.fans ?? 0,
@@ -411,6 +412,9 @@ struct SpacePage: View {
             "title": title,
             "tab": tab,
             "error": error
-        ])
+        ]
+        if let raw { payload["raw"] = raw }
+        if let source { payload["source"] = source }
+        SpaceUIProof.record(payload)
     }
 }

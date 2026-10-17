@@ -64,6 +64,15 @@ enum WBISigner {
 }
 
 /// Android HD app sign used by upstream `LoginHttp.getHDcode` / `codePoll`.
+/// Guest cookie `bili_ticket`. The web ticket service checks HMAC-SHA256 of `ts{unix}`.
+enum WebTicket {
+    static func hexSign(timestamp: Int) -> String {
+        let key = SymmetricKey(data: Data("XgwSnGZ1p".utf8))
+        let code = HMAC<SHA256>.authenticationCode(for: Data("ts\(timestamp)".utf8), using: key)
+        return code.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 enum AppSign {
     static let appKey = "dfca71928277209b"
     static let appSec = "b5475a8825547a4fc26c7d518eaaa02e"
