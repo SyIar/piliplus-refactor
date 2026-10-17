@@ -15,6 +15,7 @@ struct SpacePage: View {
     @State private var videoPage = 1
     @State private var videoHasMore = true
     @State private var dynamics: [DynamicItem] = []
+    @State private var dynamicGuest = false
     @State private var dynamicOffset = ""
     @State private var dynamicHasMore = true
     @State private var folders: [FavFolder] = []
@@ -132,7 +133,13 @@ struct SpacePage: View {
     private var tabBody: some View {
         switch tab {
         case "动态":
-            if dynamics.isEmpty { empty("还没有动态") }
+            if dynamics.isEmpty {
+                ContentUnavailableView(
+                    dynamicGuest ? "登录后查看动态" : "暂无动态",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text(loading ? "正在加载" : (dynamicGuest ? "接口没有向访客返回动态" : "这里是空的"))
+                )
+            }
             ForEach(dynamics) { item in
                 dynamicRow(item)
                     .onAppear {
@@ -343,7 +350,12 @@ struct SpacePage: View {
             }
             dynamicOffset = page.offset
             dynamicHasMore = page.hasMore
-            if reset { record(count: dynamics.count, title: dynamics.first?.text ?? "", error: "", source: page.source) }
+            dynamicGuest = page.guestRefused
+            if reset {
+                let title = dynamics.first?.text ?? (page.guestRefused ? "登录后查看动态" : "暂无动态")
+                let empty = dynamics.isEmpty ? (page.guestRefused ? "guest" : "none") : nil
+                record(count: dynamics.count, title: title, error: "", source: page.source, empty: empty)
+            }
         } catch {
             if reset { record(count: dynamics.count, title: "", error: error.localizedDescription) }
         }
@@ -399,7 +411,7 @@ struct SpacePage: View {
         }
     }
 
-    private func record(count: Int, title: String, error: String, raw: Int? = nil, source: String? = nil) {
+    private func record(count: Int, title: String, error: String, raw: Int? = nil, source: String? = nil, empty: String? = nil) {
         let card = profile
         var payload: [String: Any] = [
             "name": card?.name ?? name,
@@ -415,6 +427,7 @@ struct SpacePage: View {
         ]
         if let raw { payload["raw"] = raw }
         if let source { payload["source"] = source }
+        if let empty { payload["empty"] = empty }
         SpaceUIProof.record(payload)
     }
 }

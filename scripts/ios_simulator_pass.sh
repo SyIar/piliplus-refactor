@@ -694,7 +694,7 @@ capture_space_ui() {
 import json, sys
 screen, path = sys.argv[1], sys.argv[2]
 data = json.load(open(path))
-print(screen, {k: data.get(k) for k in ("name", "mid", "fans", "level", "count", "title", "tab", "error", "raw", "source")})
+print(screen, {k: data.get(k) for k in ("name", "mid", "fans", "level", "count", "title", "tab", "error", "raw", "source", "empty")})
 if data.get("screen") != screen:
     raise SystemExit(f"{screen} proof screen mismatch")
 name = str(data.get("name") or "")
@@ -709,6 +709,14 @@ if screen == "space-bangumi":
 elif screen == "space-fav":
     raw = data.get("raw")
     ok = profile_ok and (content_ok or (error == "" and count == 0 and raw == 0))
+elif screen == "space-dynamic":
+    empty = data.get("empty")
+    source = data.get("source")
+    real = content_ok and source == "wbi"
+    quiet = error == "" and count == 0 and source == "wbi" and (
+        (empty == "none" and title == "暂无动态") or (empty == "guest" and title == "登录后查看动态")
+    )
+    ok = profile_ok and source != "season" and (real or quiet)
 else:
     ok = profile_ok and content_ok
 print(f"{screen} space ui {'ok' if ok else 'rejected'}")

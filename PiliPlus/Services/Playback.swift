@@ -21,6 +21,8 @@ struct SubtitleLine: Sendable, Hashable {
 
 enum BiliHTTP {
     static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1"
+    /// Desktop Safari. Space dynamics uses this, matching upstream `BrowserUa.pc`.
+    static let pcUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Safari/605.1.15"
     static let origin = "https://www.bilibili.com"
 
     static func referer(bvid: String) -> String {

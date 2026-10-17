@@ -652,7 +652,8 @@ struct BiliClient: Sendable {
         params: [String: String],
         signed: Bool,
         referer: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        userAgent: String? = nil
     ) async throws -> JSON {
         let fields = signed ? try await wbiSign(params) : params
         let stripped = CharacterSet(charactersIn: "!'()*")
@@ -666,7 +667,7 @@ struct BiliClient: Sendable {
         guard let url = URL(string: "https://api.bilibili.com\(path)?\(query)") else {
             throw BiliError.message("地址无效")
         }
-        return try await getJSON(url, referer: referer, origin: origin)
+        return try await getJSON(url, referer: referer, origin: origin, userAgent: userAgent)
     }
 
     func liveRooms() async throws -> [LiveRoom] {
@@ -854,71 +855,79 @@ struct BiliClient: Sendable {
         return (list.compactMap(video(fromSpace:)), total)
     }
 
-    func spaceDynamics(mid: Int, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool, source: String) {
+    /// Upstream `Constants.dynFeatures` for `/x/polymer/web-dynamic/v1/feed/space`.
+    private static let dynFeatures = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,onlyfansAssetsV2,forwardListHidden,ugcDelete,onlyfansQaCard,commentsNewVersion,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardVote,eva3CardUser"
+
+    func spaceDynamics(mid: Int, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool, source: String, guestRefused: Bool) {
+        await refreshGuest()
+        let params = [
+            "offset": offset,
+            "host_mid": "\(mid)",
+            "timezone_offset": "-480",
+            "features": Self.dynFeatures,
+            "platform": "web",
+            "web_location": "333.1387",
+            "dm_img_list": "[]",
+            "dm_img_str": BiliHTTP.randomToken(minCount: 16, maxCount: 64),
+            "dm_cover_img_str": BiliHTTP.randomToken(minCount: 32, maxCount: 128),
+            "dm_img_inter": "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}",
+            "x-bili-device-req-json": "{\"platform\":\"web\",\"device\":\"pc\",\"spmid\":\"333.1387\"}"
+        ]
         let referer = "https://space.bilibili.com/\(mid)/dynamic"
         let origin = "https://space.bilibili.com"
-        var params = SpaceRequest.dynamics(mid: mid, offset: offset).fields
-        params["platform"] = "web"
-        params["web_location"] = "333.1387"
-        params["features"] = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard"
-        params["dm_img_list"] = "[]"
-        params["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
-        params["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
-        params["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
-        params["x-bili-device-req-json"] = "{\"platform\":\"web\",\"device\":\"pc\"}"
-        params["x-bili-web-req-json"] = "{\"spm_id\":\"333.1387\"}"
-        let paths = [
-            "/x/polymer/web-dynamic/v1/feed/space",
-            "/x/polymer/web-dynamic/desktop/v1/feed/space"
-        ]
-        var last: Error = BiliError.message("动态是空的")
-        for path in paths {
-            do {
-                let data = try await wbiJSON(path, params: params, referer: referer, origin: origin)
-                try Self.requireOK(data)
-                let page = Self.polymerDynamics(data)
-                if !page.items.isEmpty { return (page.items, page.offset, page.hasMore, "wbi") }
-            } catch {
-                last = error
+        do {
+            let data = try await wbiJSON(
+                "/x/polymer/web-dynamic/v1/feed/space",
+                params: params,
+                referer: referer,
+                origin: origin,
+                userAgent: BiliHTTP.pcUserAgent
+            )
+            try Self.requireOK(data)
+            let page = Self.polymerDynamics(data)
+            return (page.items, page.offset, page.hasMore, "wbi", false)
+        } catch let error as BiliError where Self.refusesGuests(error) {
+            if !Self.hasLogin {
+                return ([], "", false, "wbi", true)
             }
+            throw error
         }
-        if let legacy = try? await legacySpaceDynamics(mid: mid, offset: offset, referer: referer, origin: origin),
-           !legacy.items.isEmpty {
-            return (legacy.items, legacy.offset, legacy.hasMore, "legacy")
+    }
+
+    private static var hasLogin: Bool {
+        let csrf = SessionVault.shared.current()?.csrf ?? ""
+        return !csrf.isEmpty
+    }
+
+    private static func refusesGuests(_ error: BiliError) -> Bool {
+        switch error {
+        case .status(412), .status(-101), .risk:
+            return true
+        case .status:
+            return false
+        case .message(let text):
+            return text.contains("登录") || text.contains("412") || text.contains("-352")
         }
-        if offset.isEmpty,
-           let collected = try? await seasonArchiveFallback(mid: mid, referer: referer, origin: origin),
-           !collected.items.isEmpty {
-            let items = collected.items.map { video in
-                DynamicItem(
-                    id: video.bvid,
-                    name: video.ownerName.isEmpty ? "用户" : video.ownerName,
-                    face: video.ownerFace,
-                    text: video.title,
-                    time: "",
-                    kind: "投稿",
-                    video: video,
-                    like: video.like,
-                    comment: video.reply,
-                    repost: video.share,
-                    mid: video.ownerMid
-                )
-            }
-            return (items, "", false, "season")
-        }
-        throw last
     }
 
     private func wbiJSON(
         _ path: String,
         params: [String: String],
         referer: String,
-        origin: String
+        origin: String,
+        userAgent: String? = nil
     ) async throws -> JSON {
         try await withGuest {
-            let data = try await requestQuery(path, params: params, signed: true, referer: referer, origin: origin)
+            let data = try await requestQuery(
+                path,
+                params: params,
+                signed: true,
+                referer: referer,
+                origin: origin,
+                userAgent: userAgent
+            )
             let code = data["code"].int ?? -1
-            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            if code == -352 || code == 412 || code == -101 { throw BiliError.risk(code) }
             return data
         }
     }
@@ -1170,7 +1179,8 @@ struct BiliClient: Sendable {
         includeSession: Bool = true,
         cookieOverride: String? = nil,
         referer: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        userAgent: String? = nil
     ) async throws -> JSON {
         try await send(
             url,
@@ -1179,7 +1189,8 @@ struct BiliClient: Sendable {
             includeSession: includeSession,
             cookieOverride: cookieOverride,
             referer: referer,
-            origin: origin
+            origin: origin,
+            userAgent: userAgent
         )
     }
 
@@ -1234,7 +1245,8 @@ struct BiliClient: Sendable {
         includeSession: Bool,
         cookieOverride: String?,
         referer: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        userAgent: String? = nil
     ) async throws -> JSON {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -1248,6 +1260,9 @@ struct BiliClient: Sendable {
         if let origin {
             request.setValue(origin, forHTTPHeaderField: "Origin")
         }
+        if let userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
         applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: cookieOverride)
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
@@ -1258,7 +1273,9 @@ struct BiliClient: Sendable {
     }
 
     private func applyCommonHeaders(_ request: inout URLRequest, includeSession: Bool, cookieOverride: String?) {
-        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        if request.value(forHTTPHeaderField: "User-Agent") == nil {
+            request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        }
         if request.value(forHTTPHeaderField: "Origin") == nil {
             request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
         }
