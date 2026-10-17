@@ -312,12 +312,25 @@ struct BiliClient: Sendable {
             throw BiliError.message(data["message"].string ?? "搜索失败")
         }
         let list = Self.searchRows(data["data"]["result"])
-        return SearchPage(
-            videos: list.compactMap(Self.video(fromSearch:)),
-            users: list.compactMap(Self.user(fromSearch:)),
-            seasons: list.compactMap(Self.bangumi(fromSearch:)),
-            lives: list.compactMap(Self.live(fromSearch:)),
-            articles: list.compactMap(Self.article(fromSearch:))
+        var page = Self.searchPage(list)
+        if page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty {
+            let nested = list.flatMap { $0["data"].array ?? [] }
+            if !nested.isEmpty { page = Self.searchPage(nested) }
+        }
+        if page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty {
+            let keys = (list.first?.raw as? [String: Any])?.keys.sorted().joined(separator: ",") ?? ""
+            page.note = "rows=\(list.count) keys=\(keys)"
+        }
+        return page
+    }
+
+    private static func searchPage(_ list: [JSON]) -> SearchPage {
+        SearchPage(
+            videos: list.compactMap(video(fromSearch:)),
+            users: list.compactMap(user(fromSearch:)),
+            seasons: list.compactMap(bangumi(fromSearch:)),
+            lives: list.compactMap(live(fromSearch:)),
+            articles: list.compactMap(article(fromSearch:))
         )
     }
 
@@ -996,7 +1009,7 @@ struct BiliClient: Sendable {
 
     static func bangumi(fromSearch item: JSON) -> SeasonItem? {
         let id = item["season_id"].int ?? item["media_id"].int ?? 0
-        let title = plain(item["title"].string ?? "")
+        let title = plain(item["title"].string ?? item["org_title"].string ?? "")
         guard id > 0, !title.isEmpty else { return nil }
         return SeasonItem(
             seasonID: id,

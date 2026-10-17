@@ -105,6 +105,8 @@ struct SearchPage {
     var seasons: [SeasonItem]
     var lives: [LiveRoom]
     var articles: [SearchArticle]
+    /// Set when a type search came back with rows we could not read.
+    var note: String = ""
 }
 
 struct SearchArticle: Identifiable, Hashable {

@@ -363,7 +363,7 @@ struct SearchStudio: View {
                 pageItems.forEach(model.store)
             }
             if reset && !hasResults {
-                let text = "未搜索到「\(word)」"
+                let text = found.note.isEmpty ? "未搜索到「\(word)」" : "未搜索到「\(word)」 \(found.note)"
                 if LaunchMode.searchCapture == nil { model.show(text) }
                 return text
             }

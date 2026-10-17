@@ -124,7 +124,7 @@ enum LaunchMode {
         switch screen {
         case "search-video": return ("视频", "原神", "video")
         case "search-user": return ("用户", "罗翔", "bili_user")
-        case "search-bangumi": return ("番剧", "鬼灭之刃", "media_bangumi")
+        case "search-bangumi": return ("番剧", "名侦探柯南", "media_bangumi")
         case "search-live": return ("直播间", "原神", "live_room")
         case "search-article": return ("专栏", "原神", "article")
         default: return nil
