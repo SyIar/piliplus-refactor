@@ -14,7 +14,6 @@ struct VideoStage: View {
     @State private var showFav = false
     @State private var showShare = false
     @State private var showQuality = false
-    @State private var showSpeed = false
     @State private var showDanmaku = false
     @State private var fullscreen = false
     @State private var locked = false
@@ -56,9 +55,8 @@ struct VideoStage: View {
                 ProgressView("正在加载").tint(.white)
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             if LaunchMode.usesFixtures, let cached = model.video(bvid) {
                 video = cached
@@ -73,7 +71,6 @@ struct VideoStage: View {
         .sheet(isPresented: $showFav) { favSheet }
         .sheet(isPresented: $showQuality) { qualitySheet }
         .sheet(isPresented: $showAudio) { audioSheet }
-        .sheet(isPresented: $showSpeed) { speedSheet }
         .sheet(isPresented: $showDanmaku) { danmakuSheet }
         .sheet(item: $replyTarget) { comment in replySheet(comment) }
         .statusBarHidden(fullscreen)
@@ -129,14 +126,13 @@ struct VideoStage: View {
                 seeking: $seeking,
                 localProgress: $localProgress,
                 showMore: $showMore,
-                showSpeed: $showSpeed,
-                showQuality: $showQuality,
                 showDanmaku: $showDanmaku,
                 locked: $locked,
                 coinPick: $coinPick,
                 showCoin: $showCoin,
                 showFav: $showFav,
-                showShare: $showShare
+                showShare: $showShare,
+                onQuality: { name in Task { await switchQuality(name) } }
             )
         }
         .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 0, style: .continuous))
@@ -549,17 +545,6 @@ struct VideoStage: View {
         ))
     }
 
-    private var speedSheet: some View {
-        OptionSheet(title: "倍速", options: ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"], selection: Binding(
-            get: { String(format: "%.2gx", model.playbackRate) },
-            set: { label in
-                let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
-                model.playbackRate = value
-                model.player?.rate = value
-            }
-        ))
-    }
-
     private var danmakuSheet: some View {
         NavigationStack {
             List {
@@ -710,68 +695,118 @@ struct DanmakuLayer: View {
 
 struct PlayerControls: View {
     @Environment(AppModel.self) private var model
-    @Namespace private var transportGlass
     let video: VideoItem
     @Binding var fullscreen: Bool
     @Binding var seeking: Bool
     @Binding var localProgress: Double
     @Binding var showMore: Bool
-    @Binding var showSpeed: Bool
-    @Binding var showQuality: Bool
     @Binding var showDanmaku: Bool
     @Binding var locked: Bool
     @Binding var coinPick: Int
     @Binding var showCoin: Bool
     @Binding var showFav: Bool
     @Binding var showShare: Bool
+    var onQuality: (String) -> Void
+    private let speeds = ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"]
 
     private var progress: Double {
         seeking ? localProgress : model.playbackSeconds
     }
 
+    private var qualityChoices: [String] {
+        video.qualities.isEmpty ? ["流畅 360P", "清晰 480P", "高清 720P", "高清 1080P", "高清 1080P60", "超清 4K"] : video.qualities
+    }
+
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
+        ZStack {
             if locked {
-                Button { locked = false } label: {
-                    Image(systemName: "lock.fill")
-                        .padding(12)
-                }
-                .buttonStyle(.glass)
-                .glassEffectID("transport", in: transportGlass)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .padding()
+                iconButton("lock.fill") { locked = false }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(.leading, 8)
+                    .padding(.top, 4)
             } else {
-                controls
+                VStack(spacing: 0) {
+                    topBar
+                    Spacer(minLength: 0)
+                    bottomBar
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.smooth(duration: 0.32), value: locked)
     }
 
-    private var controls: some View {
-        VStack {
-            HStack {
-                if model.flag("观看人数") {
-                    Label(CountText.format(max(video.view / 80, 1)), systemImage: "person.2.fill")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.35), in: Capsule())
+    private var topBar: some View {
+        HStack(spacing: 0) {
+            iconButton("chevron.backward") {
+                if fullscreen {
+                    withAnimation(.easeOut(duration: 0.25)) { fullscreen = false }
+                } else {
+                    model.pop()
                 }
-                Spacer()
-                Button { showMore = true } label: { Image(systemName: "ellipsis").padding(8) }
             }
-            .foregroundStyle(.white)
-            .padding(8)
-            Spacer()
+            .accessibilityLabel("返回")
+            Text(video.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+            Spacer(minLength: 8)
+            iconButton("pip.enter") {
+                if PictureInPictureBridge.shared.supported {
+                    PictureInPictureBridge.shared.toggle()
+                } else {
+                    model.show("当前设备不支持画中画")
+                }
+            }
+            .accessibilityLabel("画中画")
+            iconButton("camera") { model.show("已保存截图到相册预览") }
+                .accessibilityLabel("截图")
+            Menu {
+                Button("弹幕设置", systemImage: "slider.horizontal.3") { showDanmaku = true }
+                Button("更多", systemImage: "ellipsis") { showMore = true }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+            }
+            .accessibilityLabel("播放设置")
+            if fullscreen {
+                iconButton("lock.open") { locked = true }
+                    .accessibilityLabel("锁定")
+            }
+        }
+        .padding(.horizontal, 2)
+        .background(alignment: .top) {
+            LinearGradient(
+                colors: [.black.opacity(0.72), .black.opacity(0.28), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 76)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var bottomBar: some View {
+        VStack(spacing: 0) {
             if model.flag("显示高能进度条") {
                 EnergyBar(progress: progress, duration: Double(max(video.duration, 1)))
-                    .frame(height: 18)
-                    .padding(.horizontal, 12)
+                    .frame(height: 8)
+                    .padding(.horizontal, 16)
             }
-            HStack(spacing: 12) {
-                Button { togglePlay() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }
-                Text(DurationBadge.clock(Int(progress))).font(.caption2.monospacedDigit())
+            HStack(spacing: 0) {
+                iconButton(model.isPlaying ? "pause.fill" : "play.fill", action: togglePlay)
+                    .accessibilityLabel(model.isPlaying ? "暂停" : "播放")
+                Text(DurationBadge.clock(Int(progress)))
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
                 Slider(
                     value: Binding(
                         get: { progress },
@@ -787,43 +822,102 @@ struct PlayerControls: View {
                     }
                 )
                 .tint(.white)
-                Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
-                Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
-                Button { showQuality = true } label: {
-                    Text(shortQuality)
+                .layoutPriority(1)
+                .padding(.horizontal, 4)
+                .accessibilityLabel("进度")
+                Text(DurationBadge.clock(video.duration))
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+                iconButton(model.danmakuOn ? "text.bubble.fill" : "text.bubble") {
+                    model.danmakuOn.toggle()
+                    model.setFlag("弹幕开关", model.danmakuOn)
+                }
+                .accessibilityLabel(model.danmakuOn ? "关闭弹幕" : "打开弹幕")
+                Menu {
+                    ForEach(speeds, id: \.self) { label in
+                        Button(label) { applySpeed(label) }
+                    }
+                } label: {
+                    Text(speedLabel)
                         .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
                 }
-                if PictureInPictureBridge.shared.supported {
-                    Button { PictureInPictureBridge.shared.toggle() } label: { Image(systemName: "pip.enter") }
+                .accessibilityLabel("倍速")
+                Menu {
+                    ForEach(qualityChoices, id: \.self) { name in
+                        Button {
+                            onQuality(name)
+                        } label: {
+                            if model.qualityName == name {
+                                Label(name, systemImage: "checkmark")
+                            } else {
+                                Text(name)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(shortQuality)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
                 }
-                Button { model.danmakuOn.toggle(); model.setFlag("弹幕开关", model.danmakuOn) } label: {
-                    Image(systemName: model.danmakuOn ? "text.bubble.fill" : "text.bubble")
+                .accessibilityLabel("画质")
+                iconButton(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                    withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() }
                 }
-                Button { showDanmaku = true } label: { Image(systemName: "slider.horizontal.3") }
-                if model.flag("全屏显示截图按钮") {
-                    Button { model.show("已保存截图到相册预览") } label: { Image(systemName: "camera") }
-                }
-                if model.flag("全屏显示锁定按钮") {
-                    Button { locked = true } label: { Image(systemName: "lock.open") }
-                }
-                Button { withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() } } label: {
-                    Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }
+                .accessibilityLabel(fullscreen ? "退出全屏" : "全屏")
             }
-            .font(.subheadline)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .glassEffect(.clear, in: ConcentricRectangle())
-            .glassEffectID("transport", in: transportGlass)
-            .padding(8)
+            .padding(.horizontal, 2)
             if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
                 VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
                     .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
             }
         }
+        .background(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.34), .black.opacity(0.72)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 92)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func iconButton(_ system: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var speedLabel: String {
+        let rate = model.playbackRate
+        if abs(rate - 1) < 0.05 { return "1x" }
+        if abs(rate.truncatingRemainder(dividingBy: 1)) < 0.05 { return String(format: "%.0fx", rate) }
+        return String(format: "%.2gx", rate)
+    }
+
+    private func applySpeed(_ label: String) {
+        let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
+        model.playbackRate = value
+        model.player?.rate = model.isPlaying ? value : 0
     }
 
     /// One token. "1080P AVC" wrapped inside the glass transport bar and covered the buttons beside it.
