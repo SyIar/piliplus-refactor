@@ -164,7 +164,8 @@ private struct RecommendPage: View {
             "cold": cold.dictionary,
             "warm": warm.dictionary,
             "imageHits": ImageStore.prepareHits,
-            "imageMisses": ImageStore.prepareMisses
+            "imageMisses": ImageStore.prepareMisses,
+            "preparedCovers": ImageStore.preparedCount
         ])
         try? await Task.sleep(for: .milliseconds(300))
         exit(0)
