@@ -77,7 +77,7 @@ struct VideoStage: View {
             }
         }
         .background(fullscreen ? Color.black : Color.clear)
-        .background { if !fullscreen { AuroraBackground() } }
+        .background { if !fullscreen { AuroraBackdrop() } }
     }
 
     private func player(_ video: VideoItem) -> some View {
@@ -89,7 +89,7 @@ struct VideoStage: View {
                 RemoteImage(url: video.cover).opacity(0.45)
             }
             if model.danmakuOn && model.flag("弹幕开关") {
-                DanmakuLayer(cues: danmaku, progress: progress)
+                DanmakuLayer(cues: danmaku)
                     .allowsHitTesting(model.flag("启用点击弹幕"))
             }
             if !hint.isEmpty {
@@ -99,7 +99,23 @@ struct VideoStage: View {
                     .padding(.vertical, 8)
                     .glassCapsule(interactive: false)
             }
-            if !locked { controls(video) }
+            if !locked {
+                PlayerControls(
+                    video: video,
+                    fullscreen: $fullscreen,
+                    seeking: $seeking,
+                    localProgress: $localProgress,
+                    showMore: $showMore,
+                    showSpeed: $showSpeed,
+                    showQuality: $showQuality,
+                    showDanmaku: $showDanmaku,
+                    locked: $locked,
+                    coinPick: $coinPick,
+                    showCoin: $showCoin,
+                    showFav: $showFav,
+                    showShare: $showShare
+                )
+            }
             if locked {
                 Button { locked = false } label: {
                     Image(systemName: "lock.fill").padding(12)
@@ -124,85 +140,6 @@ struct VideoStage: View {
                 hint = ""
             }
         }
-    }
-
-    private func controls(_ video: VideoItem) -> some View {
-        VStack {
-            HStack {
-                if model.flag("观看人数") {
-                    Label(CountText.format(max(video.view / 80, 1)), systemImage: "person.2.fill")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.35), in: Capsule())
-                }
-                Spacer()
-                if model.flag("全屏显示电池电量") && fullscreen {
-                    Text("电池").font(.caption2).padding(.horizontal, 8).padding(.vertical, 4).background(.black.opacity(0.35), in: Capsule())
-                }
-                Button { showMore = true } label: { Image(systemName: "ellipsis").padding(8) }
-            }
-            .foregroundStyle(.white)
-            .padding(8)
-            Spacer()
-            if model.flag("显示高能进度条") {
-                EnergyBar(progress: progress, duration: Double(max(video.duration, 1)))
-                    .frame(height: 18)
-                    .padding(.horizontal, 12)
-            }
-            HStack(spacing: 12) {
-                Button { togglePlay() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }
-                Text(DurationBadge.clock(Int(progress))).font(.caption2.monospacedDigit())
-                Slider(
-                    value: Binding(
-                        get: { progress },
-                        set: { localProgress = $0; seeking = true }
-                    ),
-                    in: 0...Double(max(video.duration, 1)),
-                    onEditingChanged: { editing in
-                        if !editing {
-                            model.playbackSeconds = localProgress
-                            model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
-                            seeking = false
-                        }
-                    }
-                )
-                .tint(.white)
-                Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
-                Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
-                Button { showQuality = true } label: { Text(shortQuality).font(.caption.weight(.bold)) }
-                Button { model.danmakuOn.toggle(); model.setFlag("弹幕开关", model.danmakuOn) } label: {
-                    Image(systemName: model.danmakuOn ? "text.bubble.fill" : "text.bubble")
-                }
-                Button { showDanmaku = true } label: { Image(systemName: "slider.horizontal.3") }
-                if model.flag("全屏显示截图按钮") {
-                    Button { model.show("已保存截图到相册预览") } label: { Image(systemName: "camera") }
-                }
-                if model.flag("全屏显示锁定按钮") {
-                    Button { locked = true } label: { Image(systemName: "lock.open") }
-                }
-                Button { withAnimation(.spring(duration: 0.35)) { fullscreen.toggle() } } label: {
-                    Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }
-            }
-            .font(.subheadline)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .padding(8)
-            if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
-                actionRow(video).padding(.horizontal, 8)
-            }
-        }
-    }
-
-    private var shortQuality: String {
-        if model.qualityName.contains("1080") { return "1080P" }
-        if model.qualityName.contains("720") { return "720P" }
-        if model.qualityName.contains("4K") { return "4K" }
-        if model.qualityName.contains("360") { return "360P" }
-        return "自动"
     }
 
     private func below(_ video: VideoItem) -> some View {
@@ -230,7 +167,7 @@ struct VideoStage: View {
                 }
                 Button { model.open(.user(video.ownerMid, video.ownerName)) } label: {
                     HStack {
-                        RemoteImage(url: video.ownerFace, ratio: 1).frame(width: 36, height: 36).clipShape(Circle())
+                        RemoteImage(url: video.ownerFace, ratio: 1, maxPixel: 120).frame(width: 36, height: 36).clipShape(Circle())
                         Text(video.ownerName).font(.subheadline.weight(.semibold))
                         Spacer()
                         Text("关注")
@@ -242,9 +179,9 @@ struct VideoStage: View {
                     }
                 }
                 .buttonStyle(.plain)
-                actionRow(video)
+                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
                     .padding(8)
-                    .glassCard(radius: 22)
+                    .contentPlate(radius: 22)
                 if model.flag("显示视频分段信息") && video.pageCount > 1 {
                     Text("分P · \(video.pageCount)").font(.headline)
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -260,7 +197,7 @@ struct VideoStage: View {
                                     }
                                     .padding(10)
                                     .frame(width: 140, alignment: .leading)
-                                    .glassCard(radius: 14, interactive: currentPage == index)
+                                    .contentPlate(radius: 14)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -285,7 +222,7 @@ struct VideoStage: View {
                     }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassCard(radius: 18)
+                    .contentPlate(radius: 18)
                 }
                 if model.flag("视频页显示相关视频") {
                     Text("相关视频").font(.headline)
@@ -296,30 +233,6 @@ struct VideoStage: View {
             }
             .padding(16)
             .padding(.bottom, 24)
-        }
-    }
-
-    private func actionRow(_ video: VideoItem) -> some View {
-        HStack(spacing: 0) {
-            ActionChip(system: model.liked.contains(video.bvid) ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(video.like + (model.liked.contains(video.bvid) ? 1 : 0)), selected: model.liked.contains(video.bvid)) {
-                model.toggleLike(video.bvid)
-            }
-            .simultaneousGesture(LongPressGesture().onEnded { _ in model.triple(video.bvid) })
-            ActionChip(system: model.disliked.contains(video.bvid) ? "hand.thumbsdown.fill" : "hand.thumbsdown", title: "点踩", selected: model.disliked.contains(video.bvid)) {
-                model.toggleDislike(video.bvid)
-            }
-            ActionChip(system: "bitcoinsign.circle", title: CountText.format(video.coin), selected: model.coined.contains(video.bvid)) {
-                coinPick = 2
-                showCoin = true
-            }
-            ActionChip(system: model.favored.contains(video.bvid) ? "star.fill" : "star", title: CountText.format(video.favorite), selected: model.favored.contains(video.bvid)) {
-                if model.flag("快速收藏") { model.favorite(video.bvid, folder: model.favFolders[0]) } else { showFav = true }
-            }
-            .simultaneousGesture(LongPressGesture().onEnded { _ in showFav = true })
-            ActionChip(system: model.later.contains(video.bvid) ? "clock.fill" : "clock", title: "再看", selected: model.later.contains(video.bvid)) {
-                model.watchLater(video.bvid)
-            }
-            ActionChip(system: "arrowshape.turn.up.right", title: CountText.format(video.share)) { showShare = true }
         }
     }
 
@@ -346,10 +259,10 @@ struct VideoStage: View {
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .glassCapsule(interactive: false)
+                        .selectionCapsule(selected: false)
                 }
                 ForEach(comments) { comment in
-                    commentRow(comment, nested: false)
+                    CommentRow(comment: comment, nested: false, onReply: { replyTarget = $0 }, mention: { draft = "@\($0.name) " })
                 }
                 if comments.isEmpty {
                     ContentUnavailableView("还没有评论", systemImage: "text.bubble", description: Text("或者评论区暂时关闭"))
@@ -368,39 +281,6 @@ struct VideoStage: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-    }
-
-    private func commentRow(_ comment: CommentItem, nested: Bool) -> AnyView {
-        AnyView(
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    RemoteImage(url: comment.face, ratio: 1).frame(width: nested ? 22 : 32, height: nested ? 22 : 32).clipShape(Circle())
-                    Text(comment.name).font(.caption.weight(.semibold))
-                    if model.flag("显示粉丝勋章") {
-                        Text("粉丝牌").font(.system(size: 9, weight: .bold)).padding(.horizontal, 4).padding(.vertical, 1).background(Palette.bili.opacity(0.2), in: Capsule())
-                    }
-                    Spacer()
-                    Button { replyTarget = comment } label: { Image(systemName: "ellipsis") }
-                        .buttonStyle(.plain)
-                }
-                Text(comment.message).font(.subheadline)
-                HStack(spacing: 16) {
-                    Button { model.show("已赞评论") } label: { Label("\(comment.like)", systemImage: "hand.thumbsup") }
-                    Button { draft = "@\(comment.name) "; model.show("正在回复 \(comment.name)") } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .buttonStyle(.plain)
-                if !nested {
-                    ForEach(comment.replies.prefix(2)) { child in
-                        commentRow(child, nested: true)
-                            .padding(.leading, 20)
-                    }
-                }
-            }
-            .padding(12)
-            .glassCard(radius: nested ? 14 : 20)
-        )
     }
 
     private func playerDrag(_ video: VideoItem) -> some Gesture {
@@ -686,24 +566,214 @@ struct EnergyBar: View {
 }
 
 struct DanmakuLayer: View {
+    @Environment(AppModel.self) private var model
     let cues: [DanmakuCue]
-    var progress: Double
+
     var body: some View {
-        TimelineView(.animation) { timeline in
-            GeometryReader { geo in
-                let t = timeline.date.timeIntervalSinceReferenceDate
-                ForEach(Array(cues.enumerated()), id: \.element.id) { index, cue in
-                    let travel = 7.0
-                    let phase = (t + cue.time).truncatingRemainder(dividingBy: travel) / travel
-                    Text(cue.text)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Color(hex: cue.color))
-                        .shadow(color: .black.opacity(0.45), radius: 1, y: 1)
-                        .position(x: geo.size.width * (1.15 - phase * 1.4), y: 24 + CGFloat(index % 5) * 26)
+        Group {
+            if model.isPlaying {
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
+                    track(at: timeline.date)
                 }
+            } else {
+                track(at: .now)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func track(at date: Date) -> some View {
+        GeometryReader { geo in
+            let t = date.timeIntervalSinceReferenceDate
+            ForEach(Array(cues.enumerated()), id: \.element.id) { index, cue in
+                let travel = 7.0
+                let phase = (t + cue.time).truncatingRemainder(dividingBy: travel) / travel
+                Text(cue.text)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Color(hex: cue.color))
+                    .position(x: geo.size.width * (1.15 - phase * 1.4), y: 24 + CGFloat(index % 5) * 26)
+            }
+        }
+    }
+}
+
+struct PlayerControls: View {
+    @Environment(AppModel.self) private var model
+    let video: VideoItem
+    @Binding var fullscreen: Bool
+    @Binding var seeking: Bool
+    @Binding var localProgress: Double
+    @Binding var showMore: Bool
+    @Binding var showSpeed: Bool
+    @Binding var showQuality: Bool
+    @Binding var showDanmaku: Bool
+    @Binding var locked: Bool
+    @Binding var coinPick: Int
+    @Binding var showCoin: Bool
+    @Binding var showFav: Bool
+    @Binding var showShare: Bool
+
+    private var progress: Double {
+        seeking ? localProgress : model.playbackSeconds
+    }
+
+    var body: some View {
+        VStack {
+            HStack {
+                if model.flag("观看人数") {
+                    Label(CountText.format(max(video.view / 80, 1)), systemImage: "person.2.fill")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.35), in: Capsule())
+                }
+                Spacer()
+                Button { showMore = true } label: { Image(systemName: "ellipsis").padding(8) }
+            }
+            .foregroundStyle(.white)
+            .padding(8)
+            Spacer()
+            if model.flag("显示高能进度条") {
+                EnergyBar(progress: progress, duration: Double(max(video.duration, 1)))
+                    .frame(height: 18)
+                    .padding(.horizontal, 12)
+            }
+            HStack(spacing: 12) {
+                Button { togglePlay() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }
+                Text(DurationBadge.clock(Int(progress))).font(.caption2.monospacedDigit())
+                Slider(
+                    value: Binding(
+                        get: { progress },
+                        set: { localProgress = $0; seeking = true }
+                    ),
+                    in: 0...Double(max(video.duration, 1)),
+                    onEditingChanged: { editing in
+                        if !editing {
+                            model.playbackSeconds = localProgress
+                            model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
+                            seeking = false
+                        }
+                    }
+                )
+                .tint(.white)
+                Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
+                Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
+                Button { showQuality = true } label: { Text(shortQuality).font(.caption.weight(.bold)) }
+                Button { model.danmakuOn.toggle(); model.setFlag("弹幕开关", model.danmakuOn) } label: {
+                    Image(systemName: model.danmakuOn ? "text.bubble.fill" : "text.bubble")
+                }
+                Button { showDanmaku = true } label: { Image(systemName: "slider.horizontal.3") }
+                if model.flag("全屏显示截图按钮") {
+                    Button { model.show("已保存截图到相册预览") } label: { Image(systemName: "camera") }
+                }
+                if model.flag("全屏显示锁定按钮") {
+                    Button { locked = true } label: { Image(systemName: "lock.open") }
+                }
+                Button { withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() } } label: {
+                    Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .glassEffect(.clear, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(8)
+            if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
+                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
+                    .padding(.horizontal, 8)
+            }
+        }
+    }
+
+    private var shortQuality: String {
+        if model.qualityName.contains("1080") { return "1080P" }
+        if model.qualityName.contains("720") { return "720P" }
+        if model.qualityName.contains("4K") { return "4K" }
+        if model.qualityName.contains("360") { return "360P" }
+        return "自动"
+    }
+
+    private func togglePlay() {
+        model.isPlaying.toggle()
+        if model.isPlaying { model.player?.play() } else { model.player?.pause() }
+    }
+}
+
+struct VideoActionRow: View {
+    @Environment(AppModel.self) private var model
+    let video: VideoItem
+    @Binding var coinPick: Int
+    @Binding var showCoin: Bool
+    @Binding var showFav: Bool
+    @Binding var showShare: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ActionChip(system: model.liked.contains(video.bvid) ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(video.like + (model.liked.contains(video.bvid) ? 1 : 0)), selected: model.liked.contains(video.bvid)) {
+                model.toggleLike(video.bvid)
+            }
+            .simultaneousGesture(LongPressGesture().onEnded { _ in model.triple(video.bvid) })
+            ActionChip(system: model.disliked.contains(video.bvid) ? "hand.thumbsdown.fill" : "hand.thumbsdown", title: "点踩", selected: model.disliked.contains(video.bvid)) {
+                model.toggleDislike(video.bvid)
+            }
+            ActionChip(system: "bitcoinsign.circle", title: CountText.format(video.coin), selected: model.coined.contains(video.bvid)) {
+                coinPick = 2
+                showCoin = true
+            }
+            ActionChip(system: model.favored.contains(video.bvid) ? "star.fill" : "star", title: CountText.format(video.favorite), selected: model.favored.contains(video.bvid)) {
+                if model.flag("快速收藏") { model.favorite(video.bvid, folder: model.favFolders[0]) } else { showFav = true }
+            }
+            .simultaneousGesture(LongPressGesture().onEnded { _ in showFav = true })
+            ActionChip(system: model.later.contains(video.bvid) ? "clock.fill" : "clock", title: "再看", selected: model.later.contains(video.bvid)) {
+                model.watchLater(video.bvid)
+            }
+            ActionChip(system: "arrowshape.turn.up.right", title: CountText.format(video.share)) { showShare = true }
+        }
+    }
+}
+
+struct CommentRow: View {
+    @Environment(AppModel.self) private var model
+    let comment: CommentItem
+    var nested: Bool
+    var onReply: (CommentItem) -> Void
+    var mention: (CommentItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                RemoteImage(url: comment.face, ratio: 1, maxPixel: 96)
+                    .frame(width: nested ? 22 : 32, height: nested ? 22 : 32)
+                    .clipShape(Circle())
+                Text(comment.name).font(.caption.weight(.semibold))
+                if model.flag("显示粉丝勋章") {
+                    Text("粉丝牌").font(.system(size: 9, weight: .bold)).padding(.horizontal, 4).padding(.vertical, 1).background(Palette.bili.opacity(0.2), in: Capsule())
+                }
+                Spacer()
+                Button { onReply(comment) } label: { Image(systemName: "ellipsis") }
+                    .buttonStyle(.plain)
+            }
+            Text(comment.message).font(.subheadline)
+            HStack(spacing: 16) {
+                Button { model.show("已赞评论") } label: { Label("\(comment.like)", systemImage: "hand.thumbsup") }
+                Button {
+                    mention(comment)
+                    model.show("正在回复 \(comment.name)")
+                } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            if !nested {
+                ForEach(comment.replies.prefix(2)) { child in
+                    CommentRow(comment: child, nested: true, onReply: onReply, mention: mention)
+                        .padding(.leading, 20)
+                }
+            }
+        }
+        .padding(12)
+        .contentPlate(radius: nested ? 14 : 20)
     }
 }
 

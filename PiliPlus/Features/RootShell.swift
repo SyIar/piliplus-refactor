@@ -11,11 +11,19 @@ struct RootShell: View {
                     HomeFeed()
                 }
                 Tab("动态", systemImage: "dot.radiowaves.left.and.right", value: 1) {
-                    DynamicsFeed()
+                    if model.selectedTab == 1 {
+                        DynamicsFeed()
+                    } else {
+                        Color.clear
+                    }
                 }
                 .badge(model.flag("动态未读标记") ? 1 : 0)
                 Tab("我的", systemImage: "person.fill", value: 2) {
-                    MineSpace()
+                    if model.selectedTab == 2 {
+                        MineSpace()
+                    } else {
+                        Color.clear
+                    }
                 }
             }
             .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
@@ -28,7 +36,6 @@ struct RootShell: View {
                 destination(route)
             }
         }
-        .background(AuroraBackground())
         .overlay(alignment: .top) {
             if let toast = model.toast {
                 ToastBanner(text: toast)
@@ -36,7 +43,7 @@ struct RootShell: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(.spring(duration: 0.35), value: model.toast)
+        .animation(.easeOut(duration: 0.25), value: model.toast)
         .task { await boot() }
     }
 
@@ -78,7 +85,7 @@ struct NowPlayingPill: View {
             model.open(.video(video.bvid))
         } label: {
             HStack(spacing: 10) {
-                RemoteImage(url: video.cover, ratio: 1)
+                RemoteImage(url: video.cover, ratio: 1, maxPixel: 120)
                     .frame(width: 36, height: 36)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {

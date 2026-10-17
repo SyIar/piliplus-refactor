@@ -6,49 +6,56 @@ struct HomeFeed: View {
 
     var body: some View {
         @Bindable var model = model
-        ZStack {
-            AuroraBackground()
-            VStack(spacing: 0) {
-                if !hideChrome || !model.flag("首页顶栏收起") {
-                    topBar
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                tabStrip
-                content
-            }
+        content
+            .background { AuroraBackdrop() }
+            .toolbar(.hidden, for: .navigationBar)
+            .animation(.easeOut(duration: 0.2), value: hideChrome)
+    }
+
+    private var chrome: some View {
+        VStack(spacing: 0) {
+            topBar
+                .frame(height: hideChrome && model.flag("首页顶栏收起") ? 0 : nil, alignment: .top)
+                .clipped()
+                .opacity(hideChrome && model.flag("首页顶栏收起") ? 0 : 1)
+            tabStrip
         }
-        .toolbar(.hidden, for: .navigationBar)
-        .animation(.spring(duration: 0.38), value: hideChrome)
     }
 
     private var topBar: some View {
-        HStack(spacing: 10) {
-            Button { model.open(.search) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                    Text(model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索")
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
-                    Spacer()
+        GlassEffectContainer(spacing: 4) {
+            HStack(spacing: 10) {
+                Button { model.open(.search) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                        Text(model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索")
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .font(.subheadline)
+                    .padding(.horizontal, 14)
+                    .frame(height: 42)
                 }
-                .font(.subheadline)
-                .padding(.horizontal, 14)
-                .frame(height: 42)
+                .buttonStyle(.plain)
+                .glassCapsule(interactive: false)
+                .accessibilityLabel("搜索")
+                GlassIconButton(system: "bell", badge: model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0) {
+                    model.open(.messages)
+                }
+                .accessibilityLabel("消息")
+                Button {
+                    if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
+                } label: {
+                    avatar
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("个人资料")
             }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            GlassIconButton(system: "bell", badge: model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0) {
-                model.open(.messages)
-            }
-            Button {
-                if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
-            } label: {
-                avatar
-            }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 6)
+        .padding(.top, 2)
+        .padding(.bottom, 2)
     }
 
     private var avatar: some View {
@@ -59,7 +66,6 @@ struct HomeFeed: View {
                 .foregroundStyle(.white)
         }
         .frame(width: 40, height: 40)
-        .glassCapsule(interactive: false)
     }
 
     private var tabStrip: some View {
@@ -92,15 +98,15 @@ struct HomeFeed: View {
     private var content: some View {
         switch model.homeTab {
         case "直播":
-            LivePlaza()
+            LivePlaza().feedChrome { chrome }
         case "热门":
-            HotPage()
+            HotPage().feedChrome { chrome }
         case "分区":
-            RankPage()
+            RankPage().feedChrome { chrome }
         case "番剧":
-            PGCPage(kind: "番剧")
+            PGCPage(kind: "番剧").feedChrome { chrome }
         case "影视":
-            PGCPage(kind: "影视")
+            PGCPage(kind: "影视").feedChrome { chrome }
         default:
             recommend
         }
@@ -117,18 +123,21 @@ struct HomeFeed: View {
                         VideoCard(video: video).id(video.bvid)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 28)
-            }
-            .refreshable { await model.refreshHome() }
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y
-            } action: { old, new in
-                guard model.flag("首页顶栏收起") else { return }
-                if new > old + 12 { hideChrome = true }
-                if new < 8 || new < old - 18 { hideChrome = false }
-            }
-            .task { await scrollBench(proxy) }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
+        .refreshable { await model.refreshHome() }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y
+        } action: { old, new in
+            guard model.flag("首页顶栏收起") else { return }
+            let next = new > 8 && new > old + 12
+            let show = new < 8 || new < old - 18
+            if next, !hideChrome { hideChrome = true }
+            if show, hideChrome { hideChrome = false }
+        }
+        .feedChrome { chrome }
+        .task { await scrollBench(proxy) }
         }
     }
 
@@ -203,7 +212,7 @@ struct HotPage: View {
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .glassCard(radius: 18, interactive: true)
+                .contentPlate(radius: 18)
         }
         .buttonStyle(.plain)
     }
@@ -221,7 +230,8 @@ struct RankPage: View {
                             .font(.caption.weight(zone == item ? .bold : .regular))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .glassCapsule(interactive: zone == item)
+                            .foregroundStyle(zone == item ? .white : .primary)
+                            .selectionCapsule(selected: zone == item)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -256,7 +266,7 @@ struct PGCPage: View {
                                     Text(day == "五" ? "更新 6" : "更新 2").font(.caption2).foregroundStyle(.secondary)
                                 }
                                 .frame(width: 72, height: 64)
-                                .glassCard(radius: 18, interactive: true)
+                                .contentPlate(radius: 18)
                             }
                         }
                     }
@@ -267,7 +277,7 @@ struct PGCPage: View {
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
-                            .glassCapsule()
+                            .selectionCapsule(selected: false)
                     }
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -294,7 +304,8 @@ struct LivePlaza: View {
                                 .font(.caption.weight(area == item ? .bold : .regular))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .glassCapsule(interactive: area == item)
+                                .foregroundStyle(area == item ? .white : .primary)
+                                .selectionCapsule(selected: area == item)
                         }
                     }
                 }
@@ -305,7 +316,7 @@ struct LivePlaza: View {
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .glassCard(radius: 18, interactive: true)
+                        .contentPlate(radius: 18)
                 }
                 .buttonStyle(.plain)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {

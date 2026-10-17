@@ -32,7 +32,7 @@ struct SettingsStudio: View {
         }
         .navigationTitle("设置")
         .scrollContentBackground(.hidden)
-        .background(AuroraBackground())
+        .background(AuroraBackdrop())
     }
 }
 
@@ -72,7 +72,7 @@ struct SettingDetail: View {
         }
         .navigationTitle(name)
         .scrollContentBackground(.hidden)
-        .background(AuroraBackground())
+        .background(AuroraBackdrop())
         .sheet(item: $editor) { row in
             editorSheet(row)
         }
@@ -181,7 +181,7 @@ struct FeaturePageView: View {
     var body: some View {
         let page = Menus.pages.first { $0.title == title }
         ZStack {
-            AuroraBackground()
+            AuroraBackdrop()
             if title == "全部页面" {
                 allPages
             } else {
@@ -197,7 +197,7 @@ struct FeaturePageView: View {
                                         .font(.subheadline.weight(.semibold))
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 14)
-                                        .glassCard(radius: 18, interactive: true)
+                                        .contentPlate(radius: 18)
                                 }
                             }
                         }
@@ -258,7 +258,7 @@ struct MemberPage: View {
     @State private var tab = "投稿"
     var body: some View {
         ZStack {
-            AuroraBackground()
+            AuroraBackdrop()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 12) {
@@ -276,7 +276,7 @@ struct MemberPage: View {
                                 .font(.caption.weight(.bold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
-                                .glassCapsule()
+                                .selectionCapsule(selected: false)
                         }
                     }
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -336,7 +336,7 @@ struct LiveStage: View {
                                 .font(.subheadline)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
-                                .glassCapsule(interactive: false)
+                                .background(Color.primary.opacity(0.08), in: Capsule())
                         }
                     }
                     .padding(16)
@@ -393,7 +393,7 @@ struct LiveStage: View {
             .font(.caption.weight(.semibold))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
-            .glassCapsule()
+            .selectionCapsule(selected: false)
     }
 
     private func send() {
@@ -426,7 +426,7 @@ struct InboxView: View {
             }
             .scrollContentBackground(.hidden)
         }
-        .background(AuroraBackground())
+        .background(AuroraBackdrop())
         .navigationTitle("消息")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -515,7 +515,7 @@ struct LoginGate: View {
             Spacer()
         }
         .padding(20)
-        .background(AuroraBackground())
+        .background(AuroraBackdrop())
         .navigationTitle("登录")
         .navigationBarTitleDisplayMode(.inline)
     }

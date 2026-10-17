@@ -6,32 +6,40 @@ enum Palette {
     static let ink = Color(red: 0.07, green: 0.07, blue: 0.09)
 }
 
-struct AuroraBackground: View {
-    @Environment(\.colorScheme) private var scheme
+struct AuroraBackground: View, Equatable {
+    var scheme: ColorScheme
+
+    static func == (lhs: AuroraBackground, rhs: AuroraBackground) -> Bool {
+        lhs.scheme == rhs.scheme
+    }
 
     var body: some View {
         ZStack {
             (scheme == .dark ? Palette.ink : Color(red: 0.95, green: 0.95, blue: 0.97))
             RadialGradient(
-                colors: [Palette.bili.opacity(scheme == .dark ? 0.42 : 0.28), .clear],
+                colors: [Palette.bili.opacity(scheme == .dark ? 0.38 : 0.24), .clear],
                 center: .topTrailing,
                 startRadius: 12,
                 endRadius: 460
             )
             RadialGradient(
-                colors: [Color(red: 0.36, green: 0.55, blue: 1).opacity(scheme == .dark ? 0.32 : 0.18), .clear],
+                colors: [Color(red: 0.36, green: 0.55, blue: 1).opacity(scheme == .dark ? 0.28 : 0.16), .clear],
                 center: .bottomLeading,
                 startRadius: 8,
                 endRadius: 520
             )
-            RadialGradient(
-                colors: [Palette.coin.opacity(0.16), .clear],
-                center: .topLeading,
-                startRadius: 4,
-                endRadius: 280
-            )
         }
         .ignoresSafeArea()
+        .drawingGroup(opaque: false)
+        .allowsHitTesting(false)
+    }
+}
+
+struct AuroraBackdrop: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        AuroraBackground(scheme: scheme).equatable()
     }
 }
 
@@ -52,6 +60,34 @@ extension View {
 
     func glassCapsule(interactive: Bool = true) -> some View {
         liquidGlass(in: Capsule(), interactive: interactive)
+    }
+
+    /// Opaque plate for scrolling content. Liquid Glass stays on bars and controls.
+    func contentPlate(radius: CGFloat = 22) -> some View {
+        background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Color(.secondarySystemBackground).opacity(0.94))
+                .overlay {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                }
+        }
+    }
+
+    func selectionCapsule(selected: Bool) -> some View {
+        background {
+            if selected {
+                Capsule().fill(Palette.bili.gradient)
+            } else {
+                Capsule().fill(Color.primary.opacity(0.06))
+            }
+        }
+    }
+
+    /// Registers a custom top bar so the feed can scroll under it with an edge effect.
+    func feedChrome<Bar: View>(@ViewBuilder bar: () -> Bar) -> some View {
+        safeAreaBar(edge: .top, spacing: 0, content: bar)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
     }
 }
 
@@ -119,27 +155,35 @@ struct DurationBadge: View {
 struct RemoteImage: View {
     let url: String
     var ratio: CGFloat = 16 / 9
+    var maxPixel: CGFloat = 560
 
     var body: some View {
         Color.clear
             .aspectRatio(ratio, contentMode: .fit)
-            .overlay {
-                AsyncImage(url: URL(string: url)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        placeholder
-                    default:
-                        placeholder.overlay { ProgressView().controlSize(.small) }
-                    }
-                }
-            }
+            .overlay { CachedImage(url: url, maxPixel: maxPixel) }
             .clipped()
     }
+}
 
-    private var placeholder: some View {
-        LinearGradient(colors: [Palette.bili.opacity(0.35), Color.blue.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
+private struct CachedImage: View {
+    let url: String
+    var maxPixel: CGFloat
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else {
+                LinearGradient(colors: [Palette.bili.opacity(0.35), Color.blue.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+        }
+        .task(id: url) {
+            guard let parsed = URL(string: url) else { return }
+            let loaded = await ImageStore.shared.image(url: parsed, maxPixel: maxPixel)
+            guard !Task.isCancelled else { return }
+            image = loaded
+        }
     }
 }
 

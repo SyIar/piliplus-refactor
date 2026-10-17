@@ -49,6 +49,8 @@ final class AppModel {
     private var timeObserver: Any?
     var qualityName = "高清 720P"
     var danmakuOn = true
+    private let softHaptic = UIImpactFeedbackGenerator(style: .soft)
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     var liked: Set<String> = []
     var disliked: Set<String> = []
     var coined: Set<String> = []
@@ -92,6 +94,8 @@ final class AppModel {
         case "mine": selectedTab = 2
         default: break
         }
+        softHaptic.prepare()
+        lightHaptic.prepare()
     }
 
     func applyFixtures() {
@@ -150,7 +154,7 @@ final class AppModel {
         if key == "弹幕开关" { danmakuOn = value }
         save()
         if flag("震动反馈") {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            lightHaptic.impactOccurred()
         }
     }
 
@@ -161,7 +165,7 @@ final class AppModel {
     func show(_ text: String) {
         toast = text
         if flag("震动反馈") {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            softHaptic.impactOccurred()
         }
         Task {
             try? await Task.sleep(for: .seconds(1.6))
@@ -180,21 +184,23 @@ final class AppModel {
 
     func refreshHome() async {
         loadingFeed = true
-        defer { loadingFeed = false }
         do {
-            async let popular = client.popular()
+            let popular = try await client.popular()
+            feed = popular
+            hot = popular
+            loadingFeed = false
+            Task { await ImageStore.shared.prefetch(urls: popular.prefix(8).map(\.cover), maxPixel: 560) }
+            await Task.yield()
             async let ranking = client.ranking()
             async let rooms = client.liveRooms()
             async let words = client.hotwords()
-            async let dyn = client.dynamics()
-            feed = try await popular
-            hot = feed
-            rank = try await ranking
-            lives = try await rooms
-            hotwords = try await words
-            dynamics = try await dyn
-            for item in feed + rank { remember(item) }
+            rank = (try? await ranking) ?? rank
+            lives = (try? await rooms) ?? lives
+            hotwords = (try? await words) ?? hotwords
+            dynamics = BiliClient.dynamics(from: popular)
+            for item in feed + rank { store(item) }
         } catch {
+            loadingFeed = false
             show(error.localizedDescription)
         }
     }

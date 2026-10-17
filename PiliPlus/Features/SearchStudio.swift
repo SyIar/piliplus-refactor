@@ -14,60 +14,63 @@ struct SearchStudio: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        ZStack {
-            AuroraBackground()
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                        TextField("搜索视频、番剧、UP 主", text: $keyword)
-                            .focused($focused)
-                            .submitLabel(.search)
-                            .onSubmit { Task { await run() } }
-                        if !keyword.isEmpty {
-                            Button { keyword = "" } label: { Image(systemName: "xmark.circle.fill") }
-                                .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 40)
-                    .glassCapsule()
-                    Button("搜索") { Task { await run() } }
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Palette.bili)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Menus.searchTabs, id: \.self) { item in
-                            Button(item) { tab = item; Task { await run() } }
-                                .font(.caption.weight(tab == item ? .bold : .regular))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .foregroundStyle(tab == item ? .white : .primary)
-                                .background { if tab == item { Capsule().fill(Palette.bili) } }
-                        }
-                        Button { showFilter = true } label: {
-                            Label("筛选", systemImage: "line.3.horizontal.decrease")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .glassCapsule()
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(16)
-                }
-                ScrollView {
-                    if keyword.isEmpty { discover } else { resultList }
-                }
-            }
+        ScrollView {
+            if keyword.isEmpty { discover } else { resultList }
         }
+        .feedChrome { searchChrome }
+        .background { AuroraBackdrop() }
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showFilter) { filterSheet }
         .task { if LaunchMode.screen == nil { focused = true } }
+    }
+
+    private var searchChrome: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                    TextField("搜索视频、番剧、UP 主", text: $keyword)
+                        .focused($focused)
+                        .submitLabel(.search)
+                        .onSubmit { Task { await run() } }
+                    if !keyword.isEmpty {
+                        Button { keyword = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 40)
+                .glassCapsule(interactive: false)
+                Button("搜索") { Task { await run() } }
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Palette.bili)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Menus.searchTabs, id: \.self) { item in
+                        Button(item) { tab = item; Task { await run() } }
+                            .font(.caption.weight(tab == item ? .bold : .regular))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .foregroundStyle(tab == item ? Color.white : Color.primary)
+                            .selectionCapsule(selected: tab == item)
+                    }
+                    Button { showFilter = true } label: {
+                        Label("筛选", systemImage: "line.3.horizontal.decrease")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .glassCapsule(interactive: true)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
     }
 
     private var discover: some View {
@@ -123,12 +126,12 @@ struct SearchStudio: View {
                         HStack {
                             Text(video.ownerName).font(.headline)
                             Spacer()
-                            Text("关注").padding(.horizontal, 12).padding(.vertical, 6).glassCapsule()
+                            Text("关注").padding(.horizontal, 12).padding(.vertical, 6).selectionCapsule(selected: false)
                         }
                     }
                     .buttonStyle(.plain)
                     .padding(12)
-                    .glassCard(radius: 18)
+                    .contentPlate(radius: 18)
                 }
             } else if results.isEmpty && !searching {
                 ContentUnavailableView("没有结果", systemImage: "magnifyingglass", description: Text(tab == "视频" || tab == "综合" ? "换个关键词试试" : "该分区展示与「\(tab)」一致的结果入口"))
@@ -212,7 +215,7 @@ struct FlowTags: View {
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .glassCapsule()
+                        .selectionCapsule(selected: false)
                 }
             }
         }

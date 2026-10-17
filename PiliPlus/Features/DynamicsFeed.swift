@@ -8,64 +8,67 @@ struct DynamicsFeed: View {
     private let tabs = ["全部", "投稿", "番剧", "专栏", "UP"]
 
     var body: some View {
-        ZStack {
-            AuroraBackground()
-            VStack(spacing: 0) {
-                HStack {
-                    Text("动态").font(.largeTitle.bold())
-                    Spacer()
-                    GlassIconButton(system: "plus") { model.open(.feature("发布动态")) }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(tabs, id: \.self) { item in
-                            Button(item) { withAnimation(.spring(duration: 0.3)) { tab = item } }
-                                .font(.subheadline.weight(tab == item ? .bold : .medium))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .foregroundStyle(tab == item ? .white : .primary)
-                                .background { if tab == item { Capsule().fill(Palette.bili.gradient) } }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                }
-                ScrollView {
-                    LazyVStack(spacing: 14) {
-                        if model.flag("动态页展开正在直播UP列表") && !model.lives.isEmpty && tab == "全部" {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 12) {
-                                    ForEach(model.lives.prefix(8)) { room in
-                                        Button { model.open(.live(room.id)) } label: {
-                                            VStack(spacing: 6) {
-                                                RemoteImage(url: room.face.isEmpty ? room.cover : room.face, ratio: 1)
-                                                    .frame(width: 56, height: 56)
-                                                    .clipShape(Circle())
-                                                    .overlay(Circle().stroke(Palette.bili, lineWidth: 2))
-                                                Text(room.uname).font(.caption2).lineLimit(1).frame(width: 64)
-                                            }
-                                        }
-                                        .buttonStyle(.plain)
+        ScrollView {
+            LazyVStack(spacing: 14) {
+                if model.flag("动态页展开正在直播UP列表") && !model.lives.isEmpty && tab == "全部" {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(model.lives.prefix(8)) { room in
+                                Button { model.open(.live(room.id)) } label: {
+                                    VStack(spacing: 6) {
+                                        RemoteImage(url: room.face.isEmpty ? room.cover : room.face, ratio: 1, maxPixel: 168)
+                                            .frame(width: 56, height: 56)
+                                            .clipShape(Circle())
+                                            .overlay(Circle().stroke(Palette.bili, lineWidth: 2))
+                                        Text(room.uname).font(.caption2).lineLimit(1).frame(width: 64)
                                     }
                                 }
-                                .padding(.horizontal, 16)
+                                .buttonStyle(.plain)
                             }
                         }
-                        ForEach(filtered) { item in
-                            dynamicCard(item)
-                        }
+                        .padding(.horizontal, 16)
                     }
-                    .padding(.bottom, 24)
                 }
-                .refreshable { await model.refreshHome() }
+                ForEach(filtered) { item in
+                    dynamicCard(item)
+                }
             }
+            .padding(.bottom, 12)
         }
+        .refreshable { await model.refreshHome() }
+        .feedChrome { dynamicsChrome }
+        .background { AuroraBackdrop() }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(item: $menuItem) { item in
             GlassMenuSheet(title: "动态", rows: Menus.dynamicMenu.map { ("circle", $0) }) { action in
                 handle(action, item)
+            }
+        }
+    }
+
+    private var dynamicsChrome: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("动态").font(.largeTitle.bold())
+                Spacer()
+                GlassIconButton(system: "plus") { model.open(.feature("发布动态")) }
+                    .accessibilityLabel("发布动态")
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(tabs, id: \.self) { item in
+                        Button(item) { withAnimation(.easeOut(duration: 0.2)) { tab = item } }
+                            .font(.subheadline.weight(tab == item ? .bold : .medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .foregroundStyle(tab == item ? .white : .primary)
+                            .background { if tab == item { Capsule().fill(Palette.bili.gradient) } }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
         }
     }
@@ -83,7 +86,7 @@ struct DynamicsFeed: View {
     private func dynamicCard(_ item: DynamicItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                RemoteImage(url: item.face, ratio: 1)
+                RemoteImage(url: item.face, ratio: 1, maxPixel: 120)
                     .frame(width: 40, height: 40)
                     .clipShape(Circle())
                 VStack(alignment: .leading) {
@@ -119,7 +122,7 @@ struct DynamicsFeed: View {
             }
         }
         .padding(14)
-        .glassCard(radius: 26)
+        .contentPlate(radius: 26)
         .padding(.horizontal, 16)
     }
 

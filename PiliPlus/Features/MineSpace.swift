@@ -5,29 +5,30 @@ struct MineSpace: View {
     @State private var card = "我的收藏"
 
     var body: some View {
-        ZStack {
-            AuroraBackground()
-            ScrollView {
-                VStack(spacing: 16) {
-                    header
-                    stats
-                    shortcuts
-                    cardTabs
-                    cardBody
-                }
-                .padding(16)
-                .padding(.bottom, 20)
+        ScrollView {
+            VStack(spacing: 16) {
+                stats
+                shortcuts
+                cardTabs
+                cardBody
             }
+            .padding(16)
+            .padding(.bottom, 12)
         }
+        .feedChrome { header }
+        .background { AuroraBackdrop() }
         .toolbar(.hidden, for: .navigationBar)
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            GlassIconButton(system: "magnifyingglass") { model.open(.search) }
-            GlassIconButton(system: "text.bubble") { model.open(.feature("我的评论")) }
-            GlassIconButton(system: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
+        GlassEffectContainer(spacing: 4) {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                GlassIconButton(system: "magnifyingglass") { model.open(.search) }
+                    .accessibilityLabel("搜索")
+                GlassIconButton(system: "text.bubble") { model.open(.feature("我的评论")) }
+                    .accessibilityLabel("我的评论")
+                GlassIconButton(system: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
                 guard model.loggedIn else { model.open(.login); return }
                 model.anonymity.toggle()
                 model.save()
@@ -42,7 +43,12 @@ struct MineSpace: View {
                 model.show("切换至\(model.theme.label)主题")
             }
             GlassIconButton(system: "gearshape") { model.open(.settings) }
+                .accessibilityLabel("设置")
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
     }
 
     private var stats: some View {
@@ -82,7 +88,7 @@ struct MineSpace: View {
                 }
             }
             .padding(16)
-            .glassCard(radius: 28, interactive: true)
+            .contentPlate(radius: 28)
         }
         .buttonStyle(.plain)
     }
@@ -116,7 +122,7 @@ struct MineSpace: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .glassCard(radius: 20, interactive: true)
+            .contentPlate(radius: 20)
         }
         .buttonStyle(.plain)
     }
@@ -145,7 +151,7 @@ struct MineSpace: View {
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .glassCapsule()
+                            .selectionCapsule(selected: false)
                     }
                 }
             }
