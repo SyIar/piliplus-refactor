@@ -139,10 +139,10 @@ if [[ "$SCROLL_STATUS" -ne 0 ]]; then
 fi
 
 echo "Screenshots on $NAME"
-for screen in home dynamics mine search settings video; do
+for screen in home dynamics mine search settings video login; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
-  sleep 12
+  if [[ "$screen" == "login" ]]; then sleep 20; else sleep 12; fi
   xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
   echo "saved ${screen}.png"
 done

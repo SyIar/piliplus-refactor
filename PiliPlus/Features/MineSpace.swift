@@ -56,11 +56,7 @@ struct MineSpace: View {
         } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
-                    ZStack {
-                        Circle().fill(Palette.bili.gradient)
-                        Text(String(model.userName.prefix(1))).font(.title2.bold()).foregroundStyle(.white)
-                    }
-                    .frame(width: 62, height: 62)
+                    ProfileMark(name: model.userName, face: model.userFace, size: 62)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(model.userName).font(.title3.bold())

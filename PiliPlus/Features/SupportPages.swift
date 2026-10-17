@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreImage
 
 struct SettingsStudio: View {
     @Environment(AppModel.self) private var model
@@ -158,7 +159,7 @@ struct SettingDetail: View {
                 Button("日志") { model.open(.feature("日志")) }
                 Button("检查更新") { model.show(model.flag("检查更新") ? "已是最新的 Swift 重构版" : "已关闭启动检查") }
                 Button("复制 buvid") {
-                    UIPasteboard.general.string = "SYIAR-PILI-IOS27"
+                    UIPasteboard.general.string = DeviceIdentity.buvid
                     model.show("已复制 buvid")
                 }
             }
@@ -454,17 +455,19 @@ struct InboxView: View {
 
 struct LoginGate: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     @State private var mode = "扫码"
     @State private var account = ""
     @State private var secret = ""
     @State private var cookie = ""
+    @State private var qrImage: UIImage?
+    @State private var qrStatus = "正在获取二维码"
+    @State private var submitting = false
 
     var body: some View {
         VStack(spacing: 16) {
             Text("登录哔哩哔哩")
                 .font(.largeTitle.bold())
-            Text("扫码、密码、短信、Cookie，与 PiliPlus 的登录入口一致。密码和短信需要你的账号，Cookie 可从已登录的浏览器复制 SESSDATA。")
+            Text("扫码和 Cookie 会写入钥匙串，并带到之后的请求里。密码和短信需要极验，这一项还没有接通。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -481,33 +484,25 @@ struct LoginGate: View {
                     TextField("手机号", text: $account).textFieldStyle(.roundedBorder).keyboardType(.phonePad)
                     HStack {
                         TextField("验证码", text: $secret).textFieldStyle(.roundedBorder)
-                        Button("获取验证码") { model.show("验证码接口需在登录态服务打开后使用") }
+                        Button("获取验证码") { model.show("短信登录需要极验，请改用扫码或 Cookie") }
                     }
                 case "Cookie":
-                    TextField("SESSDATA", text: $cookie, axis: .vertical).textFieldStyle(.roundedBorder).lineLimit(3...6)
+                    TextField("粘贴浏览器 Cookie，需包含 SESSDATA 和 bili_jct", text: $cookie, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(3...6)
                 default:
-                    VStack(spacing: 8) {
-                        Image(systemName: "qrcode")
-                            .font(.system(size: 88))
-                            .foregroundStyle(Palette.bili)
-                            .padding(24)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-                        Text("用哔哩哔哩 App 扫码").font(.caption).foregroundStyle(.secondary)
-                        Button("我已在手机上确认") { finish(name: "扫码用户") }
-                    }
+                    qrPane
                 }
             }
-            if mode != "扫码" {
-                Button("登录") {
-                    let name = mode == "Cookie" ? "Cookie 用户" : (account.isEmpty ? "用户" : account)
-                    guard mode != "Cookie" || cookie.contains("SESSDATA") || cookie.count > 8 else {
-                        model.show("请粘贴包含 SESSDATA 的 Cookie")
-                        return
-                    }
-                    finish(name: name)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Palette.bili)
+            if mode == "密码" || mode == "短信" {
+                Button("登录") { model.show("密码和短信登录需要极验，请改用扫码或 Cookie") }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Palette.bili)
+            } else if mode == "Cookie" {
+                Button(submitting ? "正在校验" : "登录") { Task { await submitCookie() } }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Palette.bili)
+                    .disabled(submitting)
             }
             Spacer()
         }
@@ -515,10 +510,110 @@ struct LoginGate: View {
         .background(Color(.systemBackground))
         .navigationTitle("登录")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: mode) { await watchQR() }
     }
 
-    private func finish(name: String) {
-        model.login(as: name)
-        model.pop()
+    private var qrPane: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+                if let qrImage {
+                    Image(uiImage: qrImage)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(18)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(width: 220, height: 220)
+            Text(qrStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("用哔哩哔哩 App 扫码")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("刷新二维码") { qrImage = nil }
+                .font(.caption.weight(.semibold))
+        }
+    }
+
+    private func watchQR() async {
+        guard mode == "扫码" else { return }
+        Task { await model.client.refreshMixinKey() }
+        while !Task.isCancelled && mode == "扫码" {
+            qrStatus = "正在获取二维码"
+            do {
+                let ticket = try await model.client.requestQRCode()
+                if Task.isCancelled { return }
+                qrImage = QRImage.make(ticket.url)
+                if qrImage == nil {
+                    qrStatus = "无法绘制二维码"
+                    try? await Task.sleep(for: .seconds(3))
+                    continue
+                }
+                qrStatus = "等待扫码"
+                let deadline = Date().addingTimeInterval(170)
+                var expired = false
+                while !Task.isCancelled && Date() < deadline && qrImage != nil {
+                    try? await Task.sleep(for: .seconds(2))
+                    if Task.isCancelled { return }
+                    if qrImage == nil { break }
+                    switch try await model.client.pollQR(authCode: ticket.authCode) {
+                    case .pending(let message):
+                        qrStatus = message
+                    case .expired(let message):
+                        qrStatus = message
+                        expired = true
+                    case .confirmed(let session):
+                        qrStatus = "扫码成功"
+                        await model.adopt(session)
+                        if model.loggedIn { model.pop() }
+                        return
+                    }
+                    if expired { break }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                qrStatus = error.localizedDescription
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    private func submitCookie() async {
+        let cookies = BiliSession.parseCookieHeader(cookie)
+        guard cookies["SESSDATA"] != nil else {
+            model.show("请粘贴包含 SESSDATA 的 Cookie")
+            return
+        }
+        guard cookies["bili_jct"] != nil else {
+            model.show("Cookie 里还需要 bili_jct，否则无法完成需要 csrf 的操作")
+            return
+        }
+        submitting = true
+        defer { submitting = false }
+        let session = BiliSession.make(
+            cookies: cookies,
+            mid: Int(cookies["DedeUserID"] ?? "") ?? 0
+        )
+        await model.adopt(session)
+        if model.loggedIn { model.pop() }
+    }
+}
+
+private enum QRImage {
+    static func make(_ text: String) -> UIImage? {
+        guard let data = text.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        guard let cg = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cg)
     }
 }

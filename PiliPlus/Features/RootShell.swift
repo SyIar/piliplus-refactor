@@ -68,10 +68,12 @@ struct RootShell: View {
             model.applyFixtures()
             if LaunchMode.screen == "search" { model.open(.search) }
             if LaunchMode.screen == "settings" { model.open(.settings) }
+            if LaunchMode.screen == "login" { model.open(.login) }
             if LaunchMode.screen == "video", let first = model.feed.first { model.open(.video(first.bvid)) }
             return
         }
         if model.feed.isEmpty { await model.refreshHome() }
+        await model.refreshProfile()
     }
 
     @ViewBuilder
