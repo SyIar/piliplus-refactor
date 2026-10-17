@@ -63,6 +63,24 @@ struct RootShell: View {
 
     private func boot() async {
         if LaunchMode.perfStartup { return }
+        if LaunchMode.screen == "accountProof" {
+            AccountRequestProof.writeAndExit()
+        }
+        if let screen = LaunchMode.screen, screen.hasPrefix("guest-") {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            model.history = []
+            model.laterVideos = []
+            model.later = []
+            model.favFolders = []
+            model.selectedTab = 2
+            switch screen {
+            case "guest-later": model.open(.feature("稍后再看"))
+            case "guest-fav": model.open(.feature("我的收藏"))
+            default: model.open(.feature("观看记录"))
+            }
+            return
+        }
         if LaunchMode.perfScroll {
             await LaunchClock.waitForFirstFrame()
             await model.loadRecommend(reset: true)
@@ -71,10 +89,24 @@ struct RootShell: View {
         if LaunchMode.usesFixtures {
             await LaunchClock.waitForFirstFrame()
             model.applyFixtures()
-            if LaunchMode.screen == "search" { model.open(.search) }
-            if LaunchMode.screen == "settings" { model.open(.settings) }
-            if LaunchMode.screen == "login" { model.open(.login) }
-            if LaunchMode.screen == "video", let first = model.feed.first { model.open(.video(first.bvid)) }
+            switch LaunchMode.screen {
+            case "search": model.open(.search)
+            case "settings": model.open(.settings)
+            case "login": model.open(.login)
+            case "video", "favsheet":
+                if let first = model.feed.first { model.open(.video(first.bvid)) }
+            case "history":
+                model.selectedTab = 2
+                model.open(.feature("观看记录"))
+            case "later":
+                model.selectedTab = 2
+                model.open(.feature("稍后再看"))
+            case "fav":
+                model.selectedTab = 2
+                model.open(.feature("我的收藏"))
+            default:
+                break
+            }
             return
         }
         if LaunchMode.screen == "playback" {
@@ -142,7 +174,14 @@ struct RootShell: View {
         case .setting(let name): SettingDetail(name: name)
         case .messages: InboxView()
         case .login: LoginGate()
-        case .feature(let title): FeaturePageView(title: title)
+        case .feature(let title):
+            switch title {
+            case "观看记录": HistoryListView()
+            case "稍后再看": WatchLaterListView()
+            case "我的收藏": FavoritesView()
+            default: FeaturePageView(title: title)
+            }
+        case .folder(let id): FolderContentsView(mediaID: id)
         case .user(let mid, let name): MemberPage(mid: mid, name: name)
         }
     }

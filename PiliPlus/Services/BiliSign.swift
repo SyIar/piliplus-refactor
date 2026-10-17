@@ -16,9 +16,10 @@ enum InsecureMD5 {
 
 enum PercentEncoding {
     /// `encodeURIComponent` / Dart `Uri.encodeComponent`.
+    /// The allowed set is ASCII on purpose: `CharacterSet.alphanumerics` also
+    /// contains non-ASCII letters, which would leave a folder title unescaped.
     static func encodeURIComponent(_ text: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-_.!~*'()")
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
         return text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text
     }
 }

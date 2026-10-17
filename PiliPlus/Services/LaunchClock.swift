@@ -120,10 +120,18 @@ enum LaunchMode {
 
     static var perfStartup: Bool { args.contains("-perfStartup") }
     static var perfScroll: Bool { args.contains("-perfScroll") }
+    static var accountPreview: Bool {
+        switch screen {
+        case "history", "later", "fav", "favsheet": return true
+        default: return false
+        }
+    }
+
     static var usesFixtures: Bool {
         if screen == "playback" || screen == "home" || screen == "rank" || screen == "bangumi" || screen == "cinema" {
             return false
         }
+        if screen == "accountProof" || screen?.hasPrefix("guest-") == true { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }

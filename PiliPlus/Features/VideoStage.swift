@@ -25,7 +25,6 @@ struct VideoStage: View {
     @State private var draft = ""
     @State private var alsoLike = true
     @State private var coinPick = 1
-    @State private var folder = "默认收藏夹"
     private var progress: Double {
         seeking ? localProgress : model.playbackSeconds
     }
@@ -61,6 +60,7 @@ struct VideoStage: View {
             if LaunchMode.usesFixtures, let cached = model.video(bvid) {
                 video = cached
                 related = Array(model.feed.prefix(4))
+                if LaunchMode.screen == "favsheet" { showFav = true }
                 return
             }
             await load()
@@ -69,6 +69,16 @@ struct VideoStage: View {
         .sheet(isPresented: $showShare) { shareSheet }
         .sheet(isPresented: $showCoin) { coinSheet }
         .sheet(isPresented: $showFav) { favSheet }
+        .onChange(of: showFav) { _, shown in
+            guard shown, LaunchMode.screen == "favsheet" else { return }
+            AccountUIProof.record([
+                "prompt": false,
+                "sheet": true,
+                "folders": model.favFolders.count,
+                "titles": model.favFolders.map(\.title),
+                "error": ""
+            ])
+        }
         .sheet(isPresented: $showQuality) { qualitySheet }
         .sheet(isPresented: $showAudio) { audioSheet }
         .sheet(isPresented: $showDanmaku) { danmakuSheet }
@@ -433,31 +443,11 @@ struct VideoStage: View {
     }
 
     private var favSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(model.favFolders, id: \.self) { name in
-                    Button {
-                        folder = name
-                        if let video { model.favorite(video.bvid, folder: name) }
-                        showFav = false
-                    } label: {
-                        HStack {
-                            Text(name)
-                            Spacer()
-                            if folder == name { Image(systemName: "checkmark") }
-                        }
-                    }
-                }
-                Button("新建收藏夹") {
-                    model.favFolders.append("新建收藏夹 \(model.favFolders.count)")
-                    model.show("已新建收藏夹")
-                }
+        Group {
+            if let video {
+                FavPickerSheet(video: video)
             }
-            .navigationTitle("收藏到")
-            .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
     }
 
     private var qualitySheet: some View {
@@ -1023,9 +1013,18 @@ struct VideoActionRow: View {
                 showCoin = true
             }
             ActionChip(system: model.favored.contains(video.bvid) ? "star.fill" : "star", title: CountText.format(video.favorite), selected: model.favored.contains(video.bvid)) {
-                if model.flag("快速收藏") { model.favorite(video.bvid, folder: model.favFolders[0]) } else { showFav = true }
+                if LaunchMode.accountPreview {
+                    showFav = true
+                    return
+                }
+                guard model.requireLogin("收藏") else { return }
+                if model.flag("快速收藏") { model.favoriteQuick(video) } else { showFav = true }
             }
-            .simultaneousGesture(LongPressGesture().onEnded { _ in showFav = true })
+            .simultaneousGesture(LongPressGesture().onEnded { _ in
+                if LaunchMode.accountPreview || model.requireLogin("收藏") {
+                    showFav = true
+                }
+            })
             ActionChip(system: model.later.contains(video.bvid) ? "clock.fill" : "clock", title: "再看", selected: model.later.contains(video.bvid)) {
                 model.watchLater(video.bvid)
             }

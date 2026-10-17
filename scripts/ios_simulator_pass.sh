@@ -378,10 +378,128 @@ if int(data.get("imageMisses", 1)) != 0 or int(data.get("preparedCovers", 0)) < 
 PY
 }
 
+capture_account_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/account-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen accountProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing account request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/account-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "like": ("POST", "/x/web-interface/archive/like", "aid=42&csrf=jct-token&like=1", True),
+    "unlike": ("POST", "/x/web-interface/archive/like", "aid=42&csrf=jct-token&like=2", True),
+    "coin-2-like": ("POST", "/x/web-interface/coin/add", "aid=7&csrf=jct-token&multiply=2&select_like=1", True),
+    "coin-1": ("POST", "/x/web-interface/coin/add", "aid=7&csrf=jct-token&multiply=1&select_like=0", True),
+    "coin-clamp": ("POST", "/x/web-interface/coin/add", "aid=7&csrf=jct-token&multiply=1&select_like=0", True),
+    "triple": ("POST", "/x/web-interface/archive/like/triple", "aid=9&csrf=jct-token", True),
+    "history-delete": ("POST", "/x/v2/history/delete", "csrf=jct-token&kid=archive_100", True),
+    "history-clear": ("POST", "/x/v2/history/clear", "csrf=jct-token", True),
+    "history-pause": ("POST", "/x/v2/history/shadow/set", "csrf=jct-token&switch=true", True),
+    "history-resume": ("POST", "/x/v2/history/shadow/set", "csrf=jct-token&switch=false", True),
+    "later-add": ("POST", "/x/v2/history/toview/add", "aid=5&csrf=jct-token", True),
+    "later-del": ("POST", "/x/v2/history/toview/del", "aid=5&csrf=jct-token", True),
+    "later-clear": ("POST", "/x/v2/history/toview/clear", "csrf=jct-token", True),
+    "fav-deal": ("POST", "/x/v3/fav/resource/deal", "add_media_ids=11%2C22&csrf=jct-token&del_media_ids=33&rid=8&type=2", True),
+    "fav-add": ("POST", "/x/v3/fav/folder/add", "csrf=jct-token&privacy=0&title=%E5%AD%A6%E4%B9%A0", True),
+    "history-list": ("GET", "/x/web-interface/history/cursor", "business=&max=0&ps=20&view_at=0", False),
+    "history-page": ("GET", "/x/web-interface/history/cursor", "business=archive&max=900&ps=20&view_at=1600000000", False),
+    "history-shadow": ("GET", "/x/v2/history/shadow", "", False),
+    "later-list": ("GET", "/x/v2/history/toview", "", False),
+    "fav-folders": ("GET", "/x/v3/fav/folder/created/list-all", "up_mid=99", False),
+    "fav-folders-rid": ("GET", "/x/v3/fav/folder/created/list-all", "rid=8&type=2&up_mid=99", False),
+    "fav-contents": ("GET", "/x/v3/fav/resource/list", "media_id=11&pn=2&ps=20", False),
+}
+print(f"account proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("account request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"account cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+    if csrf and "csrf=jct-token" not in item["body"]:
+        raise SystemExit(f"{name} missing csrf")
+    if not csrf and "csrf" in item["body"]:
+        raise SystemExit(f"{name} unexpected csrf")
+print(f"account request proof ok ({len(expect)} cases)")
+PY
+}
+
+capture_account_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/account-ui.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  # The fav sheet is the one animated presentation. Lists are already on screen.
+  if [[ "$screen" == "favsheet" ]]; then sleep 2; else sleep 1; fi
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing account ui proof for ${screen}" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("prompt", "rows", "folders", "sheet", "error", "titles")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} showed an error: {data.get('error')}")
+if screen.startswith("guest"):
+    ok = data.get("prompt") is True and int(data.get("rows") or 0) == 0 and int(data.get("folders") or 0) == 0
+elif screen == "history":
+    ok = data.get("prompt") is False and int(data.get("rows") or 0) >= 4
+elif screen == "later":
+    ok = data.get("prompt") is False and int(data.get("rows") or 0) >= 4
+elif screen == "fav":
+    ok = data.get("prompt") is False and int(data.get("folders") or 0) >= 3
+elif screen == "favsheet":
+    titles = data.get("titles") or []
+    ok = data.get("sheet") is True and int(data.get("folders") or 0) >= 3 and "默认收藏夹" in titles and "学习" in titles
+else:
+    ok = False
+print(f"{screen} ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} ui proof rejected")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
+account_status=0
+capture_account_proof || account_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     capture_playback
@@ -389,6 +507,10 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
   fi
   if [[ "$screen" == "home" || "$screen" == "rank" || "$screen" == "bangumi" || "$screen" == "cinema" ]]; then
     capture_catalog "$screen" || catalog_status=1
+    continue
+  fi
+  if [[ "$screen" == "history" || "$screen" == "later" || "$screen" == "fav" || "$screen" == "favsheet" || "$screen" == guest-* ]]; then
+    capture_account_ui "$screen" || account_status=1
     continue
   fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
@@ -401,8 +523,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 ]]; then
-  echo "home data or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 ]]; then
+  echo "home data, account lists, or warm scroll check failed" >&2
   exit 1
 fi
 
