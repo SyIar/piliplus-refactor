@@ -4,107 +4,65 @@ struct HomeFeed: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
         pages
-            .background { AuroraBackdrop() }
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle("首页")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { HomeToolbar() }
     }
 
     @ViewBuilder
     private var pages: some View {
         switch model.homeTab {
         case "直播":
-            LivePlaza().feedChrome { HomeChrome(collapse: 0) }
+            LivePlaza().homeTabBar()
         case "热门":
-            HotPage().feedChrome { HomeChrome(collapse: 0) }
+            HotPage().homeTabBar()
         case "分区":
-            RankPage().feedChrome { HomeChrome(collapse: 0) }
+            RankPage().homeTabBar()
         case "番剧":
-            PGCPage(kind: "番剧").feedChrome { HomeChrome(collapse: 0) }
+            PGCPage(kind: "番剧").homeTabBar()
         case "影视":
-            PGCPage(kind: "影视").feedChrome { HomeChrome(collapse: 0) }
+            PGCPage(kind: "影视").homeTabBar()
         default:
             RecommendPage()
         }
     }
 }
 
-/// Search row plus the home tabs. Only the search row tracks scroll.
-private struct HomeChrome: View {
-    var collapse: CGFloat
-
-    var body: some View {
-        VStack(spacing: 0) {
-            CollapsingSearchRow(progress: collapse)
-            HomeTabStrip()
-        }
-    }
-}
-
-/// Height follows scroll progress. The value is already eased, and animations
-/// are disabled so the row cannot finish the move after the finger has stopped.
-private struct CollapsingSearchRow: View {
-    var progress: CGFloat
-    static let full: CGFloat = 48
-
-    var body: some View {
-        SearchRow()
-            .frame(height: Self.full, alignment: .top)
-            .offset(y: -Self.full * progress)
-            .frame(height: max(0, Self.full * (1 - progress)), alignment: .top)
-            .clipped()
-            .opacity(1 - Double(progress))
-            .accessibilityHidden(progress > 0.98)
-    }
-}
-
-private struct SearchRow: View {
+private struct HomeToolbar: ToolbarContent {
     @Environment(AppModel.self) private var model
 
-    var body: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 10) {
-                Button { model.open(.search) } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                        Text(model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索")
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .font(.subheadline)
-                    .padding(.horizontal, 14)
-                    .frame(height: 42)
-                }
-                .buttonStyle(.plain)
-                .glassCapsule(interactive: false)
-                .accessibilityLabel("搜索")
-                GlassIconButton(system: "bell", badge: model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0) {
-                    model.open(.messages)
-                }
-                .accessibilityLabel("消息")
-                Button {
-                    if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
-                } label: {
-                    avatar
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("个人资料")
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                model.open(.messages)
+            } label: {
+                Image(systemName: "bell")
             }
+            .badge(model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0)
+            .accessibilityLabel("消息")
+            ToolbarSpacer(.fixed)
+            Button {
+                if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
+            } label: {
+                Text(String(model.userName.prefix(1)))
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .background(Palette.bili.gradient, in: Circle())
+                    .foregroundStyle(.white)
+            }
+            .accessibilityLabel("个人资料")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 2)
-        .padding(.bottom, 2)
     }
+}
 
-    private var avatar: some View {
-        ZStack {
-            Circle().fill(Palette.bili.gradient)
-            Text(String(model.userName.prefix(1)))
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
+private extension View {
+    /// Fixed-height category strip under the system bar. Height does not animate.
+    func homeTabBar() -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            HomeTabStrip()
+                .background(Color(.systemBackground))
         }
-        .frame(width: 40, height: 40)
     }
 }
 
@@ -150,14 +108,12 @@ private struct RecommendPage: View {
         }
     }
 
-    /// The search row is part of the scroll content, so it leaves and returns
-    /// with the feed. Animating the safe-area height to fake that move cost
-    /// several 200 ms frames. The tab strip stays pinned.
+    /// Category tabs stay pinned. Search lives in the system search tab, so this
+    /// scroll view does not resize a glass bar while the bench is running.
     @ViewBuilder
     private var scroller: some View {
         if model.flag("首页顶栏收起") {
             ScrollView {
-                SearchRow()
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         RecommendGrid()
@@ -165,13 +121,12 @@ private struct RecommendPage: View {
                             .padding(.bottom, 12)
                     } header: {
                         HomeTabStrip()
-                            .background(Color(.systemBackground).opacity(0.94))
+                            .background(Color(.systemBackground))
                     }
                 }
             }
             .refreshable { await model.refreshHome() }
-            .scrollEdgeEffectStyle(.soft, for: .top)
-            .scrollEdgeEffectStyle(.soft, for: .bottom)
+            .scrollEdgeSoft()
         } else {
             ScrollView {
                 RecommendGrid()
@@ -179,7 +134,8 @@ private struct RecommendPage: View {
                     .padding(.bottom, 12)
             }
             .refreshable { await model.refreshHome() }
-            .feedChrome { HomeChrome(collapse: 0) }
+            .scrollEdgeSoft()
+            .homeTabBar()
         }
     }
 
@@ -267,6 +223,7 @@ struct HotPage: View {
             .padding(16)
         }
         .refreshable { await model.refreshHome() }
+        .scrollEdgeSoft()
     }
 
     private func entry(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
@@ -308,6 +265,7 @@ struct RankPage: View {
                 }
                 .padding(16)
             }
+            .scrollEdgeSoft()
         }
     }
 }
@@ -351,6 +309,7 @@ struct PGCPage: View {
             }
             .padding(16)
         }
+        .scrollEdgeSoft()
     }
 }
 
@@ -417,5 +376,6 @@ struct LivePlaza: View {
             .padding(16)
         }
         .refreshable { await model.refreshHome() }
+        .scrollEdgeSoft()
     }
 }

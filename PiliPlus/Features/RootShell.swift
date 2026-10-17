@@ -5,35 +5,49 @@ struct RootShell: View {
 
     var body: some View {
         @Bindable var model = model
-        NavigationStack(path: $model.path) {
-            TabView(selection: $model.selectedTab) {
-                Tab("首页", systemImage: "house.fill", value: 0) {
+        TabView(selection: $model.selectedTab) {
+            Tab("首页", systemImage: "house.fill", value: 0) {
+                NavigationStack(path: $model.homePath) {
                     HomeFeed()
-                }
-                Tab("动态", systemImage: "dot.radiowaves.left.and.right", value: 1) {
-                    if model.selectedTab == 1 {
-                        DynamicsFeed()
-                    } else {
-                        Color.clear
-                    }
-                }
-                .badge(model.flag("动态未读标记") ? 1 : 0)
-                Tab("我的", systemImage: "person.fill", value: 2) {
-                    if model.selectedTab == 2 {
-                        MineSpace()
-                    } else {
-                        Color.clear
-                    }
+                        .navigationDestination(for: Route.self) { destination($0) }
                 }
             }
-            .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
-            .tabViewBottomAccessory {
-                if let video = model.nowPlaying {
-                    NowPlayingPill(video: video)
+            Tab("动态", systemImage: "dot.radiowaves.left.and.right", value: 1) {
+                NavigationStack(path: $model.dynamicsPath) {
+                    Group {
+                        if model.selectedTab == 1 {
+                            DynamicsFeed()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .navigationDestination(for: Route.self) { destination($0) }
                 }
             }
-            .navigationDestination(for: Route.self) { route in
-                destination(route)
+            .badge(model.flag("动态未读标记") ? 1 : 0)
+            Tab("我的", systemImage: "person.fill", value: 2) {
+                NavigationStack(path: $model.minePath) {
+                    Group {
+                        if model.selectedTab == 2 {
+                            MineSpace()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .navigationDestination(for: Route.self) { destination($0) }
+                }
+            }
+            Tab("搜索", systemImage: "magnifyingglass", value: 3, role: .search) {
+                NavigationStack(path: $model.searchPath) {
+                    SearchStudio()
+                        .navigationDestination(for: Route.self) { destination($0) }
+                }
+            }
+        }
+        .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
+        .tabViewBottomAccessory {
+            if let video = model.nowPlaying {
+                NowPlayingPill(video: video)
             }
         }
         .overlay(alignment: .top) {
@@ -87,7 +101,7 @@ struct NowPlayingPill: View {
             HStack(spacing: 10) {
                 RemoteImage(url: video.cover, ratio: 1, maxPixel: 120)
                     .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .clipShape(ConcentricRectangle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text(video.title).font(.footnote.weight(.semibold)).lineLimit(1)
                     Text(model.isPlaying ? "正在播放 · \(video.ownerName)" : "已暂停 · \(video.ownerName)")

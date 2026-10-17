@@ -11,66 +11,55 @@ struct SearchStudio: View {
     @State private var zone = "全部"
     @State private var pub = "不限"
     @State private var showFilter = false
-    @FocusState private var focused: Bool
+
+    private var prompt: String {
+        model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索"
+    }
 
     var body: some View {
         ScrollView {
-            if keyword.isEmpty { discover } else { resultList }
+            VStack(alignment: .leading, spacing: 12) {
+                tabStrip
+                if keyword.isEmpty { discover } else { resultList }
+            }
         }
-        .feedChrome { searchChrome }
-        .background { AuroraBackdrop() }
+        .scrollEdgeSoft()
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $keyword, prompt: prompt) {
+            if model.flag("搜索建议"), !keyword.isEmpty {
+                ForEach(model.hotwords.filter { $0.show.localizedCaseInsensitiveContains(keyword) || $0.keyword.localizedCaseInsensitiveContains(keyword) }) { word in
+                    Text(word.show).searchCompletion(word.keyword)
+                }
+            }
+        }
+        .onSubmit(of: .search) { Task { await run() } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("筛选", systemImage: "line.3.horizontal.decrease") { showFilter = true }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("搜索") { Task { await run() } }
+                    .fontWeight(.bold)
+            }
+        }
         .sheet(isPresented: $showFilter) { filterSheet }
-        .task { if LaunchMode.screen == nil { focused = true } }
     }
 
-    private var searchChrome: some View {
-        VStack(spacing: 0) {
+    private var tabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                    TextField("搜索视频、番剧、UP 主", text: $keyword)
-                        .focused($focused)
-                        .submitLabel(.search)
-                        .onSubmit { Task { await run() } }
-                    if !keyword.isEmpty {
-                        Button { keyword = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain)
-                    }
+                ForEach(Menus.searchTabs, id: \.self) { item in
+                    Button(item) { tab = item; Task { await run() } }
+                        .font(.caption.weight(tab == item ? .bold : .regular))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .foregroundStyle(tab == item ? Color.white : Color.primary)
+                        .selectionCapsule(selected: tab == item)
                 }
-                .padding(.horizontal, 12)
-                .frame(height: 40)
-                .glassCapsule(interactive: false)
-                Button("搜索") { Task { await run() } }
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Palette.bili)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 4)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Menus.searchTabs, id: \.self) { item in
-                        Button(item) { tab = item; Task { await run() } }
-                            .font(.caption.weight(tab == item ? .bold : .regular))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .foregroundStyle(tab == item ? Color.white : Color.primary)
-                            .selectionCapsule(selected: tab == item)
-                    }
-                    Button { showFilter = true } label: {
-                        Label("筛选", systemImage: "line.3.horizontal.decrease")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .glassCapsule(interactive: true)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-            }
-            .frame(height: 52)
+            .padding(.top, 8)
         }
     }
 
@@ -168,6 +157,8 @@ struct SearchStudio: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
     }
 
     private func picker(_ title: String, _ options: [String], _ binding: Binding<String>) -> some View {

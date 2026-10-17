@@ -31,8 +31,6 @@ struct SettingsStudio: View {
             }
         }
         .navigationTitle("设置")
-        .scrollContentBackground(.hidden)
-        .background(AuroraBackdrop())
     }
 }
 
@@ -71,8 +69,6 @@ struct SettingDetail: View {
             }
         }
         .navigationTitle(name)
-        .scrollContentBackground(.hidden)
-        .background(AuroraBackdrop())
         .sheet(item: $editor) { row in
             editorSheet(row)
         }
@@ -137,6 +133,8 @@ struct SettingDetail: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
     }
 
     private func applySideEffect(_ title: String, bool: Bool? = nil, text: String? = nil) {
@@ -180,8 +178,7 @@ struct FeaturePageView: View {
 
     var body: some View {
         let page = Menus.pages.first { $0.title == title }
-        ZStack {
-            AuroraBackdrop()
+        Group {
             if title == "全部页面" {
                 allPages
             } else {
@@ -210,6 +207,7 @@ struct FeaturePageView: View {
                     }
                     .padding(16)
                 }
+                .scrollEdgeSoft()
             }
         }
         .navigationTitle(title)
@@ -234,7 +232,6 @@ struct FeaturePageView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
     }
 
     private func perform(_ action: String) {
@@ -257,9 +254,7 @@ struct MemberPage: View {
     let name: String
     @State private var tab = "投稿"
     var body: some View {
-        ZStack {
-            AuroraBackdrop()
-            ScrollView {
+        ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 12) {
                         Circle().fill(Palette.bili.gradient).frame(width: 64, height: 64)
@@ -296,8 +291,8 @@ struct MemberPage: View {
                     }
                 }
                 .padding(16)
-            }
         }
+        .scrollEdgeSoft()
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -343,12 +338,16 @@ struct LiveStage: View {
                 }
                 HStack(spacing: 8) {
                     TextField("发个弹幕…", text: $text)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal, 12)
-                        .frame(height: 40)
-                        .glassCapsule()
-                    GlassIconButton(system: "face.smiling") { showEmote = true }
-                    Button("发送") { send() }.font(.subheadline.weight(.bold)).foregroundStyle(Palette.bili)
+                        .textFieldStyle(.roundedBorder)
+                    Button { showEmote = true } label: {
+                        Image(systemName: "face.smiling")
+                    }
+                    .buttonStyle(.glass)
+                    .accessibilityLabel("表情")
+                    Button("发送") { send() }
+                        .font(.subheadline.weight(.bold))
+                        .buttonStyle(.borderedProminent)
+                        .tint(Palette.bili)
                 }
                 .padding(.horizontal, 12)
                 HStack {
@@ -424,9 +423,7 @@ struct InboxView: View {
                     Button { model.open(.feature("私信")) } label: { Label("私信", systemImage: "envelope") }
                 }
             }
-            .scrollContentBackground(.hidden)
         }
-        .background(AuroraBackdrop())
         .navigationTitle("消息")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -494,7 +491,7 @@ struct LoginGate: View {
                             .font(.system(size: 88))
                             .foregroundStyle(Palette.bili)
                             .padding(24)
-                            .glassCard(radius: 28)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
                         Text("用哔哩哔哩 App 扫码").font(.caption).foregroundStyle(.secondary)
                         Button("我已在手机上确认") { finish(name: "扫码用户") }
                     }
@@ -515,13 +512,13 @@ struct LoginGate: View {
             Spacer()
         }
         .padding(20)
-        .background(AuroraBackdrop())
+        .background(Color(.systemBackground))
         .navigationTitle("登录")
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private func finish(name: String) {
         model.login(as: name)
-        if !model.path.isEmpty { model.path.removeLast() }
+        model.pop()
     }
 }

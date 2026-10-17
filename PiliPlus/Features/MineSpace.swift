@@ -1,5 +1,32 @@
 import SwiftUI
 
+private struct MineToolbar: ToolbarContent {
+    @Environment(AppModel.self) private var model
+
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("搜索", systemImage: "magnifyingglass") { model.open(.search) }
+            Button("我的评论", systemImage: "text.bubble") { model.open(.feature("我的评论")) }
+            ToolbarSpacer(.fixed)
+            Button(model.anonymity ? "退出无痕" : "无痕模式", systemImage: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
+                guard model.loggedIn else { model.open(.login); return }
+                model.anonymity.toggle()
+                model.save()
+                model.show(model.anonymity ? "已进入无痕模式\n搜索不携带身份\n不产生播放记录" : "已退出无痕模式")
+            }
+            Button("主题", systemImage: "circle.lefthalf.filled") {
+                let order: [ThemeChoice] = [.system, .light, .dark, .black]
+                let index = order.firstIndex(of: model.theme) ?? 0
+                model.theme = order[(index + 1) % order.count]
+                model.values["主题模式"] = model.theme.label
+                model.save()
+                model.show("切换至\(model.theme.label)主题")
+            }
+            Button("设置", systemImage: "gearshape") { model.open(.settings) }
+        }
+    }
+}
+
 struct MineSpace: View {
     @Environment(AppModel.self) private var model
     @State private var card = "我的收藏"
@@ -15,40 +42,10 @@ struct MineSpace: View {
             .padding(16)
             .padding(.bottom, 12)
         }
-        .feedChrome { header }
-        .background { AuroraBackdrop() }
-        .toolbar(.hidden, for: .navigationBar)
-    }
-
-    private var header: some View {
-        GlassEffectContainer(spacing: 4) {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                GlassIconButton(system: "magnifyingglass") { model.open(.search) }
-                    .accessibilityLabel("搜索")
-                GlassIconButton(system: "text.bubble") { model.open(.feature("我的评论")) }
-                    .accessibilityLabel("我的评论")
-                GlassIconButton(system: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
-                guard model.loggedIn else { model.open(.login); return }
-                model.anonymity.toggle()
-                model.save()
-                model.show(model.anonymity ? "已进入无痕模式\n搜索不携带身份\n不产生播放记录" : "已退出无痕模式")
-            }
-            GlassIconButton(system: "circle.lefthalf.filled") {
-                let order: [ThemeChoice] = [.system, .light, .dark, .black]
-                let index = order.firstIndex(of: model.theme) ?? 0
-                model.theme = order[(index + 1) % order.count]
-                model.values["主题模式"] = model.theme.label
-                model.save()
-                model.show("切换至\(model.theme.label)主题")
-            }
-            GlassIconButton(system: "gearshape") { model.open(.settings) }
-                .accessibilityLabel("设置")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 2)
-        .padding(.bottom, 4)
+        .scrollEdgeSoft()
+        .navigationTitle("我的")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { MineToolbar() }
     }
 
     private var stats: some View {

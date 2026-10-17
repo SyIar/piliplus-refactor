@@ -36,7 +36,7 @@ struct VideoStage: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            (fullscreen ? Color.black : Color(.systemBackground)).ignoresSafeArea()
             if let video {
                 stage(video)
             } else if !error.isEmpty {
@@ -76,8 +76,7 @@ struct VideoStage: View {
                 below(video)
             }
         }
-        .background(fullscreen ? Color.black : Color.clear)
-        .background { if !fullscreen { AuroraBackdrop() } }
+        .background(fullscreen ? Color.black : Color(.systemBackground))
     }
 
     private func player(_ video: VideoItem) -> some View {
@@ -97,33 +96,23 @@ struct VideoStage: View {
                     .font(.headline.monospacedDigit())
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .glassCapsule(interactive: false)
+                    .glassEffect(.regular, in: Capsule())
             }
-            if !locked {
-                PlayerControls(
-                    video: video,
-                    fullscreen: $fullscreen,
-                    seeking: $seeking,
-                    localProgress: $localProgress,
-                    showMore: $showMore,
-                    showSpeed: $showSpeed,
-                    showQuality: $showQuality,
-                    showDanmaku: $showDanmaku,
-                    locked: $locked,
-                    coinPick: $coinPick,
-                    showCoin: $showCoin,
-                    showFav: $showFav,
-                    showShare: $showShare
-                )
-            }
-            if locked {
-                Button { locked = false } label: {
-                    Image(systemName: "lock.fill").padding(12)
-                }
-                .glassCapsule()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .padding()
-            }
+            PlayerControls(
+                video: video,
+                fullscreen: $fullscreen,
+                seeking: $seeking,
+                localProgress: $localProgress,
+                showMore: $showMore,
+                showSpeed: $showSpeed,
+                showQuality: $showQuality,
+                showDanmaku: $showDanmaku,
+                locked: $locked,
+                coinPick: $coinPick,
+                showCoin: $showCoin,
+                showFav: $showFav,
+                showShare: $showShare
+            )
         }
         .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 0, style: .continuous))
         .gesture(playerDrag(video))
@@ -270,16 +259,17 @@ struct VideoStage: View {
             }
             .padding(16)
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaBar(edge: .bottom, spacing: 8) {
             HStack {
                 TextField(model.flag("记录评论") ? "友善评论…" : "发一条评论", text: $draft)
-                    .textFieldStyle(.plain)
-                Button("发送") { sendReply(nil) }.font(.subheadline.weight(.bold)).foregroundStyle(Palette.bili)
+                    .textFieldStyle(.roundedBorder)
+                Button("发送") { sendReply(nil) }
+                    .font(.subheadline.weight(.bold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(Palette.bili)
             }
-            .padding(12)
-            .glassCard(radius: 22)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
     }
 
@@ -437,6 +427,7 @@ struct VideoStage: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     private var favSheet: some View {
@@ -464,6 +455,7 @@ struct VideoStage: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     private var qualitySheet: some View {
@@ -500,6 +492,8 @@ struct VideoStage: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
     }
 
     private func replySheet(_ comment: CommentItem) -> some View {
@@ -599,6 +593,7 @@ struct DanmakuLayer: View {
 
 struct PlayerControls: View {
     @Environment(AppModel.self) private var model
+    @Namespace private var transportGlass
     let video: VideoItem
     @Binding var fullscreen: Bool
     @Binding var seeking: Bool
@@ -618,6 +613,25 @@ struct PlayerControls: View {
     }
 
     var body: some View {
+        GlassEffectContainer(spacing: 12) {
+            if locked {
+                Button { locked = false } label: {
+                    Image(systemName: "lock.fill")
+                        .padding(12)
+                }
+                .buttonStyle(.glass)
+                .glassEffectID("transport", in: transportGlass)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .padding()
+            } else {
+                controls
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.smooth(duration: 0.32), value: locked)
+    }
+
+    private var controls: some View {
         VStack {
             HStack {
                 if model.flag("观看人数") {
@@ -677,7 +691,8 @@ struct PlayerControls: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .glassEffect(.clear, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .glassEffect(.clear, in: ConcentricRectangle())
+            .glassEffectID("transport", in: transportGlass)
             .padding(8)
             if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
                 VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)

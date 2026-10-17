@@ -30,7 +30,11 @@ enum ThemeChoice: String, CaseIterable, Identifiable {
 @Observable
 final class AppModel {
     let client = BiliClient()
-    var path = NavigationPath()
+    /// Each tab owns its stack. A single path outside `TabView` cannot host a search-role tab.
+    var homePath = NavigationPath()
+    var dynamicsPath = NavigationPath()
+    var minePath = NavigationPath()
+    var searchPath = NavigationPath()
     var toast: String?
     var feed: [VideoItem] = []
     var hot: [VideoItem] = []
@@ -161,7 +165,25 @@ final class AppModel {
     }
 
     func open(_ route: Route) {
-        path.append(route)
+        if case .search = route {
+            selectedTab = 3
+            return
+        }
+        switch selectedTab {
+        case 1: dynamicsPath.append(route)
+        case 2: minePath.append(route)
+        case 3: searchPath.append(route)
+        default: homePath.append(route)
+        }
+    }
+
+    func pop() {
+        switch selectedTab {
+        case 1: if !dynamicsPath.isEmpty { dynamicsPath.removeLast() }
+        case 2: if !minePath.isEmpty { minePath.removeLast() }
+        case 3: if !searchPath.isEmpty { searchPath.removeLast() }
+        default: if !homePath.isEmpty { homePath.removeLast() }
+        }
     }
 
     func show(_ text: String) {

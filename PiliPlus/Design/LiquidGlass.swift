@@ -6,67 +6,12 @@ enum Palette {
     static let ink = Color(red: 0.07, green: 0.07, blue: 0.09)
 }
 
-struct AuroraBackground: View, Equatable {
-    var scheme: ColorScheme
-
-    static func == (lhs: AuroraBackground, rhs: AuroraBackground) -> Bool {
-        lhs.scheme == rhs.scheme
-    }
-
-    var body: some View {
-        ZStack {
-            (scheme == .dark ? Palette.ink : Color(red: 0.95, green: 0.95, blue: 0.97))
-            RadialGradient(
-                colors: [Palette.bili.opacity(scheme == .dark ? 0.38 : 0.24), .clear],
-                center: .topTrailing,
-                startRadius: 12,
-                endRadius: 460
-            )
-            RadialGradient(
-                colors: [Color(red: 0.36, green: 0.55, blue: 1).opacity(scheme == .dark ? 0.28 : 0.16), .clear],
-                center: .bottomLeading,
-                startRadius: 8,
-                endRadius: 520
-            )
-        }
-        .ignoresSafeArea()
-        .drawingGroup(opaque: false)
-        .allowsHitTesting(false)
-    }
-}
-
-struct AuroraBackdrop: View {
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        AuroraBackground(scheme: scheme).equatable()
-    }
-}
-
 extension View {
-    @ViewBuilder
-    func liquidGlass<S: Shape>(
-        _ glass: Glass = .regular,
-        in shape: S,
-        interactive: Bool = false
-    ) -> some View {
-        let styled: Glass = interactive ? glass.interactive() : glass
-        self.glassEffect(styled, in: shape)
-    }
-
-    func glassCard(radius: CGFloat = 28, interactive: Bool = false) -> some View {
-        liquidGlass(in: RoundedRectangle(cornerRadius: radius, style: .continuous), interactive: interactive)
-    }
-
-    func glassCapsule(interactive: Bool = true) -> some View {
-        liquidGlass(in: Capsule(), interactive: interactive)
-    }
-
-    /// Opaque plate for scrolling content. Liquid Glass stays on bars and controls.
+    /// Opaque plate for scrolling content. Liquid Glass stays on system bars and controls.
     func contentPlate(radius: CGFloat = 22) -> some View {
         background {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(Color(.secondarySystemBackground).opacity(0.94))
+                .fill(Color(.secondarySystemBackground))
                 .overlay {
                     RoundedRectangle(cornerRadius: radius, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
@@ -84,42 +29,11 @@ extension View {
         }
     }
 
-    /// Registers a custom top bar so the feed can scroll under it with an edge effect.
-    /// The bar is fixed to its ideal height. A horizontal scroller or glass container
-    /// inside it would otherwise accept the full proposed height and push the feed down.
-    func feedChrome<Bar: View>(@ViewBuilder bar: () -> Bar) -> some View {
-        safeAreaBar(edge: .top, spacing: 0) {
-            bar()
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .scrollEdgeEffectStyle(.soft, for: .vertical)
-    }
-}
-
-struct GlassIconButton: View {
-    let system: String
-    var badge: Int = 0
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: system)
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 40, height: 40)
-                .overlay(alignment: .topTrailing) {
-                    if badge > 0 {
-                        Text(badge > 99 ? "99+" : "\(badge)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Palette.bili, in: Capsule())
-                            .offset(x: 6, y: -4)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .glassCapsule()
+    /// Soft edge under system bars. Axis is `.top` / `.bottom`; `.vertical` is not a scroll-edge set.
+    func scrollEdgeSoft() -> some View {
+        self
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 }
 
@@ -227,7 +141,7 @@ struct ToastBanner: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .glassCapsule(interactive: false)
+            .glassEffect(.regular, in: Capsule())
             .padding(.horizontal, 28)
     }
 }
