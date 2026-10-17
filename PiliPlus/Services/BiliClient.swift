@@ -104,7 +104,7 @@ struct BiliClient: Sendable {
             throw BiliError.message("弹幕地址无效")
         }
         let data = try await getData(url, includeSession: false)
-        guard let xml = RawInflate.inflate(data) else { throw BiliError.message("弹幕解压失败") }
+        guard let xml = RawInflate.expand(data) else { throw BiliError.message("弹幕解压失败") }
         return DanmakuXML.parse(xml)
     }
 

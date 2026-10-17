@@ -172,7 +172,7 @@ enum PlaybackParser {
 }
 
 enum RawInflate {
-    static func inflate(_ source: Data) -> Data? {
+    static func expand(_ source: Data) -> Data? {
         guard !source.isEmpty else { return nil }
         if looksLikeXML(source) { return source }
         return decompress(source, windowBits: -15) ?? decompress(source, windowBits: 15)
@@ -201,7 +201,7 @@ enum RawInflate {
                     guard let outBase = out.bindMemory(to: UInt8.self).baseAddress else { return Z_DATA_ERROR }
                     stream.next_out = outBase
                     stream.avail_out = uInt(chunk)
-                    let result = inflate(&stream, Z_NO_FLUSH)
+                    let result = zlib.inflate(&stream, Z_NO_FLUSH)
                     let count = chunk - Int(stream.avail_out)
                     if count > 0 {
                         output.append(outBase, count: count)
@@ -302,7 +302,7 @@ enum StreamComposer {
                 return mixed
             }
         }
-        return AVPlayerItem(asset: videoAsset)
+        return await AVPlayerItem(asset: videoAsset)
     }
 
     private static func mix(video: AVURLAsset, audio: AVURLAsset) async throws -> AVPlayerItem {
@@ -325,7 +325,7 @@ enum StreamComposer {
         try composedVideo.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: videoTrack, at: .zero)
         let audioSpan = CMTimeMinimum(duration, soundDuration)
         try composedAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioSpan), of: audioTrack, at: .zero)
-        return AVPlayerItem(asset: composition)
+        return await AVPlayerItem(asset: composition)
     }
 }
 
