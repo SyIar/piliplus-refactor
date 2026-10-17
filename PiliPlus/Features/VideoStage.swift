@@ -8,7 +8,10 @@ struct VideoStage: View {
     @State private var video: VideoItem?
     @State private var related: [VideoItem] = []
     @State private var comments: [CommentItem] = []
-    @State private var tab = "简介"
+    @State private var tab = LaunchMode.screen == "comments" ? "评论" : "简介"
+    @State private var commentPage = 1
+    @State private var commentHasMore = true
+    @State private var replyPage: [Int: Int] = [:]
     @State private var showMore = false
     @State private var showCoin = false
     @State private var showFav = false
@@ -201,6 +204,7 @@ struct VideoStage: View {
                     Button(model.values["评论展示"] == "按时间" ? "按热度" : "按时间") {
                         model.values["评论展示"] = model.values["评论展示"] == "按时间" ? "按热度" : "按时间"
                         model.save()
+                        Task { await loadComments(reset: true) }
                     }
                     .font(.caption.weight(.semibold))
                 }
@@ -212,7 +216,17 @@ struct VideoStage: View {
                         .selectionCapsule(selected: false)
                 }
                 ForEach(comments) { comment in
-                    CommentRow(comment: comment, nested: false, onReply: { replyTarget = $0 }, mention: { draft = "@\($0.name) " })
+                    CommentRow(
+                        comment: comment,
+                        nested: false,
+                        onReply: { replyTarget = $0 },
+                        mention: { draft = "@\($0.name) " },
+                        onMore: { item in Task { await loadReplies(item) } }
+                    )
+                    .onAppear {
+                        guard comment.id == comments.last?.id else { return }
+                        Task { await loadComments(reset: false) }
+                    }
                 }
                 if comments.isEmpty {
                     ContentUnavailableView("还没有评论", systemImage: "text.bubble", description: Text("或者评论区暂时关闭"))
@@ -295,16 +309,31 @@ struct VideoStage: View {
             if model.flag("默认展示评论区") { tab = "评论" }
             return
         }
+        let provingComments = LaunchMode.screen == "comments"
         do {
             var item = try await model.client.detail(bvid: bvid)
             let cid = item.pages.first?.cid ?? item.cid
+            if provingComments {
+                video = item
+                model.store(item)
+            }
             let qn = QualityMap.qn(for: model.values["默认画质"] ?? "高清 1080P")
-            let offer = try await requestPlayback(bvid: item.bvid, cid: cid, qn: qn)
-            item.apply(offer)
-            model.qualityName = offer.selectedName
-            video = item
-            model.store(item)
-            model.play(item)
+            do {
+                let offer = try await requestPlayback(bvid: item.bvid, cid: cid, qn: qn)
+                item.apply(offer)
+                model.qualityName = offer.selectedName
+                video = item
+                model.store(item)
+                model.play(item)
+            } catch {
+                let text = error.localizedDescription
+                PlaybackProof.record(seconds: 0, quality: "", codec: "", error: text)
+                if !provingComments || video == nil {
+                    self.error = text
+                    if provingComments { recordComments(error: text) }
+                    return
+                }
+            }
             await loadTracks(bvid: item.bvid, cid: cid, aid: item.aid)
             if model.flag("自动全屏") { fullscreen = true }
             if model.flag("默认展示评论区") { tab = "评论" }
@@ -312,6 +341,7 @@ struct VideoStage: View {
             let text = error.localizedDescription
             self.error = text
             PlaybackProof.record(seconds: 0, quality: "", codec: "", error: text)
+            if provingComments { recordComments(error: text) }
         }
     }
 
@@ -364,22 +394,83 @@ struct VideoStage: View {
         async let dm = model.client.danmaku(cid: cid)
         async let subs = model.client.subtitleLines(bvid: bvid, cid: cid, preference: model.values["字幕选择偏好"] ?? "自动")
         async let rel = model.client.related(bvid: bvid)
-        async let rep = model.client.replies(aid: aid)
+        if aid > 0 {
+            await loadComments(reset: true)
+        } else {
+            recordComments(error: "缺少稿件号")
+        }
         danmaku = (try? await dm) ?? []
         subtitles = await subs
         let nextRelated = (try? await rel) ?? []
         await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
         related = nextRelated
-        comments = (try? await rep) ?? []
         related.forEach(model.store)
     }
 
+    private func loadComments(reset: Bool) async {
+        guard let aid = video?.aid, aid > 0 else {
+            recordComments(error: "缺少稿件号")
+            return
+        }
+        if reset {
+            commentPage = 1
+            commentHasMore = true
+        }
+        guard commentHasMore else { return }
+        let sort = model.values["评论展示"] == "按时间" ? 0 : 1
+        let fetching = commentPage
+        do {
+            let page = try await model.client.replies(aid: aid, page: fetching, sort: sort)
+            if reset {
+                comments = page
+            } else {
+                let known = Set(comments.map(\.id))
+                comments.append(contentsOf: page.filter { !known.contains($0.id) })
+            }
+            commentHasMore = page.count >= 20
+            if commentHasMore { commentPage = fetching + 1 }
+            recordComments(error: "")
+        } catch {
+            recordComments(error: error.localizedDescription)
+        }
+    }
+
+    private func loadReplies(_ comment: CommentItem) async {
+        guard let aid = video?.aid, aid > 0 else { return }
+        let next = (replyPage[comment.id] ?? 0) + 1
+        guard let more = try? await model.client.replyThread(oid: aid, root: comment.id, page: next) else { return }
+        guard let index = comments.firstIndex(where: { $0.id == comment.id }) else { return }
+        if next == 1 {
+            comments[index].replies = more
+        } else {
+            let known = Set(comments[index].replies.map(\.id))
+            comments[index].replies.append(contentsOf: more.filter { !known.contains($0.id) })
+        }
+        replyPage[comment.id] = next
+    }
+
+    private func recordComments(error: String) {
+        guard LaunchMode.screen == "comments" else { return }
+        SocialUIProof.record([
+            "rows": comments.count,
+            "name": comments.first?.name ?? "",
+            "message": comments.first?.message ?? "",
+            "page": commentPage,
+            "error": error
+        ])
+    }
+
     private func sendReply(_ parent: CommentItem?) {
-        guard model.requireLogin("评论") else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, let aid = video?.aid, aid > 0 else { return }
+        let root = parent.map { $0.root == 0 ? $0.id : $0.root } ?? 0
+        let parentID = parent?.id ?? 0
         draft = ""
-        model.show(model.flag("发评反诈") ? "已发送，反诈检查：评论可见" : "评论已发送")
+        Task {
+            if await model.sendComment(aid: aid, message: text, root: root, parent: parentID) {
+                await loadComments(reset: true)
+            }
+        }
     }
 
     private var moreSheet: some View {
@@ -1039,6 +1130,7 @@ struct CommentRow: View {
     var nested: Bool
     var onReply: (CommentItem) -> Void
     var mention: (CommentItem) -> Void
+    var onMore: (CommentItem) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1066,9 +1158,14 @@ struct CommentRow: View {
             .foregroundStyle(.secondary)
             .buttonStyle(.plain)
             if !nested {
-                ForEach(comment.replies.prefix(2)) { child in
+                ForEach(comment.replies) { child in
                     CommentRow(comment: child, nested: true, onReply: onReply, mention: mention)
                         .padding(.leading, 20)
+                }
+                if comment.replyCount > comment.replies.count {
+                    Button("查看回复 \(CountText.format(comment.replyCount))") { onMore(comment) }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.plain)
                 }
             }
         }

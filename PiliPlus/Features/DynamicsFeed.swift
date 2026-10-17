@@ -7,27 +7,19 @@ struct DynamicsFeed: View {
 
     private let tabs = ["全部", "投稿", "番剧", "专栏", "UP"]
 
+    private var showPrompt: Bool { !model.loggedIn && !LaunchMode.usesFixtures }
+
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section {
-                    LazyVStack(spacing: 14) {
-                        if model.flag("动态页展开正在直播UP列表") && !model.lives.isEmpty && tab == "全部" {
-                            liveRow
-                        }
-                        ForEach(filtered) { item in
-                            dynamicCard(item)
-                        }
-                    }
-                    .padding(.bottom, 12)
-                } header: {
-                    tabStrip
-                        .background(Color(.systemBackground))
-                }
+        Group {
+            if showPrompt {
+                LoginPrompt(title: "登录后查看关注动态", systemImage: "dot.radiowaves.left.and.right")
+            } else if model.dynamics.isEmpty {
+                ContentUnavailableView("关注动态是空的", systemImage: "dot.radiowaves.left.and.right", description: Text("关注的人发布后会出现在这里"))
+            } else {
+                feed
             }
         }
-        .scrollEdgeSoft()
-        .refreshable { await model.refreshHome() }
+        .refreshable { await model.loadDynamics(kind: tab, reset: true) }
         .navigationTitle("动态")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -42,6 +34,41 @@ struct DynamicsFeed: View {
                 handle(action, item)
             }
         }
+        .task { await model.loadDynamics(kind: tab, reset: true) }
+        .onAppear {
+            if LaunchMode.usesFixtures && model.dynamics.isEmpty { return }
+            SocialUIProof.record([
+                "prompt": showPrompt,
+                "rows": showPrompt ? 0 : model.dynamics.count,
+                "error": ""
+            ])
+        }
+    }
+
+    private var feed: some View {
+        ScrollView {
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    LazyVStack(spacing: 14) {
+                        if model.flag("动态页展开正在直播UP列表") && !model.lives.isEmpty && tab == "全部" {
+                            liveRow
+                        }
+                        ForEach(filtered) { item in
+                            dynamicCard(item)
+                                .onAppear {
+                                    guard item.id == filtered.last?.id else { return }
+                                    Task { await model.loadDynamics(kind: tab, reset: false) }
+                                }
+                        }
+                    }
+                    .padding(.bottom, 12)
+                } header: {
+                    tabStrip
+                        .background(Color(.systemBackground))
+                }
+            }
+        }
+        .scrollEdgeSoft()
     }
 
     private var liveRow: some View {
@@ -68,7 +95,10 @@ struct DynamicsFeed: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(tabs, id: \.self) { item in
-                    Button(item) { tab = item }
+                    Button(item) {
+                        tab = item
+                        Task { await model.loadDynamics(kind: item, reset: true) }
+                    }
                         .font(.subheadline.weight(tab == item ? .bold : .medium))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -83,11 +113,11 @@ struct DynamicsFeed: View {
     }
 
     private var filtered: [DynamicItem] {
+        if !LaunchMode.usesFixtures { return model.dynamics }
         switch tab {
         case "投稿": return model.dynamics.filter { $0.kind == "投稿" }
         case "番剧": return model.dynamics.filter { $0.kind.contains("番") }
-        case "专栏": return []
-        case "UP": return model.dynamics
+        case "专栏": return model.dynamics.filter { $0.kind == "专栏" }
         default: return model.dynamics
         }
     }
@@ -99,8 +129,8 @@ struct DynamicsFeed: View {
                     .frame(width: 40, height: 40)
                     .clipShape(Circle())
                 VStack(alignment: .leading) {
-                    Text(item.name).font(.subheadline.weight(.semibold))
-                    Text("\(item.time) · \(item.kind)").font(.caption2).foregroundStyle(.secondary)
+                    Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text("\(item.time) · \(item.kind)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
                 Button { menuItem = item } label: {

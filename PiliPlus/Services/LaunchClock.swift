@@ -120,6 +120,17 @@ enum LaunchMode {
 
     static var perfStartup: Bool { args.contains("-perfStartup") }
     static var perfScroll: Bool { args.contains("-perfScroll") }
+    static var searchCapture: (tab: String, keyword: String, type: String)? {
+        switch screen {
+        case "search-video": return ("视频", "原神", "video")
+        case "search-user": return ("用户", "罗翔", "bili_user")
+        case "search-bangumi": return ("番剧", "鬼灭之刃", "media_bangumi")
+        case "search-live": return ("直播间", "原神", "live_room")
+        case "search-article": return ("专栏", "原神", "article")
+        default: return nil
+        }
+    }
+
     static var accountPreview: Bool {
         switch screen {
         case "history", "later", "fav", "favsheet": return true
@@ -131,7 +142,8 @@ enum LaunchMode {
         if screen == "playback" || screen == "home" || screen == "rank" || screen == "bangumi" || screen == "cinema" {
             return false
         }
-        if screen == "accountProof" || screen?.hasPrefix("guest-") == true { return false }
+        if screen == "accountProof" || screen == "socialProof" || screen == "comments" { return false }
+        if screen?.hasPrefix("guest-") == true || screen?.hasPrefix("search-") == true { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }

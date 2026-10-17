@@ -494,12 +494,127 @@ if not ok:
 PY
 }
 
+capture_social_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/social-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen socialProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing social request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/social-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "feed": ("GET", "/x/polymer/web-dynamic/v1/feed/all", "features=itemOpusStyle&offset=&timezone_offset=-480&type=all", False),
+    "feed-video": ("GET", "/x/polymer/web-dynamic/v1/feed/all", "features=itemOpusStyle&offset=cursor&timezone_offset=-480&type=video", False),
+    "reply-hot": ("GET", "/x/v2/reply", "oid=42&pn=1&ps=20&sort=1&type=1", False),
+    "reply-time": ("GET", "/x/v2/reply", "oid=42&pn=2&ps=20&sort=0&type=1", False),
+    "reply-thread": ("GET", "/x/v2/reply/reply", "oid=42&pn=1&ps=10&root=9&type=1", False),
+    "reply-add": ("POST", "/x/v2/reply/add", "csrf=jct-token&message=%E4%BD%A0%E5%A5%BD&oid=42&plat=1&type=1", True),
+    "reply-to": ("POST", "/x/v2/reply/add", "csrf=jct-token&message=%E4%BD%A0%E5%A5%BD&oid=42&parent=9&plat=1&root=9&type=1", True),
+    "search-video": ("GET", "/x/web-interface/search/type", "keyword=%E5%8E%9F%E7%A5%9E&page=1&search_type=video", False),
+    "search-filter": ("GET", "/x/web-interface/search/type", "duration=1&keyword=%E5%8E%9F%E7%A5%9E&order=click&page=1&search_type=video&tids=4", False),
+    "search-user": ("GET", "/x/web-interface/search/type", "keyword=%E7%BD%97%E7%BF%94&page=1&search_type=bili_user", False),
+    "search-bangumi": ("GET", "/x/web-interface/search/type", "keyword=%E9%AC%BC%E7%81%AD%E4%B9%8B%E5%88%83&page=1&search_type=media_bangumi", False),
+    "search-live": ("GET", "/x/web-interface/search/type", "keyword=%E5%8E%9F%E7%A5%9E&page=1&search_type=live_room", False),
+    "search-article": ("GET", "/x/web-interface/search/type", "keyword=%E5%8E%9F%E7%A5%9E&page=1&search_type=article", False),
+}
+print(f"social proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("social request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"social cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+    if csrf and "csrf=jct-token" not in item["body"]:
+        raise SystemExit(f"{name} missing csrf")
+    if not csrf and "csrf" in item["body"]:
+        raise SystemExit(f"{name} unexpected csrf")
+print(f"social request proof ok ({len(expect)} cases)")
+PY
+}
+
+capture_social_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/social-ui.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  local tries=45
+  if [[ "$screen" == "comments" || "$screen" == search-* ]]; then tries=60; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing social ui proof for ${screen}" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("prompt", "rows", "count", "type", "title", "name", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} showed an error: {data.get('error')}")
+types = {
+    "search-video": "video",
+    "search-user": "bili_user",
+    "search-bangumi": "media_bangumi",
+    "search-live": "live_room",
+    "search-article": "article",
+}
+if screen == "dynamics":
+    ok = data.get("prompt") is False and int(data.get("rows") or 0) >= 4
+elif screen == "guest-dynamics":
+    ok = data.get("prompt") is True and int(data.get("rows") or 0) == 0
+elif screen == "comments":
+    ok = int(data.get("rows") or 0) >= 1 and str(data.get("message") or "") != "" and str(data.get("name") or "") != ""
+elif screen in types:
+    title = str(data.get("title") or "")
+    ok = data.get("type") == types[screen] and int(data.get("count") or 0) >= 1 and title != "" and "fixture" not in title
+else:
+    ok = False
+print(f"{screen} social ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} social ui rejected")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
+social_status=0
 capture_account_proof || account_status=1
+capture_social_proof || social_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     capture_playback
@@ -509,8 +624,12 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     capture_catalog "$screen" || catalog_status=1
     continue
   fi
-  if [[ "$screen" == "history" || "$screen" == "later" || "$screen" == "fav" || "$screen" == "favsheet" || "$screen" == guest-* ]]; then
+  if [[ "$screen" == "history" || "$screen" == "later" || "$screen" == "fav" || "$screen" == "favsheet" || "$screen" == "guest-history" || "$screen" == "guest-later" || "$screen" == "guest-fav" ]]; then
     capture_account_ui "$screen" || account_status=1
+    continue
+  fi
+  if [[ "$screen" == "dynamics" || "$screen" == "guest-dynamics" || "$screen" == "comments" || "$screen" == search-* ]]; then
+    capture_social_ui "$screen" || social_status=1
     continue
   fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
@@ -523,8 +642,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 ]]; then
-  echo "home data, account lists, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 ]]; then
+  echo "home data, account lists, social surfaces, or warm scroll check failed" >&2
   exit 1
 fi
 
