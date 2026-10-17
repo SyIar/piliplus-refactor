@@ -88,6 +88,10 @@ struct CommentItem: Identifiable, Hashable {
     var replies: [CommentItem]
     var replyCount: Int = 0
     var root: Int = 0
+    var mid: Int = 0
+    /// Empty when the reply payload has no `fans_detail`.
+    var medalName: String = ""
+    var medalLevel: Int = 0
 }
 
 struct SearchUser: Identifiable, Hashable {

@@ -302,10 +302,13 @@ struct BiliClient: Sendable {
     func search(type: String, keyword: String, page: Int, order: String = "", duration: Int = 0, tid: Int = 0) async throws -> SearchPage {
         let form = SocialRequest.search(type: type, keyword: keyword, page: page, order: order, duration: duration, tid: tid)
         var found = try await fetchSearch(form, signed: false)
-        if Self.searchIsEmpty(found), let signed = try? await fetchSearch(form, signed: true), !Self.searchIsEmpty(signed) {
-            found = signed
-        }
         let media = type == "media_bangumi" || type == "media_ft"
+        if Self.searchIsEmpty(found) {
+            if media { await refreshGuest() }
+            if let signed = try? await fetchSearch(form, signed: true), !Self.searchIsEmpty(signed) {
+                found = signed
+            }
+        }
         if Self.searchIsEmpty(found), media {
             let grouped = (try? await groupedMedia(keyword: keyword, page: page, type: type)) ?? []
             if !grouped.isEmpty {
@@ -1062,16 +1065,21 @@ struct BiliClient: Sendable {
         let id = item["rpid"].int ?? 0
         guard id != 0 else { return nil }
         let replies = (item["replies"].array ?? []).compactMap(comment)
+        let member = item["member"]
+        let fans = member["fans_detail"]
         return CommentItem(
             id: id,
-            name: item["member"]["uname"].string ?? "用户",
-            face: https(item["member"]["avatar"].string ?? ""),
+            name: member["uname"].string ?? "用户",
+            face: https(member["avatar"].string ?? ""),
             message: item["content"]["message"].string ?? "",
             like: item["like"].int ?? 0,
             ctime: item["ctime"].int ?? 0,
             replies: replies,
             replyCount: item["rcount"].int ?? replies.count,
-            root: item["root"].int ?? 0
+            root: item["root"].int ?? 0,
+            mid: member["mid"].int ?? 0,
+            medalName: fans["medal_name"].string ?? "",
+            medalLevel: fans["level"].int ?? 0
         )
     }
 

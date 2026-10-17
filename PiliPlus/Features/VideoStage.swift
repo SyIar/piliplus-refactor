@@ -1135,13 +1135,27 @@ struct CommentRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                RemoteImage(url: comment.face, ratio: 1, maxPixel: 96)
-                    .frame(width: nested ? 22 : 32, height: nested ? 22 : 32)
-                    .clipShape(Circle())
-                Text(comment.name).font(.caption.weight(.semibold))
-                if model.flag("显示粉丝勋章") {
-                    Text("粉丝牌").font(.system(size: 9, weight: .bold)).padding(.horizontal, 4).padding(.vertical, 1).background(Palette.bili.opacity(0.2), in: Capsule())
+                Button {
+                    guard comment.mid > 0 else { return }
+                    model.open(.user(comment.mid, comment.name))
+                } label: {
+                    HStack(spacing: 6) {
+                        RemoteImage(url: comment.face, ratio: 1, maxPixel: 96)
+                            .frame(width: nested ? 22 : 32, height: nested ? 22 : 32)
+                            .clipShape(Circle())
+                        Text(comment.name).font(.caption.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                        if model.flag("显示粉丝勋章"), !comment.medalName.isEmpty {
+                            Text(comment.medalLevel > 0 ? "\(comment.medalName) \(comment.medalLevel)" : comment.medalName)
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color(.tertiarySystemFill), in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
+                .buttonStyle(.plain)
                 Spacer()
                 Button { onReply(comment) } label: { Image(systemName: "ellipsis") }
                     .buttonStyle(.plain)
