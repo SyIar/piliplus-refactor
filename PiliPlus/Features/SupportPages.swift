@@ -150,7 +150,7 @@ struct SettingDetail: View {
         List {
             Section {
                 LabeledContent("名称", value: "PiliPlus")
-                LabeledContent("版本", value: "1.0.0 Swift")
+                LabeledContent("版本", value: "2.0.0")
                 LabeledContent("界面", value: "iOS 27 Liquid Glass")
                 LabeledContent("上游", value: "bggRGjQaUbCoE/PiliPlus")
             }
