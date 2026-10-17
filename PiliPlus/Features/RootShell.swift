@@ -72,6 +72,9 @@ struct RootShell: View {
         if LaunchMode.screen == "spaceProof" {
             SpaceRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "liveProof" {
+            LiveRequestProof.writeAndExit()
+        }
         if LaunchMode.screen == "guest-dynamics" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -146,6 +149,27 @@ struct RootShell: View {
         if LaunchMode.screen == "playback" {
             if model.feed.isEmpty { await model.loadRecommend(reset: true) }
             await model.openFirstPlayable()
+            return
+        }
+        if LaunchMode.screen == "live" || LaunchMode.screen == "live-area" {
+            await LaunchClock.waitForFirstFrame()
+            model.homeTab = "直播"
+            let area = LaunchMode.screen == "live-area" ? "网游" : "推荐"
+            await model.loadLive(area: area, reset: true)
+            LiveUIProof.record([
+                "area": model.liveArea,
+                "count": model.lives.count,
+                "title": model.lives.first?.title ?? "",
+                "room": model.lives.first?.id ?? 0,
+                "uname": model.lives.first?.uname ?? "",
+                "error": model.lives.isEmpty ? (model.liveError.isEmpty ? "empty" : model.liveError) : ""
+            ])
+            return
+        }
+        if LaunchMode.screen == "live-room" {
+            await LaunchClock.waitForFirstFrame()
+            model.homeTab = "直播"
+            await model.openFirstLive()
             return
         }
         if model.feed.isEmpty { await model.refreshHome() }

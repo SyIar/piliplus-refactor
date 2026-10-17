@@ -40,6 +40,17 @@ enum BiliHTTP {
         return headers
     }
 
+    static func liveAssetHeaders(room: Int) -> [String: String] {
+        var headers = [
+            "User-Agent": userAgent,
+            "Referer": "https://live.bilibili.com/\(room)",
+            "Origin": "https://live.bilibili.com"
+        ]
+        let cookie = mergedCookie(includeSession: true, override: nil)
+        if !cookie.isEmpty { headers["Cookie"] = cookie }
+        return headers
+    }
+
     static func mergedCookie(includeSession: Bool, override: String?) -> String {
         var parts: [String] = []
         if let guest = GuestIdentity.cachedHeader() { parts.append(guest) }

@@ -725,17 +725,271 @@ if not ok:
 PY
 }
 
+capture_live_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/live-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen liveProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing live request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/live-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "recommend": ("GET", "/xlive/web-interface/v1/second/getUserRecommend", "page=1&page_size=30&platform=web", False),
+    "area": ("GET", "/xlive/web-interface/v1/second/getList", "area_id=0&page=1&parent_area_id=9&platform=web&sort_type=", False),
+    "room": ("GET", "/xlive/web-room/v1/index/getH5InfoByRoom", "room_id=42", False),
+    "play": ("GET", "/xlive/web-room/v2/index/getRoomPlayInfo", "codec=0%2C1%2C2&dolby=5&format=0%2C1%2C2&panorama=1&platform=web&protocol=0%2C1&ptype=8&qn=10000&room_id=42&web_location=444.8", False),
+    "danmu": ("GET", "/xlive/web-room/v1/index/getDanmuInfo", "id=42&web_location=444.8", False),
+    "send": ("POST", "/msg/send", "bubble=0&color=16777215&csrf=jct-token&csrf_token=jct-token&fontsize=25&mode=1&msg=%E4%BD%A0%E5%A5%BD&rnd=1700000000&room_type=0&roomid=42", True),
+}
+print(f"live proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("live request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"live cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+    if csrf and "csrf=jct-token" not in item["body"]:
+        raise SystemExit(f"{name} missing csrf")
+    if not csrf and "csrf" in item["body"]:
+        raise SystemExit(f"{name} unexpected csrf")
+print(f"live request proof ok ({len(expect)} cases)")
+PY
+}
+
+capture_live_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/live-ui.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 70); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing live ui proof for ${screen}" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("area", "count", "title", "room", "uname", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+title = str(data.get("title") or "")
+error = str(data.get("error") or "")
+count = int(data.get("count") or 0)
+area = "网游" if screen == "live-area" else "推荐"
+ok = (
+    error == ""
+    and count >= 1
+    and title != ""
+    and "fixture" not in title
+    and int(data.get("room") or 0) > 0
+    and data.get("area") == area
+)
+print(f"{screen} live ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} live ui rejected: {error or 'empty'}")
+PY
+}
+
+capture_live_room() {
+  local dir proof advanced=0 first="" cur="" err="" dm=0 proto="" title=""
+  dir="$(container)"
+  proof="$dir/Documents/live-room-proof.json"
+  rm -f "$proof" "$OUT/screenshots/live-room.png" "$OUT/screenshots/live-room-failed.png"
+  : > "$OUT/perf/live-room.log"
+  : > "$OUT/perf/live-room.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/live-room.log" --stderr="$OUT/perf/live-room.err" \
+    "$UDID" "$BUNDLE" -screen live-room -perfLabel "$LABEL"
+  for _ in $(seq 1 100); do
+    if [[ -f "$proof" ]]; then
+      cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
+      err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
+      dm="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("danmaku", 0))' "$proof")"
+      proto="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("protocol", ""))' "$proof")"
+      title="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("title", ""))' "$proof")"
+      echo "live room seconds=$cur danmaku=$dm protocol=${proto:-none} title=${title:-none} error=${err:-none}"
+      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$dm"; then
+        if [[ -z "$first" ]]; then
+          first="$cur"
+        elif python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else 1)' "$first" "$cur"; then
+          advanced=1
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-a.png"
+  sleep 0.9
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-b.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/live-room-proof.json"
+    echo "live room proof:"
+    cat "$OUT/perf/live-room-proof.json"
+    echo
+  fi
+  if [[ "$advanced" -ne 1 ]]; then
+    cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png" || true
+    if [[ ! -f "$proof" ]]; then
+      echo "live room proof was not written" >&2
+    fi
+    echo "live room clock did not advance 0.8s with danmaku" >&2
+    tail -n 60 "$OUT/perf/live-room.log" || true
+    tail -n 40 "$OUT/perf/live-room.err" || true
+    return 1
+  fi
+  if ! python3 - "$OUT/screenshots/live-room-a.png" "$OUT/screenshots/live-room-b.png" <<'PY'
+import struct, sys, zlib
+
+def read_png(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit(f"{path} is not a png")
+    pos = 8
+    width = height = color = None
+    idat = b""
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, color, _comp, _filt, inter = struct.unpack(">IIBBBBB", chunk)
+            if depth != 8 or inter != 0 or color not in (2, 6):
+                raise SystemExit(f"unsupported png {width}x{height} depth={depth} color={color} inter={inter}")
+        elif kind == b"IDAT":
+            idat += chunk
+        elif kind == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    bpp = 4 if color == 6 else 3
+    stride = width * bpp
+    rows = []
+    index = 0
+    prev = bytearray(stride)
+    for _ in range(height):
+        filt = raw[index]
+        index += 1
+        row = bytearray(raw[index:index + stride])
+        index += stride
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            ul = prev[x - bpp] if x >= bpp else 0
+            if filt == 0:
+                value = row[x]
+            elif filt == 1:
+                value = (row[x] + left) & 255
+            elif filt == 2:
+                value = (row[x] + up) & 255
+            elif filt == 3:
+                value = (row[x] + ((left + up) // 2)) & 255
+            elif filt == 4:
+                guess = left + up - ul
+                pa, pb, pc = abs(guess - left), abs(guess - up), abs(guess - ul)
+                pred = left if pa <= pb and pa <= pc else (up if pb <= pc else ul)
+                value = (row[x] + pred) & 255
+            else:
+                raise SystemExit(f"bad png filter {filt}")
+            row[x] = value
+        rows.append(row)
+        prev = row
+    return width, height, bpp, rows
+
+def stats(path):
+    width, height, bpp, rows = read_png(path)
+    y0, y1 = int(height * 0.08), int(height * 0.32)
+    total = 0.0
+    squares = 0.0
+    count = 0
+    for y in range(y0, y1):
+        row = rows[y]
+        for x in range(width):
+            i = x * bpp
+            luma = 0.2126 * row[i] + 0.7152 * row[i + 1] + 0.0722 * row[i + 2]
+            total += luma
+            squares += luma * luma
+            count += 1
+    mean = total / count
+    variance = max(0.0, squares / count - mean * mean)
+    return width, height, mean, variance ** 0.5
+
+def motion(left, right):
+    aw, ah, ab, ar = read_png(left)
+    bw, bh, bb, br = read_png(right)
+    if (aw, ah, ab) != (bw, bh, bb):
+        raise SystemExit(f"screenshot size changed {aw}x{ah} -> {bw}x{bh}")
+    y0, y1 = int(ah * 0.08), int(ah * 0.32)
+    total = 0.0
+    count = 0
+    for y in range(y0, y1):
+        a = ar[y]
+        b = br[y]
+        for i in range(0, aw * ab, ab):
+            total += abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2])
+            count += 3
+    return total / count
+
+mean_a, std_a = stats(sys.argv[1])[2:]
+width, height, mean_b, std_b = stats(sys.argv[2])
+delta = motion(sys.argv[1], sys.argv[2])
+print(f"live player band {width}x{height} mean={mean_b:.2f} stddev={std_b:.2f} motion={delta:.2f} first_stddev={std_a:.2f}")
+if std_b < 15 or mean_b > 245 or delta < 2.0:
+    raise SystemExit("player band does not look like moving video")
+PY
+  then
+    cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png"
+    echo "live player band did not show moving video" >&2
+    return 1
+  fi
+  cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room.png"
+  echo "saved live-room.png danmaku=$dm"
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
 social_status=0
 space_status=0
 playback_status=0
+live_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
+capture_live_proof || live_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -760,6 +1014,17 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     capture_space_ui "$screen" || space_status=1
     continue
   fi
+  if [[ "$screen" == "live" || "$screen" == "live-area" ]]; then
+    capture_live_ui "$screen" || live_status=1
+    continue
+  fi
+  if [[ "$screen" == "live-room" ]]; then
+    if ! capture_live_room; then
+      echo "retrying live room capture" >&2
+      capture_live_room || live_status=1
+    fi
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -770,8 +1035,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, or warm scroll check failed" >&2
   exit 1
 fi
 
