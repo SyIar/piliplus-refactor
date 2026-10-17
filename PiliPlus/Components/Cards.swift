@@ -51,7 +51,7 @@ struct VideoCard: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("不感兴趣", systemImage: "hand.thumbsdown") { model.show("已减少此类推荐") }
+            Button("不感兴趣", systemImage: "hand.thumbsdown") { Task { await model.dislike(video) } }
             Button("稍后再看", systemImage: "clock") { model.watchLater(video.bvid) }
             Button("收藏", systemImage: "star") { model.favorite(video.bvid, folder: model.favFolders[0]) }
             Button("分享", systemImage: "square.and.arrow.up") { model.show("已打开分享") }

@@ -58,6 +58,16 @@ struct CollectionClip: Codable, Hashable, Identifiable {
     var index: Int
 }
 
+struct SeasonItem: Identifiable, Hashable {
+    var id: Int { seasonID }
+    var seasonID: Int
+    var title: String
+    var cover: String
+    var badge: String
+    var subtitle: String
+    var view: Int
+}
+
 struct CommentItem: Identifiable, Hashable {
     let id: Int
     let name: String

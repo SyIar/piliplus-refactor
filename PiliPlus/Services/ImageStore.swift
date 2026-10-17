@@ -19,7 +19,7 @@ actor ImageStore {
         config.requestCachePolicy = .returnCacheDataElseLoad
         config.httpAdditionalHeaders = [
             "Referer": "https://www.bilibili.com",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15"
+            "User-Agent": BiliHTTP.userAgent
         ]
         config.timeoutIntervalForRequest = 20
         return URLSession(configuration: config)

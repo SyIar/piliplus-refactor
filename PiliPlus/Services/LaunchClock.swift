@@ -99,6 +99,17 @@ enum LaunchClock {
     }
 }
 
+enum HomeProof {
+    static func record(_ payload: [String: Any]) {
+        guard let screen = LaunchMode.screen, ["home", "rank", "bangumi", "cinema"].contains(screen) else { return }
+        var body = payload
+        body["screen"] = screen
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
+        let url = LaunchClock.documents.appendingPathComponent("home-proof.json")
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 enum LaunchMode {
     private static var args: [String] { ProcessInfo.processInfo.arguments }
 
@@ -110,8 +121,11 @@ enum LaunchMode {
     static var perfStartup: Bool { args.contains("-perfStartup") }
     static var perfScroll: Bool { args.contains("-perfScroll") }
     static var usesFixtures: Bool {
-        if screen == "playback" { return false }
-        return screen != nil || perfScroll || perfStartup
+        if screen == "playback" || screen == "home" || screen == "rank" || screen == "bangumi" || screen == "cinema" {
+            return false
+        }
+        if perfScroll { return false }
+        return screen != nil || perfStartup
     }
     static var label: String? {
         guard let index = args.firstIndex(of: "-perfLabel"), args.indices.contains(index + 1) else { return nil }

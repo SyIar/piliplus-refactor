@@ -63,6 +63,11 @@ struct RootShell: View {
 
     private func boot() async {
         if LaunchMode.perfStartup { return }
+        if LaunchMode.perfScroll {
+            await LaunchClock.waitForFirstFrame()
+            await model.loadRecommend(reset: true)
+            return
+        }
         if LaunchMode.usesFixtures {
             await LaunchClock.waitForFirstFrame()
             model.applyFixtures()
@@ -74,8 +79,49 @@ struct RootShell: View {
         }
         if model.feed.isEmpty { await model.refreshHome() }
         await model.refreshProfile()
-        if LaunchMode.screen == "playback" {
+        switch LaunchMode.screen {
+        case "playback":
             await model.openFirstPlayable()
+        case "home":
+            let firstCount = model.feed.count
+            await model.loadRecommend(reset: false)
+            HomeProof.record([
+                "source": model.feedSource,
+                "page": model.feedPage,
+                "count": model.feed.count,
+                "firstCount": firstCount,
+                "title": model.feed.first?.title ?? "",
+                "bvid": model.feed.first?.bvid ?? ""
+            ])
+        case "rank":
+            model.homeTab = "分区"
+            await model.loadZone("动画", reset: true)
+            HomeProof.record([
+                "zone": model.zoneName,
+                "rid": model.zoneRid,
+                "count": model.zoneFeed.count,
+                "title": model.zoneFeed.first?.title ?? "",
+                "bvid": model.zoneFeed.first?.bvid ?? ""
+            ])
+        case "bangumi":
+            model.homeTab = "番剧"
+            await model.loadSeasons("番剧")
+            HomeProof.record([
+                "count": model.bangumi.count,
+                "title": model.bangumi.first?.title ?? "",
+                "seasonID": model.bangumi.first?.seasonID ?? 0,
+                "friday": model.bangumiSchedule["五"] ?? 0
+            ])
+        case "cinema":
+            model.homeTab = "影视"
+            await model.loadSeasons("影视")
+            HomeProof.record([
+                "count": model.cinema.count,
+                "title": model.cinema.first?.title ?? "",
+                "seasonID": model.cinema.first?.seasonID ?? 0
+            ])
+        default:
+            break
         }
     }
 

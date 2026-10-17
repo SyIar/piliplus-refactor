@@ -139,7 +139,17 @@ private struct RecommendPage: View {
 
     private func scrollBench(_ proxy: ScrollViewProxy) async {
         guard LaunchMode.perfScroll else { return }
+        var spins = 0
         while model.feed.count < 8 {
+            spins += 1
+            if spins > 500 {
+                LaunchClock.write([
+                    "phase": "scroll",
+                    "error": model.feedSource.isEmpty ? "empty" : model.feedSource
+                ])
+                exit(0)
+                return
+            }
             try? await Task.sleep(for: .milliseconds(40))
         }
         await ImageStore.shared.prepare(urls: model.feed.map(\.cover), maxPixel: 560)
@@ -190,7 +200,17 @@ private struct RecommendGrid: View {
                 ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
             }
             ForEach(model.feed) { video in
-                VideoCard(video: video).id(video.bvid)
+                VideoCard(video: video)
+                    .id(video.bvid)
+                    .onAppear {
+                        guard video.bvid == model.feed.last?.bvid else { return }
+                        Task { await model.loadRecommend(reset: false) }
+                    }
+            }
+            if model.loadingMore {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
             }
         }
     }
@@ -238,18 +258,17 @@ struct HotPage: View {
 
 struct RankPage: View {
     @Environment(AppModel.self) private var model
-    @State private var zone = "全站"
     var body: some View {
         VStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(Menus.rankZones, id: \.self) { item in
-                        Button(item) { zone = item }
-                            .font(.caption.weight(zone == item ? .bold : .regular))
+                        Button(item) { Task { await model.loadZone(item, reset: true) } }
+                            .font(.caption.weight(model.zoneName == item ? .bold : .regular))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .foregroundStyle(zone == item ? .white : .primary)
-                            .selectionCapsule(selected: zone == item)
+                            .foregroundStyle(model.zoneName == item ? .white : .primary)
+                            .selectionCapsule(selected: model.zoneName == item)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -257,13 +276,23 @@ struct RankPage: View {
             }
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    ForEach(model.rank.isEmpty ? model.feed : model.rank) { video in
+                    ForEach(model.zoneFeed) { video in
                         VideoCard(video: video)
+                            .onAppear {
+                                guard video.bvid == model.zoneFeed.last?.bvid else { return }
+                                Task { await model.loadZone(model.zoneName, reset: false) }
+                            }
+                    }
+                    if model.zoneFeed.isEmpty {
+                        ContentUnavailableView("这个分区还没有稿件", systemImage: "square.grid.2x2", description: Text("下拉换一个分区"))
                     }
                 }
                 .padding(16)
             }
             .scrollEdgeSoft()
+        }
+        .task {
+            if model.zoneFeed.isEmpty { await model.loadZone(model.zoneName, reset: true) }
         }
     }
 }
@@ -282,7 +311,7 @@ struct PGCPage: View {
                             ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { day in
                                 VStack {
                                     Text("周\(day)").font(.caption.weight(.bold))
-                                    Text(day == "五" ? "更新 6" : "更新 2").font(.caption2).foregroundStyle(.secondary)
+                                    Text("更新 \(model.bangumiSchedule[day] ?? 0)").font(.caption2).foregroundStyle(.secondary)
                                 }
                                 .frame(width: 72, height: 64)
                                 .contentPlate(radius: 18)
@@ -300,14 +329,60 @@ struct PGCPage: View {
                     }
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    ForEach(model.feed.prefix(9)) { video in
-                        VideoCard(video: video, compact: true)
+                    ForEach(model.seasons(for: kind).prefix(18)) { season in
+                        SeasonCard(season: season)
                     }
+                }
+                if model.seasons(for: kind).isEmpty {
+                    ContentUnavailableView("暂无\(kind)", systemImage: "tv", description: Text("下拉刷新"))
                 }
             }
             .padding(16)
         }
+        .refreshable { await model.loadSeasons(kind) }
         .scrollEdgeSoft()
+        .task {
+            if model.seasons(for: kind).isEmpty { await model.loadSeasons(kind) }
+        }
+    }
+}
+
+private struct SeasonCard: View {
+    @Environment(AppModel.self) private var model
+    let season: SeasonItem
+
+    var body: some View {
+        Button {
+            model.open(.feature(season.title))
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                RemoteImage(url: season.cover, ratio: 3 / 4, maxPixel: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(alignment: .topLeading) {
+                        if !season.badge.isEmpty {
+                            Text(season.badge)
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.45), in: Capsule())
+                                .foregroundStyle(.white)
+                                .padding(6)
+                        }
+                    }
+                Text(season.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                if !season.subtitle.isEmpty {
+                    Text(season.subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

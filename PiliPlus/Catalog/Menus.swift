@@ -286,6 +286,11 @@ enum Menus {
     static let pgcTabs = ["追番", "追剧", "时间表", "索引", "入站必刷", "每周必看"]
     static let rankZones = ["全站", "动画", "音乐", "舞蹈", "游戏", "知识", "科技", "生活", "美食", "鬼畜", "时尚", "娱乐", "影视"]
 
+    static func rankRid(_ name: String) -> Int {
+        if name == "全站" { return 0 }
+        return zones.first { $0.0 == name }?.1 ?? 0
+    }
+
     static let pages: [(group: String, title: String, hint: String, actions: [String])] = [
         ("首页", "推荐", "首页推荐流", ["刷新", "不感兴趣", "查看详情"]),
         ("首页", "热门", "全站热门", ["每周必看", "入站必刷", "排行榜"]),

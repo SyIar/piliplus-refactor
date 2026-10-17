@@ -37,8 +37,20 @@ final class AppModel {
     var searchPath = NavigationPath()
     var toast: String?
     var feed: [VideoItem] = []
+    var feedPage = 0
+    var feedHasMore = true
+    var feedSource = ""
+    var loadingMore = false
     var hot: [VideoItem] = []
     var rank: [VideoItem] = []
+    var zoneName = "全站"
+    var zoneRid = 0
+    var zoneFeed: [VideoItem] = []
+    var zonePage = 0
+    var zoneHasMore = false
+    var bangumi: [SeasonItem] = []
+    var cinema: [SeasonItem] = []
+    var bangumiSchedule: [String: Int] = [:]
     var lives: [LiveRoom] = []
     var dynamics: [DynamicItem] = []
     var hotwords: [HotWord] = []
@@ -228,24 +240,133 @@ final class AppModel {
     }
 
     func refreshHome() async {
-        loadingFeed = true
-        do {
-            let popular = try await client.popular()
-            feed = popular
+        await loadRecommend(reset: true)
+        guard !LaunchMode.perfScroll else { return }
+        async let popular = client.popular()
+        async let rooms = client.liveRooms()
+        async let words = client.hotwords()
+        if let popular = try? await popular {
             hot = popular
-            loadingFeed = false
-            Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
-            await Task.yield()
-            async let ranking = client.ranking()
-            async let rooms = client.liveRooms()
-            async let words = client.hotwords()
-            rank = (try? await ranking) ?? rank
-            lives = (try? await rooms) ?? lives
-            hotwords = (try? await words) ?? hotwords
             dynamics = BiliClient.dynamics(from: popular)
-            for item in feed + rank { store(item) }
+            Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
+        }
+        lives = (try? await rooms) ?? lives
+        hotwords = (try? await words) ?? hotwords
+        if zoneFeed.isEmpty { await loadZone(zoneName, reset: true) }
+    }
+
+    func loadRecommend(reset: Bool) async {
+        if !reset {
+            guard !LaunchMode.perfScroll, feedHasMore, !loadingMore, !loadingFeed else { return }
+        }
+        if reset {
+            feedPage = 0
+            feedHasMore = true
+            loadingFeed = true
+        } else {
+            loadingMore = true
+        }
+        let next = feedPage + 1
+        do {
+            let page = try await client.recommend(idx: next)
+            if reset {
+                feed = page
+            } else {
+                let known = Set(feed.map(\.bvid))
+                feed.append(contentsOf: page.filter { !known.contains($0.bvid) })
+            }
+            feedPage = next
+            feedHasMore = page.count >= 8
+            feedSource = "rcmd"
+            for item in page { store(item) }
+            let covers = (reset ? feed : page).map(\.cover)
+            if LaunchMode.perfScroll {
+                await ImageStore.shared.prepare(urls: covers, maxPixel: 560)
+            } else {
+                Task { await ImageStore.shared.prepare(urls: covers, maxPixel: 560) }
+            }
         } catch {
-            loadingFeed = false
+            if reset { show(error.localizedDescription) }
+            feedSource = feed.isEmpty ? "error" : feedSource
+        }
+        loadingFeed = false
+        loadingMore = false
+    }
+
+    func loadZone(_ name: String, reset: Bool) async {
+        if !reset {
+            guard zoneHasMore, !loadingMore else { return }
+        }
+        let rid = Menus.rankRid(name)
+        if reset {
+            zoneName = name
+            zoneRid = rid
+            zonePage = 0
+            zoneHasMore = rid != 0
+            loadingMore = false
+        } else {
+            loadingMore = true
+        }
+        let next = zonePage + 1
+        do {
+            let page: [VideoItem]
+            if rid == 0 {
+                page = try await client.ranking(rid: 0)
+                zoneHasMore = false
+            } else if reset {
+                page = try await client.region(rid: rid, page: next)
+                zoneHasMore = page.count >= 20
+            } else {
+                page = try await client.region(rid: rid, page: next)
+                zoneHasMore = page.count >= 20
+            }
+            if reset || rid == 0 {
+                zoneFeed = page
+            } else {
+                let known = Set(zoneFeed.map(\.bvid))
+                zoneFeed.append(contentsOf: page.filter { !known.contains($0.bvid) })
+            }
+            zonePage = next
+            rank = zoneFeed
+            for item in page { store(item) }
+        } catch {
+            if reset { show(error.localizedDescription) }
+        }
+        loadingMore = false
+    }
+
+    func loadSeasons(_ kind: String) async {
+        do {
+            if kind == "影视" {
+                cinema = try await client.seasons(type: 2)
+                Task { await ImageStore.shared.prepare(urls: cinema.map(\.cover), maxPixel: 560) }
+                return
+            }
+            async let shows = client.seasons(type: 1)
+            async let schedule = client.bangumiSchedule()
+            bangumi = try await shows
+            bangumiSchedule = (try? await schedule) ?? bangumiSchedule
+            Task { await ImageStore.shared.prepare(urls: bangumi.map(\.cover), maxPixel: 560) }
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func seasons(for kind: String) -> [SeasonItem] {
+        kind == "影视" ? cinema : bangumi
+    }
+
+    func dislike(_ video: VideoItem) async {
+        feed.removeAll { $0.bvid == video.bvid }
+        zoneFeed.removeAll { $0.bvid == video.bvid }
+        guard loggedIn, let csrf = session?.csrf, !csrf.isEmpty else {
+            show("已减少此类推荐")
+            return
+        }
+        do {
+            try await client.dislike(aid: video.aid, csrf: csrf)
+            show("已减少此类推荐")
+        } catch {
             show(error.localizedDescription)
         }
     }
