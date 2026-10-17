@@ -742,8 +742,25 @@ struct BiliClient: Sendable {
             }
             try Self.requireOK(data)
             let page = Self.spaceVideoPage(data)
-            return (page.items, page.total, "wbi")
+            if !page.items.isEmpty { return (page.items, page.total, "wbi") }
+            throw BiliError.message("投稿是空的")
         } catch {
+            let minimal = [
+                "mid": "\(mid)",
+                "pn": "\(max(1, page))",
+                "ps": "30",
+                "order": order,
+                "tid": "0",
+                "platform": "web",
+                "web_location": "1550101",
+                "order_avoided": "true"
+            ]
+            if let signed = try? await wbiJSON("/x/space/wbi/arc/search", params: minimal, referer: referer, origin: origin) {
+                let parsed = Self.spaceVideoPage(signed)
+                if (signed["code"].int ?? -1) == 0, !parsed.items.isEmpty {
+                    return (parsed.items, parsed.total, "wbi")
+                }
+            }
             if let fallback = try? await unsignedSpaceVideos(mid: mid, page: page, order: order, referer: referer, origin: origin),
                !fallback.items.isEmpty {
                 return (fallback.items, fallback.total, "arc")
@@ -840,19 +857,77 @@ struct BiliClient: Sendable {
     func spaceDynamics(mid: Int, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool, source: String) {
         let referer = "https://space.bilibili.com/\(mid)/dynamic"
         let origin = "https://space.bilibili.com"
-        do {
-            let data = try await loadPublic(SpaceRequest.dynamics(mid: mid, offset: offset), referer: referer, origin: origin)
-            let items = (data["data"]["items"].array ?? []).compactMap(Self.dynamic(fromPolymer:))
-            let next = data["data"]["offset"].string ?? ""
-            let hasMore = data["data"]["has_more"].bool ?? !next.isEmpty
-            return (items, next, hasMore && !items.isEmpty, "polymer")
-        } catch let first {
-            if let legacy = try? await legacySpaceDynamics(mid: mid, offset: offset, referer: referer, origin: origin),
-               !legacy.items.isEmpty {
-                return (legacy.items, legacy.offset, legacy.hasMore, "legacy")
+        var params = SpaceRequest.dynamics(mid: mid, offset: offset).fields
+        params["platform"] = "web"
+        params["web_location"] = "333.1387"
+        params["features"] = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard"
+        params["dm_img_list"] = "[]"
+        params["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
+        params["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
+        params["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+        params["x-bili-device-req-json"] = "{\"platform\":\"web\",\"device\":\"pc\"}"
+        params["x-bili-web-req-json"] = "{\"spm_id\":\"333.1387\"}"
+        let paths = [
+            "/x/polymer/web-dynamic/v1/feed/space",
+            "/x/polymer/web-dynamic/desktop/v1/feed/space"
+        ]
+        var last: Error = BiliError.message("动态是空的")
+        for path in paths {
+            do {
+                let data = try await wbiJSON(path, params: params, referer: referer, origin: origin)
+                try Self.requireOK(data)
+                let page = Self.polymerDynamics(data)
+                if !page.items.isEmpty { return (page.items, page.offset, page.hasMore, "wbi") }
+            } catch {
+                last = error
             }
-            throw first
         }
+        if let legacy = try? await legacySpaceDynamics(mid: mid, offset: offset, referer: referer, origin: origin),
+           !legacy.items.isEmpty {
+            return (legacy.items, legacy.offset, legacy.hasMore, "legacy")
+        }
+        if offset.isEmpty,
+           let collected = try? await seasonArchiveFallback(mid: mid, referer: referer, origin: origin),
+           !collected.items.isEmpty {
+            let items = collected.items.map { video in
+                DynamicItem(
+                    id: video.bvid,
+                    name: video.ownerName.isEmpty ? "用户" : video.ownerName,
+                    face: video.ownerFace,
+                    text: video.title,
+                    time: "",
+                    kind: "投稿",
+                    video: video,
+                    like: video.like,
+                    comment: video.reply,
+                    repost: video.share,
+                    mid: video.ownerMid
+                )
+            }
+            return (items, "", false, "season")
+        }
+        throw last
+    }
+
+    private func wbiJSON(
+        _ path: String,
+        params: [String: String],
+        referer: String,
+        origin: String
+    ) async throws -> JSON {
+        try await withGuest {
+            let data = try await requestQuery(path, params: params, signed: true, referer: referer, origin: origin)
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+    }
+
+    private static func polymerDynamics(_ data: JSON) -> (items: [DynamicItem], offset: String, hasMore: Bool) {
+        let items = (data["data"]["items"].array ?? []).compactMap(dynamic(fromPolymer:))
+        let next = data["data"]["offset"].string ?? ""
+        let hasMore = data["data"]["has_more"].bool ?? !next.isEmpty
+        return (items, next, hasMore && !items.isEmpty)
     }
 
     /// `dynamic_svr/space_history` still returns cards when the polymer route answers 412.
