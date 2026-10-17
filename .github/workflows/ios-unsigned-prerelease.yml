@@ -1,0 +1,104 @@
+name: Unsigned pre-release IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/liquid-glass-native-b4ed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipa-prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Unsigned IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          if [ -d /Applications/Xcode_27.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.app
+          elif [ -d /Applications/Xcode_27.0.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
+          xcodebuild -version
+
+      - name: App icon
+        run: python3 scripts/make_icon.py
+
+      - name: Build unsigned device Release
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project PiliPlus.xcodeproj \
+            -scheme PiliPlus \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            VALIDATE_PRODUCT=NO \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+          APP="$GITHUB_WORKSPACE/build/Build/Products/Release-iphoneos/PiliPlus.app"
+          test -d "$APP"
+          file "$APP/PiliPlus"
+          lipo -info "$APP/PiliPlus"
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP="$GITHUB_WORKSPACE/build/Build/Products/Release-iphoneos/PiliPlus.app"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/PiliPlus.app
+          zip -r -y PiliPlus-unsigned.ipa Payload
+          ls -lh PiliPlus-unsigned.ipa
+          unzip -t PiliPlus-unsigned.ipa
+
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.0-liquid-glass-unsigned
+          name: PiliPlus 液态玻璃未签名预览
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          draft: false
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            来自 `cursor/liquid-glass-native-b4ed` 的未签名 iPhone 安装包（Release，arm64，`CODE_SIGNING_ALLOWED=NO`）。这是预发布，不是正式版。
+
+            ## 界面
+
+            按 iOS 26 液态玻璃重做，只包含 iPhone。底栏是系统 `TabView`，带搜索角色标签。每个标签有自己的 `NavigationStack`。首页、动态、我的使用系统导航栏和工具栏（`ToolbarSpacer` 分组）。搜索使用系统 `.searchable`。滚动内容不再自绘玻璃和渐变，玻璃留在系统栏、表单和播放控件上。播放控制条用 `GlassEffectContainer` 与 `glassEffectID` 形变，圆角用 `ConcentricRectangle`。
+
+            ## 性能
+
+            公开 macOS 运行器上的 iPhone 17 Pro 模拟器、iOS 26.5、Release、60 Hz。镜像里没有 iPhone 18 Pro。数字是保留下来的那一版，相对再上一轮滚动优化。
+
+            冷启动中位：进程 1144 ms，首帧 809 ms（上一轮 1502 ms / 969 ms）。
+
+            首页滚动，冷 / 热：平均 18.85 / 17.21 ms，p95 33.66 / 16.67 ms，p99 48.89 / 33.33 ms，最大 100.37 / 49.87 ms。扫动期间封面没有解码未命中。
+
+            曾把分类条改成固定安全区。热扫动尾部略好，冷扫动 p95 / p99 变差，静止画面无差别，因此没有保留。
+
+            ## 安装
+
+            这个包没有签名，不能直接装到设备上，也不是 App Store 包。请用 AltStore、SideStore、Sideloadly 或巨魔（TrollStore）自行签名后再安装。需要 iOS 26，仅 iPhone。
+          files: PiliPlus-unsigned.ipa
