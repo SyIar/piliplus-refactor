@@ -184,8 +184,15 @@ struct VideoStage: View {
                     meta("play.fill", video.view)
                     meta("text.bubble", video.danmaku)
                     meta("calendar", video.pubdate)
-                    if !video.tname.isEmpty { Text(video.tname).font(.caption).foregroundStyle(.secondary) }
+                    if !video.tname.isEmpty {
+                        Text(video.tname)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .layoutPriority(-1)
+                    }
                 }
+                .lineLimit(1)
                 Button { model.open(.user(video.ownerMid, video.ownerName)) } label: {
                     HStack {
                         RemoteImage(url: video.ownerFace, ratio: 1, maxPixel: 120).frame(width: 36, height: 36).clipShape(Circle())
@@ -261,6 +268,8 @@ struct VideoStage: View {
         Label(value > 1_000_000_000 ? DurationBadge.clock(value) : CountText.format(value), systemImage: icon)
             .font(.caption2)
             .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
     }
 
     private var commentList: some View {

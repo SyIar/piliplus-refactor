@@ -356,10 +356,15 @@ struct LivePlaza: View {
                                     }
                                 Text(room.title).font(.caption.weight(.semibold)).lineLimit(2).foregroundStyle(.primary)
                                 HStack {
-                                    Text(room.uname).lineLimit(1)
-                                    Spacer()
+                                    Text(room.uname)
+                                        .lineLimit(1)
+                                        .layoutPriority(-1)
+                                    Spacer(minLength: 0)
                                     Label(CountText.format(room.online), systemImage: "person.2")
+                                        .lineLimit(1)
+                                        .fixedSize()
                                 }
+                                .lineLimit(1)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             }

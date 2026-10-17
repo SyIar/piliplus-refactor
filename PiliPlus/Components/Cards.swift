@@ -33,11 +33,18 @@ struct VideoCard: View {
                     .multilineTextAlignment(.leading)
                     .lineLimit(2)
                 HStack(spacing: 8) {
-                    Text(video.ownerName).lineLimit(1)
+                    Text(video.ownerName)
+                        .lineLimit(1)
+                        .layoutPriority(-1)
                     Spacer(minLength: 0)
                     Label(CountText.format(video.view), systemImage: "play.fill")
+                        .lineLimit(1)
+                        .fixedSize()
                     Label(CountText.format(video.danmaku), systemImage: "text.bubble.fill")
+                        .lineLimit(1)
+                        .fixedSize()
                 }
+                .lineLimit(1)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             }

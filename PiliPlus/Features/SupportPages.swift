@@ -320,7 +320,9 @@ struct LiveStage: View {
                     VStack(alignment: .leading) {
                         Text(room?.title ?? "直播间 \(roomID)").font(.headline).foregroundStyle(.white)
                         Text("\(room?.uname ?? "主播") · \(room?.area ?? "直播") · \(CountText.format(room?.online ?? 0)) 在看")
-                            .font(.caption).foregroundStyle(.white.opacity(0.8))
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
                     }
                     .padding(12)
                 }
