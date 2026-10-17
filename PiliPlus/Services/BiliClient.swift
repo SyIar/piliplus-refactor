@@ -301,23 +301,59 @@ struct BiliClient: Sendable {
 
     func search(type: String, keyword: String, page: Int, order: String = "", duration: Int = 0, tid: Int = 0) async throws -> SearchPage {
         let form = SocialRequest.search(type: type, keyword: keyword, page: page, order: order, duration: duration, tid: tid)
-        guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+        let unsigned = try await fetchSearch(form, signed: false)
+        if !Self.searchIsEmpty(unsigned) { return unsigned }
+        // Bangumi (and sometimes other media types) now answers on the WBI route only.
+        do {
+            var signed = try await fetchSearch(form, signed: true)
+            if Self.searchIsEmpty(signed) {
+                signed.note = "wbi \(signed.note)"
+            }
+            if !Self.searchIsEmpty(signed) || !signed.note.isEmpty { return signed }
+        } catch {
+            var copy = unsigned
+            copy.note = "wbi \(error.localizedDescription) \(unsigned.note)"
+            return copy
+        }
+        return unsigned
+    }
+
+    private func fetchSearch(_ form: SignedForm, signed: Bool) async throws -> SearchPage {
         let data = try await withGuest {
-            let data = try await getJSON(url, referer: "https://search.bilibili.com")
-            let code = data["code"].int ?? -1
+            let payload: JSON
+            if signed {
+                payload = try await requestQuery(
+                    "/x/web-interface/wbi/search/type",
+                    params: form.fields,
+                    signed: true,
+                    referer: "https://search.bilibili.com"
+                )
+            } else {
+                guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+                payload = try await getJSON(url, referer: "https://search.bilibili.com")
+            }
+            let code = payload["code"].int ?? -1
             if code == -352 || code == 412 { throw BiliError.risk(code) }
-            return data
+            return payload
         }
         guard data["code"].int == 0 else {
             throw BiliError.message(data["message"].string ?? "搜索失败")
         }
-        let list = Self.searchRows(data["data"]["result"])
-        var page = Self.searchPage(list)
-        if page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty {
+        return Self.interpretSearch(data)
+    }
+
+    private static func searchIsEmpty(_ page: SearchPage) -> Bool {
+        page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty
+    }
+
+    private static func interpretSearch(_ data: JSON) -> SearchPage {
+        let list = searchRows(data["data"]["result"])
+        var page = searchPage(list)
+        if searchIsEmpty(page) {
             let nested = list.flatMap { $0["data"].array ?? [] }
-            if !nested.isEmpty { page = Self.searchPage(nested) }
+            if !nested.isEmpty { page = searchPage(nested) }
         }
-        if page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty {
+        if searchIsEmpty(page) {
             let keys = (list.first?.raw as? [String: Any])?.keys.sorted().joined(separator: ",") ?? ""
             page.note = "rows=\(list.count) keys=\(keys)"
         }
