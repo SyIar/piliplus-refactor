@@ -71,15 +71,32 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: PiliPlus iOS
+          tag_name: v2.0.0
+          name: PiliPlus 2.0.0
           target_commitish: ${{ github.sha }}
+          prerelease: false
+          draft: false
+          make_latest: true
           overwrite_files: true
           fail_on_unmatched_files: true
           body: |
-            公开 GitHub Actions 构建的 IPA（`macos-26`，iphoneos，无 Apple 开发者证书）。
+            iPhone 原生液态玻璃界面（iOS 26）。只包含 iPhone，没有 iPad。
 
-            这是可重签的安装包，不是 App Store 包。用 AltStore、SideStore、Sideloadly 或巨魔（TrollStore）签名后安装。
+            ## 界面
 
-            之后每次推到 `main` 都会重新构建，并覆盖本 Release 里的 `PiliPlus.ipa`。
+            底栏改为系统 `TabView`，并带搜索角色标签。每个标签自带 `NavigationStack`。首页、动态、我的使用系统导航栏和工具栏（`ToolbarItem` / `ToolbarSpacer`）。搜索使用系统 `.searchable`。滚动内容去掉自绘玻璃和渐变背景，玻璃只留在系统栏、表单和播放控件上。播放控制条用 `GlassEffectContainer` 与 `glassEffectID` 形变，圆角用 `ConcentricRectangle`。列表和半屏表使用系统背景与 detent。
+
+            ## 性能
+
+            公开 macOS 运行器上的 iPhone 17 Pro 模拟器、iOS 26.5、Release、60 Hz。镜像里没有 iPhone 18 Pro。数字相对上一轮滚动优化（`86aceb6`）。
+
+            冷启动中位：进程 1144 ms，首帧 809 ms（上一轮 1502 ms / 969 ms）。
+
+            首页滚动，冷 / 热：平均 18.85 / 17.21 ms，p95 33.66 / 16.67 ms，p99 48.89 / 33.33 ms，最大 100.37 / 49.87 ms。封面在扫动期间没有解码未命中。
+
+            又试过把分类条改成固定安全区，避免第一次钉住和卡片滑到导航栏下。热扫动尾部略好，冷扫动 p95 / p99 变差，静止截图无差别，因此没有保留。
+
+            ## 安装
+
+            这是未签名的 iphoneos 包，不是 App Store 包。GitHub Actions（`macos-26`）用临时签名打包，便于 AltStore、SideStore、Sideloadly 或巨魔（TrollStore）重签后安装。需要 iOS 26，仅 iPhone。
           files: PiliPlus.ipa

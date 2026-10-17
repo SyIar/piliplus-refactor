@@ -1,39 +1,22 @@
 import SwiftUI
 
-struct MineSpace: View {
+private struct MineToolbar: ToolbarContent {
     @Environment(AppModel.self) private var model
-    @State private var card = "我的收藏"
 
-    var body: some View {
-        ZStack {
-            AuroraBackground()
-            ScrollView {
-                VStack(spacing: 16) {
-                    header
-                    stats
-                    shortcuts
-                    cardTabs
-                    cardBody
-                }
-                .padding(16)
-                .padding(.bottom, 20)
-            }
+    var body: some ToolbarContent {
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button("搜索", systemImage: "magnifyingglass") { model.open(.search) }
+            Button("我的评论", systemImage: "text.bubble") { model.open(.feature("我的评论")) }
         }
-        .toolbar(.hidden, for: .navigationBar)
-    }
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Spacer()
-            GlassIconButton(system: "magnifyingglass") { model.open(.search) }
-            GlassIconButton(system: "text.bubble") { model.open(.feature("我的评论")) }
-            GlassIconButton(system: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button(model.anonymity ? "退出无痕" : "无痕模式", systemImage: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
                 guard model.loggedIn else { model.open(.login); return }
                 model.anonymity.toggle()
                 model.save()
                 model.show(model.anonymity ? "已进入无痕模式\n搜索不携带身份\n不产生播放记录" : "已退出无痕模式")
             }
-            GlassIconButton(system: "circle.lefthalf.filled") {
+            Button("主题", systemImage: "circle.lefthalf.filled") {
                 let order: [ThemeChoice] = [.system, .light, .dark, .black]
                 let index = order.firstIndex(of: model.theme) ?? 0
                 model.theme = order[(index + 1) % order.count]
@@ -41,8 +24,30 @@ struct MineSpace: View {
                 model.save()
                 model.show("切换至\(model.theme.label)主题")
             }
-            GlassIconButton(system: "gearshape") { model.open(.settings) }
+            Button("设置", systemImage: "gearshape") { model.open(.settings) }
         }
+    }
+}
+
+struct MineSpace: View {
+    @Environment(AppModel.self) private var model
+    @State private var card = "我的收藏"
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                stats
+                shortcuts
+                cardTabs
+                cardBody
+            }
+            .padding(16)
+            .padding(.bottom, 12)
+        }
+        .scrollEdgeSoft()
+        .navigationTitle("我的")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { MineToolbar() }
     }
 
     private var stats: some View {
@@ -82,7 +87,7 @@ struct MineSpace: View {
                 }
             }
             .padding(16)
-            .glassCard(radius: 28, interactive: true)
+            .contentPlate(radius: 28)
         }
         .buttonStyle(.plain)
     }
@@ -116,7 +121,7 @@ struct MineSpace: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .glassCard(radius: 20, interactive: true)
+            .contentPlate(radius: 20)
         }
         .buttonStyle(.plain)
     }
@@ -145,7 +150,7 @@ struct MineSpace: View {
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .glassCapsule()
+                            .selectionCapsule(selected: false)
                     }
                 }
             }

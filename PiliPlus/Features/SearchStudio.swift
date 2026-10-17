@@ -11,63 +11,56 @@ struct SearchStudio: View {
     @State private var zone = "全部"
     @State private var pub = "不限"
     @State private var showFilter = false
-    @FocusState private var focused: Bool
+
+    private var prompt: String {
+        model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索"
+    }
 
     var body: some View {
-        ZStack {
-            AuroraBackground()
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                        TextField("搜索视频、番剧、UP 主", text: $keyword)
-                            .focused($focused)
-                            .submitLabel(.search)
-                            .onSubmit { Task { await run() } }
-                        if !keyword.isEmpty {
-                            Button { keyword = "" } label: { Image(systemName: "xmark.circle.fill") }
-                                .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 40)
-                    .glassCapsule()
-                    Button("搜索") { Task { await run() } }
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Palette.bili)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(Menus.searchTabs, id: \.self) { item in
-                            Button(item) { tab = item; Task { await run() } }
-                                .font(.caption.weight(tab == item ? .bold : .regular))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .foregroundStyle(tab == item ? .white : .primary)
-                                .background { if tab == item { Capsule().fill(Palette.bili) } }
-                        }
-                        Button { showFilter = true } label: {
-                            Label("筛选", systemImage: "line.3.horizontal.decrease")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
-                                .glassCapsule()
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(16)
-                }
-                ScrollView {
-                    if keyword.isEmpty { discover } else { resultList }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                tabStrip
+                if keyword.isEmpty { discover } else { resultList }
+            }
+        }
+        .scrollEdgeSoft()
+        .navigationTitle("搜索")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $keyword, prompt: prompt) {
+            if model.flag("搜索建议"), !keyword.isEmpty {
+                ForEach(model.hotwords.filter { $0.show.localizedCaseInsensitiveContains(keyword) || $0.keyword.localizedCaseInsensitiveContains(keyword) }) { word in
+                    Text(word.show).searchCompletion(word.keyword)
                 }
             }
         }
-        .navigationTitle("搜索")
-        .navigationBarTitleDisplayMode(.inline)
+        .onSubmit(of: .search) { Task { await run() } }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("筛选", systemImage: "line.3.horizontal.decrease") { showFilter = true }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("搜索") { Task { await run() } }
+                    .fontWeight(.bold)
+            }
+        }
         .sheet(isPresented: $showFilter) { filterSheet }
-        .task { focused = true }
+    }
+
+    private var tabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Menus.searchTabs, id: \.self) { item in
+                    Button(item) { tab = item; Task { await run() } }
+                        .font(.caption.weight(tab == item ? .bold : .regular))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .foregroundStyle(tab == item ? Color.white : Color.primary)
+                        .selectionCapsule(selected: tab == item)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+        }
     }
 
     private var discover: some View {
@@ -123,12 +116,12 @@ struct SearchStudio: View {
                         HStack {
                             Text(video.ownerName).font(.headline)
                             Spacer()
-                            Text("关注").padding(.horizontal, 12).padding(.vertical, 6).glassCapsule()
+                            Text("关注").padding(.horizontal, 12).padding(.vertical, 6).selectionCapsule(selected: false)
                         }
                     }
                     .buttonStyle(.plain)
                     .padding(12)
-                    .glassCard(radius: 18)
+                    .contentPlate(radius: 18)
                 }
             } else if results.isEmpty && !searching {
                 ContentUnavailableView("没有结果", systemImage: "magnifyingglass", description: Text(tab == "视频" || tab == "综合" ? "换个关键词试试" : "该分区展示与「\(tab)」一致的结果入口"))
@@ -164,6 +157,8 @@ struct SearchStudio: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
     }
 
     private func picker(_ title: String, _ options: [String], _ binding: Binding<String>) -> some View {
@@ -212,7 +207,7 @@ struct FlowTags: View {
                         .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .glassCapsule()
+                        .selectionCapsule(selected: false)
                 }
             }
         }

@@ -2,67 +2,76 @@ import SwiftUI
 
 struct HomeFeed: View {
     @Environment(AppModel.self) private var model
-    @State private var hideChrome = false
 
     var body: some View {
-        @Bindable var model = model
-        ZStack {
-            AuroraBackground()
-            VStack(spacing: 0) {
-                if !hideChrome || !model.flag("首页顶栏收起") {
-                    topBar
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                tabStrip
-                content
-            }
-        }
-        .toolbar(.hidden, for: .navigationBar)
-        .animation(.spring(duration: 0.38), value: hideChrome)
+        pages
+            .navigationTitle("首页")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { HomeToolbar() }
     }
 
-    private var topBar: some View {
-        HStack(spacing: 10) {
-            Button { model.open(.search) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                    Text(model.flag("搜索默认词") ? (model.hotwords.first?.show ?? "搜索视频、番剧、UP 主") : "搜索")
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .font(.subheadline)
-                .padding(.horizontal, 14)
-                .frame(height: 42)
-            }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            GlassIconButton(system: "bell", badge: model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0) {
+    @ViewBuilder
+    private var pages: some View {
+        switch model.homeTab {
+        case "直播":
+            LivePlaza().homeTabBar()
+        case "热门":
+            HotPage().homeTabBar()
+        case "分区":
+            RankPage().homeTabBar()
+        case "番剧":
+            PGCPage(kind: "番剧").homeTabBar()
+        case "影视":
+            PGCPage(kind: "影视").homeTabBar()
+        default:
+            RecommendPage()
+        }
+    }
+}
+
+private struct HomeToolbar: ToolbarContent {
+    @Environment(AppModel.self) private var model
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
                 model.open(.messages)
+            } label: {
+                Image(systemName: "bell")
             }
+            .badge(model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0)
+            .accessibilityLabel("消息")
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItem(placement: .topBarTrailing) {
             Button {
                 if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
             } label: {
-                avatar
+                Text(String(model.userName.prefix(1)))
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 28)
+                    .background(Palette.bili.gradient, in: Circle())
+                    .foregroundStyle(.white)
             }
-            .buttonStyle(.plain)
+            .accessibilityLabel("个人资料")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
     }
+}
 
-    private var avatar: some View {
-        ZStack {
-            Circle().fill(Palette.bili.gradient)
-            Text(String(model.userName.prefix(1)))
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
+private extension View {
+    /// Fixed-height category strip under the system bar. Height does not animate.
+    func homeTabBar() -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            HomeTabStrip()
+                .background(Color(.systemBackground))
         }
-        .frame(width: 40, height: 40)
-        .glassCapsule(interactive: false)
     }
+}
 
-    private var tabStrip: some View {
+private struct HomeTabStrip: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(model.homeTabs, id: \.self) { tab in
@@ -84,48 +93,109 @@ struct HomeFeed: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.vertical, 8)
+        }
+        .frame(height: 56)
+    }
+}
+
+/// Owns the scroll-linked collapse so the card grid is not rebuilt while the bar moves.
+private struct RecommendPage: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            scroller
+                .task { await scrollBench(proxy) }
         }
     }
 
+    /// Category tabs stay pinned. Search lives in the system search tab, so this
+    /// scroll view does not resize a glass bar while the bench is running.
     @ViewBuilder
-    private var content: some View {
-        switch model.homeTab {
-        case "直播":
-            LivePlaza()
-        case "热门":
-            HotPage()
-        case "分区":
-            RankPage()
-        case "番剧":
-            PGCPage(kind: "番剧")
-        case "影视":
-            PGCPage(kind: "影视")
-        default:
-            recommend
-        }
-    }
-
-    private var recommend: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
-                if model.loadingFeed && model.feed.isEmpty {
-                    ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
-                }
-                ForEach(model.feed) { video in
-                    VideoCard(video: video)
+    private var scroller: some View {
+        if model.flag("首页顶栏收起") {
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        RecommendGrid()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    } header: {
+                        HomeTabStrip()
+                            .background(Color(.systemBackground))
+                    }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 28)
+            .refreshable { await model.refreshHome() }
+            .scrollEdgeSoft()
+        } else {
+            ScrollView {
+                RecommendGrid()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+            .refreshable { await model.refreshHome() }
+            .scrollEdgeSoft()
+            .homeTabBar()
         }
-        .refreshable { await model.refreshHome() }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y
-        } action: { old, new in
-            guard model.flag("首页顶栏收起") else { return }
-            if new > old + 12 { hideChrome = true }
-            if new < 8 || new < old - 18 { hideChrome = false }
+    }
+
+    private func scrollBench(_ proxy: ScrollViewProxy) async {
+        guard LaunchMode.perfScroll else { return }
+        while model.feed.count < 8 {
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        await ImageStore.shared.prepare(urls: model.feed.map(\.cover), maxPixel: 560)
+        try? await Task.sleep(for: .milliseconds(280))
+        let ids = model.feed.map(\.bvid)
+        ImageStore.prepareHits = 0
+        ImageStore.prepareMisses = 0
+        let cold = await sweep(proxy, ids: ids)
+        let warm = await sweep(proxy, ids: ids)
+        LaunchClock.write([
+            "phase": "scroll",
+            "cold": cold.dictionary,
+            "warm": warm.dictionary,
+            "imageHits": ImageStore.prepareHits,
+            "imageMisses": ImageStore.prepareMisses
+        ])
+        try? await Task.sleep(for: .milliseconds(300))
+        exit(0)
+    }
+
+    private func sweep(_ proxy: ScrollViewProxy, ids: [String]) async -> FrameStats {
+        FrameMonitor.shared.start()
+        let step = max(2, ids.count / 8)
+        var index = 0
+        while index < ids.count {
+            let id = ids[index]
+            withAnimation(.linear(duration: 0.32)) {
+                proxy.scrollTo(id, anchor: .top)
+            }
+            try? await Task.sleep(for: .milliseconds(340))
+            index += step
+        }
+        withAnimation(.linear(duration: 0.32)) {
+            proxy.scrollTo(ids[0], anchor: .top)
+        }
+        try? await Task.sleep(for: .milliseconds(360))
+        return FrameMonitor.shared.stop()
+    }
+}
+
+/// Separated so collapse updates do not rebuild every card.
+private struct RecommendGrid: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
+            if model.loadingFeed && model.feed.isEmpty {
+                ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
+            }
+            ForEach(model.feed) { video in
+                VideoCard(video: video).id(video.bvid)
+            }
         }
     }
 }
@@ -155,6 +225,7 @@ struct HotPage: View {
             .padding(16)
         }
         .refreshable { await model.refreshHome() }
+        .scrollEdgeSoft()
     }
 
     private func entry(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
@@ -163,7 +234,7 @@ struct HotPage: View {
                 .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .glassCard(radius: 18, interactive: true)
+                .contentPlate(radius: 18)
         }
         .buttonStyle(.plain)
     }
@@ -181,7 +252,8 @@ struct RankPage: View {
                             .font(.caption.weight(zone == item ? .bold : .regular))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .glassCapsule(interactive: zone == item)
+                            .foregroundStyle(zone == item ? .white : .primary)
+                            .selectionCapsule(selected: zone == item)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -195,6 +267,7 @@ struct RankPage: View {
                 }
                 .padding(16)
             }
+            .scrollEdgeSoft()
         }
     }
 }
@@ -216,7 +289,7 @@ struct PGCPage: View {
                                     Text(day == "五" ? "更新 6" : "更新 2").font(.caption2).foregroundStyle(.secondary)
                                 }
                                 .frame(width: 72, height: 64)
-                                .glassCard(radius: 18, interactive: true)
+                                .contentPlate(radius: 18)
                             }
                         }
                     }
@@ -227,7 +300,7 @@ struct PGCPage: View {
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)
-                            .glassCapsule()
+                            .selectionCapsule(selected: false)
                     }
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -238,6 +311,7 @@ struct PGCPage: View {
             }
             .padding(16)
         }
+        .scrollEdgeSoft()
     }
 }
 
@@ -254,7 +328,8 @@ struct LivePlaza: View {
                                 .font(.caption.weight(area == item ? .bold : .regular))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .glassCapsule(interactive: area == item)
+                                .foregroundStyle(area == item ? .white : .primary)
+                                .selectionCapsule(selected: area == item)
                         }
                     }
                 }
@@ -265,7 +340,7 @@ struct LivePlaza: View {
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .glassCard(radius: 18, interactive: true)
+                        .contentPlate(radius: 18)
                 }
                 .buttonStyle(.plain)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
@@ -303,5 +378,6 @@ struct LivePlaza: View {
             .padding(16)
         }
         .refreshable { await model.refreshHome() }
+        .scrollEdgeSoft()
     }
 }

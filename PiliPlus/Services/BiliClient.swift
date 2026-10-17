@@ -115,8 +115,11 @@ struct BiliClient: Sendable {
 
     func dynamics() async throws -> [DynamicItem] {
         // 未登录时使用综合热门作为动态流的公开替代，登录 Cookie 接入后可切到 polymer 动态接口。
-        let videos = try await popular()
-        return videos.enumerated().map { index, video in
+        Self.dynamics(from: try await popular())
+    }
+
+    static func dynamics(from videos: [VideoItem]) -> [DynamicItem] {
+        videos.enumerated().map { index, video in
             DynamicItem(
                 id: video.bvid,
                 name: video.ownerName,

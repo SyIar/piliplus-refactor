@@ -6,79 +6,34 @@ enum Palette {
     static let ink = Color(red: 0.07, green: 0.07, blue: 0.09)
 }
 
-struct AuroraBackground: View {
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        ZStack {
-            (scheme == .dark ? Palette.ink : Color(red: 0.95, green: 0.95, blue: 0.97))
-            RadialGradient(
-                colors: [Palette.bili.opacity(scheme == .dark ? 0.42 : 0.28), .clear],
-                center: .topTrailing,
-                startRadius: 12,
-                endRadius: 460
-            )
-            RadialGradient(
-                colors: [Color(red: 0.36, green: 0.55, blue: 1).opacity(scheme == .dark ? 0.32 : 0.18), .clear],
-                center: .bottomLeading,
-                startRadius: 8,
-                endRadius: 520
-            )
-            RadialGradient(
-                colors: [Palette.coin.opacity(0.16), .clear],
-                center: .topLeading,
-                startRadius: 4,
-                endRadius: 280
-            )
-        }
-        .ignoresSafeArea()
-    }
-}
-
 extension View {
-    @ViewBuilder
-    func liquidGlass<S: Shape>(
-        _ glass: Glass = .regular,
-        in shape: S,
-        interactive: Bool = false
-    ) -> some View {
-        let styled: Glass = interactive ? glass.interactive() : glass
-        self.glassEffect(styled, in: shape)
-    }
-
-    func glassCard(radius: CGFloat = 28, interactive: Bool = false) -> some View {
-        liquidGlass(in: RoundedRectangle(cornerRadius: radius, style: .continuous), interactive: interactive)
-    }
-
-    func glassCapsule(interactive: Bool = true) -> some View {
-        liquidGlass(in: Capsule(), interactive: interactive)
-    }
-}
-
-struct GlassIconButton: View {
-    let system: String
-    var badge: Int = 0
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: system)
-                .font(.system(size: 16, weight: .semibold))
-                .frame(width: 40, height: 40)
-                .overlay(alignment: .topTrailing) {
-                    if badge > 0 {
-                        Text(badge > 99 ? "99+" : "\(badge)")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(Palette.bili, in: Capsule())
-                            .offset(x: 6, y: -4)
-                    }
+    /// Opaque plate for scrolling content. Liquid Glass stays on system bars and controls.
+    func contentPlate(radius: CGFloat = 22) -> some View {
+        background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+                .overlay {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
                 }
         }
-        .buttonStyle(.plain)
-        .glassCapsule()
+    }
+
+    func selectionCapsule(selected: Bool) -> some View {
+        background {
+            if selected {
+                Capsule().fill(Palette.bili.gradient)
+            } else {
+                Capsule().fill(Color.primary.opacity(0.06))
+            }
+        }
+    }
+
+    /// Soft edge under system bars. Axis is `.top` / `.bottom`; `.vertical` is not a scroll-edge set.
+    func scrollEdgeSoft() -> some View {
+        self
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
     }
 }
 
@@ -119,27 +74,62 @@ struct DurationBadge: View {
 struct RemoteImage: View {
     let url: String
     var ratio: CGFloat = 16 / 9
+    var maxPixel: CGFloat = 560
 
     var body: some View {
         Color.clear
             .aspectRatio(ratio, contentMode: .fit)
-            .overlay {
-                AsyncImage(url: URL(string: url)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        placeholder
-                    default:
-                        placeholder.overlay { ProgressView().controlSize(.small) }
-                    }
-                }
-            }
+            .overlay { CachedImage(url: url, maxPixel: maxPixel) }
             .clipped()
     }
+}
 
-    private var placeholder: some View {
-        LinearGradient(colors: [Palette.bili.opacity(0.35), Color.blue.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
+private struct CachedImage: View {
+    let url: String
+    var maxPixel: CGFloat
+    @State private var image: UIImage?
+
+    init(url: String, maxPixel: CGFloat) {
+        self.url = url
+        self.maxPixel = maxPixel
+        let initial = URL(string: url).flatMap { ImageStore.cachedImage(url: $0, maxPixel: maxPixel) }
+        _image = State(initialValue: initial)
+    }
+
+    var body: some View {
+        ZStack {
+            if image == nil {
+                LinearGradient(colors: [Palette.bili.opacity(0.35), Color.blue.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            }
+            PreparedImage(image: image)
+        }
+        .task(id: url) {
+            guard image == nil, let parsed = URL(string: url) else { return }
+            let loaded = await ImageStore.shared.image(url: parsed, maxPixel: maxPixel)
+            guard !Task.isCancelled, let loaded else { return }
+            image = loaded
+        }
+    }
+}
+
+/// Assigns a prepared bitmap in place. Swapping `Image(uiImage:)` rebuilds
+/// the SwiftUI node and was showing up as a long frame when several covers landed together.
+private struct PreparedImage: UIViewRepresentable {
+    var image: UIImage?
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView()
+        view.contentMode = .scaleAspectFill
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.image = image
+        return view
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        if uiView.image !== image {
+            uiView.image = image
+        }
     }
 }
 
@@ -151,7 +141,7 @@ struct ToastBanner: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .glassCapsule(interactive: false)
+            .glassEffect(.regular, in: Capsule())
             .padding(.horizontal, 28)
     }
 }

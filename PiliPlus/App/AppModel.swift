@@ -30,7 +30,11 @@ enum ThemeChoice: String, CaseIterable, Identifiable {
 @Observable
 final class AppModel {
     let client = BiliClient()
-    var path = NavigationPath()
+    /// Each tab owns its stack. A single path outside `TabView` cannot host a search-role tab.
+    var homePath = NavigationPath()
+    var dynamicsPath = NavigationPath()
+    var minePath = NavigationPath()
+    var searchPath = NavigationPath()
     var toast: String?
     var feed: [VideoItem] = []
     var hot: [VideoItem] = []
@@ -49,6 +53,8 @@ final class AppModel {
     private var timeObserver: Any?
     var qualityName = "高清 720P"
     var danmakuOn = true
+    private let softHaptic = UIImpactFeedbackGenerator(style: .soft)
+    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     var liked: Set<String> = []
     var disliked: Set<String> = []
     var coined: Set<String> = []
@@ -87,6 +93,28 @@ final class AppModel {
     init() {
         load()
         if toggles.isEmpty { seedDefaults() }
+        switch LaunchMode.screen {
+        case "dynamics": selectedTab = 1
+        case "mine": selectedTab = 2
+        default: break
+        }
+        softHaptic.prepare()
+        lightHaptic.prepare()
+    }
+
+    func applyFixtures() {
+        let gallery = FixtureGallery.make()
+        feed = gallery.videos
+        hot = gallery.videos
+        rank = Array(gallery.videos.reversed())
+        lives = gallery.lives
+        hotwords = gallery.words
+        dynamics = gallery.dynamics
+        history = Array(gallery.videos.prefix(4))
+        for item in gallery.videos { store(item) }
+        loadingFeed = false
+        let covers = gallery.videos.map(\.cover)
+        Task { await ImageStore.shared.prepare(urls: covers, maxPixel: 560) }
     }
 
     func seedDefaults() {
@@ -132,18 +160,36 @@ final class AppModel {
         if key == "弹幕开关" { danmakuOn = value }
         save()
         if flag("震动反馈") {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            lightHaptic.impactOccurred()
         }
     }
 
     func open(_ route: Route) {
-        path.append(route)
+        if case .search = route {
+            selectedTab = 3
+            return
+        }
+        switch selectedTab {
+        case 1: dynamicsPath.append(route)
+        case 2: minePath.append(route)
+        case 3: searchPath.append(route)
+        default: homePath.append(route)
+        }
+    }
+
+    func pop() {
+        switch selectedTab {
+        case 1: if !dynamicsPath.isEmpty { dynamicsPath.removeLast() }
+        case 2: if !minePath.isEmpty { minePath.removeLast() }
+        case 3: if !searchPath.isEmpty { searchPath.removeLast() }
+        default: if !homePath.isEmpty { homePath.removeLast() }
+        }
     }
 
     func show(_ text: String) {
         toast = text
         if flag("震动反馈") {
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            softHaptic.impactOccurred()
         }
         Task {
             try? await Task.sleep(for: .seconds(1.6))
@@ -162,21 +208,23 @@ final class AppModel {
 
     func refreshHome() async {
         loadingFeed = true
-        defer { loadingFeed = false }
         do {
-            async let popular = client.popular()
+            let popular = try await client.popular()
+            feed = popular
+            hot = popular
+            loadingFeed = false
+            Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
+            await Task.yield()
             async let ranking = client.ranking()
             async let rooms = client.liveRooms()
             async let words = client.hotwords()
-            async let dyn = client.dynamics()
-            feed = try await popular
-            hot = feed
-            rank = try await ranking
-            lives = try await rooms
-            hotwords = try await words
-            dynamics = try await dyn
-            for item in feed + rank { remember(item) }
+            rank = (try? await ranking) ?? rank
+            lives = (try? await rooms) ?? lives
+            hotwords = (try? await words) ?? hotwords
+            dynamics = BiliClient.dynamics(from: popular)
+            for item in feed + rank { store(item) }
         } catch {
+            loadingFeed = false
             show(error.localizedDescription)
         }
     }
