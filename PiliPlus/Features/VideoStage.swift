@@ -116,9 +116,8 @@ struct VideoStage: View {
             if !hint.isEmpty {
                 Text(hint)
                     .font(.headline.monospacedDigit())
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(.regular, in: Capsule())
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.65), radius: 3, y: 1)
             }
             PlayerControls(
                 video: video,
@@ -132,7 +131,14 @@ struct VideoStage: View {
                 showCoin: $showCoin,
                 showFav: $showFav,
                 showShare: $showShare,
-                onQuality: { name in Task { await switchQuality(name) } }
+                onQuality: { name in Task { await switchQuality(name) } },
+                onStepPage: { delta in
+                    let next = currentPage + delta
+                    guard video.pages.indices.contains(next) else { return }
+                    currentPage = next
+                    let cid = video.pages[next].cid
+                    Task { await reload(video, cid: cid) }
+                }
             )
         }
         .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 0, style: .continuous))
@@ -557,9 +563,25 @@ struct VideoStage: View {
                         Text(cue.text)
                     }
                 }
+                Section("倍速") {
+                    ForEach(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"], id: \.self) { label in
+                        Button(label) {
+                            let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
+                            model.playbackRate = value
+                            model.player?.rate = model.isPlaying ? value : 0
+                        }
+                    }
+                }
                 Button("屏蔽词管理") { model.open(.feature("弹幕")) }
+                Button("更多") {
+                    showDanmaku = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        showMore = true
+                    }
+                }
             }
-            .navigationTitle("弹幕设置")
+            .navigationTitle("播放设置")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
@@ -707,192 +729,249 @@ struct PlayerControls: View {
     @Binding var showFav: Bool
     @Binding var showShare: Bool
     var onQuality: (String) -> Void
+    var onStepPage: (Int) -> Void
     private let speeds = ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"]
+    @State private var chrome = true
+    @State private var chromeToken = 0
 
     private var progress: Double {
         seeking ? localProgress : model.playbackSeconds
     }
 
+    private var duration: Double { Double(max(video.duration, 1)) }
+
     private var qualityChoices: [String] {
         video.qualities.isEmpty ? ["流畅 360P", "清晰 480P", "高清 720P", "高清 1080P", "高清 1080P60", "超清 4K"] : video.qualities
     }
 
+    /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
+    private var pinsChrome: Bool { LaunchMode.screen == "playback" }
+
     var body: some View {
         ZStack {
+            Color.black.opacity(chrome && !locked ? 0.18 : 0)
+                .allowsHitTesting(false)
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { toggleChrome() }
             if locked {
-                iconButton("lock.fill") { locked = false }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.leading, 8)
-                    .padding(.top, 4)
-            } else {
-                VStack(spacing: 0) {
-                    topBar
-                    Spacer(minLength: 0)
-                    bottomBar
+                iconButton("lock.fill") {
+                    locked = false
+                    reveal()
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 4)
+                .padding(.top, 2)
+            } else if chrome {
+                controls
             }
+            progressBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeOut(duration: 0.22), value: chrome)
+        .onAppear { armHide() }
+        .onChange(of: seeking) { _, active in
+            if active {
+                chrome = true
+            } else {
+                armHide()
+            }
+        }
+    }
+
+    private var controls: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                topBar
+                Spacer(minLength: 0).allowsHitTesting(false)
+                bottomRow
+            }
+            centerTransport
+        }
     }
 
     private var topBar: some View {
         HStack(spacing: 0) {
-            iconButton("chevron.backward") {
-                if fullscreen {
-                    withAnimation(.easeOut(duration: 0.25)) { fullscreen = false }
-                } else {
-                    model.pop()
-                }
-            }
-            .accessibilityLabel("返回")
+            iconButton("chevron.backward") { goBack() }
+                .accessibilityLabel("返回")
             Text(video.title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-            Spacer(minLength: 8)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+            Spacer(minLength: 8).allowsHitTesting(false)
             iconButton("pip.enter") {
                 if PictureInPictureBridge.shared.supported {
                     PictureInPictureBridge.shared.toggle()
                 } else {
                     model.show("当前设备不支持画中画")
                 }
+                reveal()
             }
             .accessibilityLabel("画中画")
-            iconButton("camera") { model.show("已保存截图到相册预览") }
-                .accessibilityLabel("截图")
-            Menu {
-                Button("弹幕设置", systemImage: "slider.horizontal.3") { showDanmaku = true }
-                Button("更多", systemImage: "ellipsis") { showMore = true }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+            iconButton("camera") {
+                model.show("已保存截图到相册预览")
+                reveal()
+            }
+            .accessibilityLabel("截图")
+            iconButton("gearshape") {
+                showDanmaku = true
+                reveal()
             }
             .accessibilityLabel("播放设置")
             if fullscreen {
-                iconButton("lock.open") { locked = true }
-                    .accessibilityLabel("锁定")
+                iconButton("lock.open") {
+                    locked = true
+                    reveal()
+                }
+                .accessibilityLabel("锁定")
             }
         }
         .padding(.horizontal, 2)
         .background(alignment: .top) {
             LinearGradient(
-                colors: [.black.opacity(0.72), .black.opacity(0.28), .clear],
+                colors: [.black.opacity(0.6), .clear],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 76)
+            .frame(height: 88)
             .allowsHitTesting(false)
         }
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 0) {
-            if model.flag("显示高能进度条") {
-                EnergyBar(progress: progress, duration: Double(max(video.duration, 1)))
-                    .frame(height: 8)
-                    .padding(.horizontal, 16)
+    private var centerTransport: some View {
+        HStack(spacing: 36) {
+            if video.pages.count > 1 {
+                iconButton("backward.end.fill") {
+                    onStepPage(-1)
+                    reveal()
+                }
+                .accessibilityLabel("上一P")
             }
-            HStack(spacing: 0) {
-                iconButton(model.isPlaying ? "pause.fill" : "play.fill", action: togglePlay)
-                    .accessibilityLabel(model.isPlaying ? "暂停" : "播放")
-                Text(DurationBadge.clock(Int(progress)))
-                    .font(.caption.monospacedDigit().weight(.semibold))
+            Button {
+                togglePlay()
+                reveal()
+            } label: {
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 36, weight: .bold))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-                Slider(
-                    value: Binding(
-                        get: { progress },
-                        set: { localProgress = $0; seeking = true }
-                    ),
-                    in: 0...Double(max(video.duration, 1)),
-                    onEditingChanged: { editing in
-                        if !editing {
-                            model.playbackSeconds = localProgress
-                            model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
-                            seeking = false
-                        }
-                    }
-                )
-                .tint(.white)
-                .layoutPriority(1)
-                .padding(.horizontal, 4)
-                .accessibilityLabel("进度")
-                Text(DurationBadge.clock(video.duration))
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-                iconButton(model.danmakuOn ? "text.bubble.fill" : "text.bubble") {
-                    model.danmakuOn.toggle()
-                    model.setFlag("弹幕开关", model.danmakuOn)
-                }
-                .accessibilityLabel(model.danmakuOn ? "关闭弹幕" : "打开弹幕")
-                Menu {
-                    ForEach(speeds, id: \.self) { label in
-                        Button(label) { applySpeed(label) }
-                    }
-                } label: {
-                    Text(speedLabel)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-                }
-                .accessibilityLabel("倍速")
-                Menu {
-                    ForEach(qualityChoices, id: \.self) { name in
-                        Button {
-                            onQuality(name)
-                        } label: {
-                            if model.qualityName == name {
-                                Label(name, systemImage: "checkmark")
-                            } else {
-                                Text(name)
-                            }
-                        }
-                    }
-                } label: {
-                    Text(shortQuality)
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-                }
-                .accessibilityLabel("画质")
-                iconButton(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
-                    withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() }
-                }
-                .accessibilityLabel(fullscreen ? "退出全屏" : "全屏")
+                    .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
+                    .frame(width: 64, height: 64)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 2)
-            if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
-                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.isPlaying ? "暂停" : "播放")
+            if video.pages.count > 1 {
+                iconButton("forward.end.fill") {
+                    onStepPage(1)
+                    reveal()
+                }
+                .accessibilityLabel("下一P")
             }
         }
+    }
+
+    private var bottomRow: some View {
+        HStack(spacing: 0) {
+            Text("\(DurationBadge.clock(Int(progress))) / \(DurationBadge.clock(video.duration))")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                .padding(.leading, 12)
+            Spacer(minLength: 4)
+            iconButton(model.danmakuOn ? "text.bubble.fill" : "text.bubble") {
+                model.danmakuOn.toggle()
+                model.setFlag("弹幕开关", model.danmakuOn)
+                reveal()
+            }
+            .accessibilityLabel(model.danmakuOn ? "关闭弹幕" : "打开弹幕")
+            plainMenu(shortQuality, label: "画质") {
+                ForEach(qualityChoices, id: \.self) { name in
+                    Button {
+                        onQuality(name)
+                        reveal()
+                    } label: {
+                        if model.qualityName == name {
+                            Label(name, systemImage: "checkmark")
+                        } else {
+                            Text(name)
+                        }
+                    }
+                }
+            }
+            plainMenu(speedLabel, label: "倍速") {
+                ForEach(speeds, id: \.self) { label in
+                    Button(label) {
+                        applySpeed(label)
+                        reveal()
+                    }
+                }
+            }
+            iconButton(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() }
+                reveal()
+            }
+            .accessibilityLabel(fullscreen ? "退出全屏" : "全屏")
+        }
+        .padding(.bottom, 10)
         .background(alignment: .bottom) {
             LinearGradient(
-                colors: [.clear, .black.opacity(0.34), .black.opacity(0.72)],
+                colors: [.clear, .black.opacity(0.6)],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 92)
+            .frame(height: 96)
             .allowsHitTesting(false)
         }
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geo in
+            let fraction = min(1, max(0, progress / duration))
+            let thick = seeking
+            let bar = thick ? 5.0 : 2.0
+            ZStack(alignment: .bottomLeading) {
+                Rectangle()
+                    .fill(.white.opacity(0.35))
+                    .frame(height: bar)
+                Rectangle()
+                    .fill(Palette.bili)
+                    .frame(width: max(bar, geo.size.width * fraction), height: bar)
+                if thick {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                        .offset(x: max(0, geo.size.width * fraction - 7), y: -4)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let span = max(geo.size.width, 1)
+                        let x = min(max(0, value.location.x), span)
+                        localProgress = duration * Double(x / span)
+                        seeking = true
+                        chrome = true
+                    }
+                    .onEnded { value in
+                        let span = max(geo.size.width, 1)
+                        let x = min(max(0, value.location.x), span)
+                        localProgress = duration * Double(x / span)
+                        model.playbackSeconds = localProgress
+                        model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
+                        seeking = false
+                        armHide()
+                    }
+            )
+        }
+        .frame(height: 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .accessibilityLabel("进度")
     }
 
     private func iconButton(_ system: String, action: @escaping () -> Void) -> some View {
@@ -900,11 +979,26 @@ struct PlayerControls: View {
             Image(systemName: system)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
-                .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
         }
         .buttonStyle(.plain)
+    }
+
+    private func plainMenu<MenuContent: View>(_ title: String, label: String, @ViewBuilder content: () -> MenuContent) -> some View {
+        Menu(content: content) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var speedLabel: String {
@@ -914,13 +1008,6 @@ struct PlayerControls: View {
         return String(format: "%.2gx", rate)
     }
 
-    private func applySpeed(_ label: String) {
-        let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
-        model.playbackRate = value
-        model.player?.rate = model.isPlaying ? value : 0
-    }
-
-    /// One token. "1080P AVC" wrapped inside the glass transport bar and covered the buttons beside it.
     private var shortQuality: String {
         if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { return "1080P60" }
         if model.qualityName.contains("1080") { return "1080P" }
@@ -931,9 +1018,56 @@ struct PlayerControls: View {
         return "自动"
     }
 
+    private func applySpeed(_ label: String) {
+        let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
+        model.playbackRate = value
+        model.player?.rate = model.isPlaying ? value : 0
+    }
+
     private func togglePlay() {
         model.isPlaying.toggle()
         if model.isPlaying { model.player?.play() } else { model.player?.pause() }
+    }
+
+    private func goBack() {
+        if fullscreen {
+            withAnimation(.easeOut(duration: 0.25)) { fullscreen = false }
+        } else {
+            model.pop()
+        }
+    }
+
+    private func toggleChrome() {
+        if pinsChrome {
+            chrome = true
+            return
+        }
+        if chrome {
+            chrome = false
+            chromeToken += 1
+        } else {
+            chrome = true
+            armHide()
+        }
+    }
+
+    private func reveal() {
+        chrome = true
+        armHide()
+    }
+
+    private func armHide() {
+        guard !pinsChrome else {
+            chrome = true
+            return
+        }
+        chromeToken += 1
+        let token = chromeToken
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard token == chromeToken, !seeking else { return }
+            chrome = false
+        }
     }
 }
 
