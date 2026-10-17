@@ -17,10 +17,10 @@ enum LivePacket {
         var body: Data
     }
 
-    static func frames(in data: Data, depth: Int = 0) -> [Frame] {
+    static func decode(_ data: Data, depth: Int = 0) -> [Frame] {
         guard depth < 6 else { return [] }
         let bytes = [UInt8](data)
-        var frames: [Frame] = []
+        var found: [Frame] = []
         var offset = 0
         while offset + 16 <= bytes.count {
             let length = int32(bytes, offset)
@@ -32,20 +32,21 @@ enum LivePacket {
             let body = Data(bytes[bodyStart..<(offset + length)])
             if op == 5 && (version == 2 || version == 3) {
                 if let inflated = LiveInflate.decompress(body, brotli: version == 3) {
-                    let nested = frames(in: inflated, depth: depth + 1)
-                    if nested.isEmpty, let line = chatLine(in: inflated) {
-                        frames.append(Frame(op: 5, body: inflated))
-                        _ = line
+                    let nested = decode(inflated, depth: depth + 1)
+                    if nested.isEmpty {
+                        if chatLine(in: inflated) != nil {
+                            found.append(Frame(op: 5, body: inflated))
+                        }
                     } else {
-                        frames.append(contentsOf: nested)
+                        found.append(contentsOf: nested)
                     }
                 }
             } else if op == 5 {
-                frames.append(Frame(op: 5, body: body))
+                found.append(Frame(op: 5, body: body))
             }
             offset += length
         }
-        return frames
+        return found
     }
 
     static func chatLine(in body: Data) -> LiveChatLine? {
@@ -266,7 +267,7 @@ final class LiveSocket {
     }
 
     private func ingest(_ data: Data) {
-        let frames = LivePacket.frames(in: data)
+        let frames = LivePacket.decode(data)
         if loggedPackets < 3 {
             loggedPackets += 1
             print("live danmu packet \(data.count) frames \(frames.count)")
