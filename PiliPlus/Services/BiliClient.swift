@@ -1048,8 +1048,8 @@ struct BiliClient: Sendable {
         let desc = modules["module_dynamic"]["desc"]["text"].string ?? ""
         let stat = modules["module_stat"]
         let archive = archiveJSON(in: item)
-        var video = video(fromArchive: archive)
-        if video == nil { video = video(fromArchive: archiveJSON(in: item["orig"])) }
+        var clip = Self.video(fromArchive: archive)
+        if clip == nil { clip = Self.video(fromArchive: archiveJSON(in: item["orig"])) }
         let type = item["type"].string ?? ""
         let kind: String
         switch type {
@@ -1059,7 +1059,7 @@ struct BiliClient: Sendable {
         case "DYNAMIC_TYPE_FORWARD": kind = "转发"
         default: kind = "动态"
         }
-        let text = unescape(desc.isEmpty ? (video?.title ?? author["pub_action"].string ?? kind) : desc)
+        let text = unescape(desc.isEmpty ? (clip?.title ?? author["pub_action"].string ?? kind) : desc)
         return DynamicItem(
             id: id,
             name: author["name"].string ?? "用户",
@@ -1067,7 +1067,7 @@ struct BiliClient: Sendable {
             text: text,
             time: author["pub_time"].string ?? "",
             kind: kind,
-            video: video,
+            video: clip,
             like: stat["like"]["count"].int ?? 0,
             comment: stat["comment"]["count"].int ?? 0,
             repost: stat["forward"]["count"].int ?? 0
