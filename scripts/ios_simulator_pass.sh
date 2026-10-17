@@ -108,8 +108,35 @@ for i in 1 2 3; do
   run_perf -perfStartup "$OUT/perf/startup-$i"
 done
 
-echo "Scroll sample"
+echo "Scroll sample and screen recording"
+# Record the scripted feed scroll. simctl finalizes the mp4 on SIGINT.
+SCROLL_VIDEO="$OUT/scroll-feed.mp4"
+xcrun simctl io "$UDID" recordVideo --codec=h264 --mask=ignored --force "$SCROLL_VIDEO" \
+  >"$OUT/perf/record.log" 2>&1 &
+RECORD_PID=$!
+sleep 1
+set +e
 run_perf -perfScroll "$OUT/perf/scroll"
+SCROLL_STATUS=$?
+set -e
+sleep 0.6
+kill -INT "$RECORD_PID" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  if [[ -f "$SCROLL_VIDEO" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+wait "$RECORD_PID" 2>/dev/null || true
+if [[ ! -f "$SCROLL_VIDEO" ]]; then
+  echo "recordVideo did not produce $SCROLL_VIDEO" | tee "$OUT/perf/record.missing"
+  tail -n 40 "$OUT/perf/record.log" || true
+  exit 1
+fi
+ls -lh "$SCROLL_VIDEO"
+if [[ "$SCROLL_STATUS" -ne 0 ]]; then
+  exit "$SCROLL_STATUS"
+fi
 
 echo "Screenshots on $NAME"
 for screen in home dynamics mine search settings video; do
