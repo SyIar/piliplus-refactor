@@ -789,7 +789,12 @@ struct PlayerControls: View {
                 .tint(.white)
                 Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
                 Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
-                Button { showQuality = true } label: { Text(shortQuality).font(.caption.weight(.bold)) }
+                Button { showQuality = true } label: {
+                    Text(shortQuality)
+                        .font(.caption.weight(.bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
                 if PictureInPictureBridge.shared.supported {
                     Button { PictureInPictureBridge.shared.toggle() } label: { Image(systemName: "pip.enter") }
                 }
@@ -821,21 +826,15 @@ struct PlayerControls: View {
         }
     }
 
+    /// One token. "1080P AVC" wrapped inside the glass transport bar and covered the buttons beside it.
     private var shortQuality: String {
-        let base: String
-        if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { base = "1080P60" }
-        else if model.qualityName.contains("1080") { base = "1080P" }
-        else if model.qualityName.contains("720") { base = "720P" }
-        else if model.qualityName.contains("4K") { base = "4K" }
-        else if model.qualityName.contains("480") { base = "480P" }
-        else if model.qualityName.contains("360") { base = "360P" }
-        else { base = "自动" }
-        switch video.streamCodec {
-        case "av01": return "\(base) AV1"
-        case "hvc1": return "\(base) HEVC"
-        case "avc1": return "\(base) AVC"
-        default: return base
-        }
+        if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { return "1080P60" }
+        if model.qualityName.contains("1080") { return "1080P" }
+        if model.qualityName.contains("720") { return "720P" }
+        if model.qualityName.contains("4K") { return "4K" }
+        if model.qualityName.contains("480") { return "480P" }
+        if model.qualityName.contains("360") { return "360P" }
+        return "自动"
     }
 
     private func togglePlay() {
