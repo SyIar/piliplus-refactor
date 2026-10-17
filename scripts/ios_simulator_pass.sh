@@ -56,7 +56,18 @@ echo "Booting $NAME ($UDID)"
 xcrun simctl boot "$UDID" || true
 xcrun simctl bootstatus "$UDID" -b
 open -a Simulator --args -CurrentDeviceUDID "$UDID" || true
-sleep 3
+# iOS 26 posts "Ready for Apple Intelligence" once the model catalog is ready.
+# The follow-up daemon records this date and does not post again.
+suppress_apple_intelligence() {
+  local stamp
+  stamp="$(date -u +"%Y-%m-%d %H:%M:%S +0000")"
+  xcrun simctl spawn "$UDID" defaults write \
+    com.apple.generativeexperiences.corefollowup \
+    DateOfLastAppleIntelligenceReadinessCFU -date "$stamp" || true
+  xcrun simctl spawn "$UDID" launchctl kickstart -k "user/$(id -u)/com.apple.followupd" || true
+}
+suppress_apple_intelligence
+sleep 2
 xcrun simctl status_bar "$UDID" override \
   --time "9:41" \
   --batteryState charged \
@@ -139,6 +150,7 @@ if [[ "$SCROLL_STATUS" -ne 0 ]]; then
 fi
 
 echo "Screenshots on $NAME"
+suppress_apple_intelligence
 for screen in home dynamics mine search settings video login; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
