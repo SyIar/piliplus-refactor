@@ -55,7 +55,6 @@ private struct CollapsingSearchRow: View {
             .clipped()
             .opacity(1 - Double(progress))
             .accessibilityHidden(progress > 0.98)
-            .transaction { $0.animation = nil }
     }
 }
 
@@ -145,6 +144,7 @@ private struct RecommendPage: View {
     @Environment(AppModel.self) private var model
     @State private var tracked: CGFloat = 0
     @State private var collapse: CGFloat = 0
+    @State private var easing = false
 
     private static let travel: CGFloat = 72
 
@@ -157,9 +157,7 @@ private struct RecommendPage: View {
             }
             .refreshable { await model.refreshHome() }
             .onScrollGeometryChange(for: CGFloat.self) { geo in
-                // Distance into the content. Adding the top inset keeps the bar from
-                // chasing its own height change when the safe-area bar shrinks.
-                geo.contentOffset.y + geo.contentInsets.top
+                geo.contentOffset.y
             } action: { old, new in
                 trackCollapse(from: old, to: new)
             }
@@ -170,8 +168,9 @@ private struct RecommendPage: View {
         }
     }
 
-    /// Collapse distance follows the scroll delta. Smoothstep eases the ends
-    /// without waiting for a threshold and then jumping.
+    /// Small deltas track the scroll directly. A scripted `scrollTo` often
+    /// reports the whole distance at once; that case eases the bar instead of
+    /// cutting its height to zero on a single frame.
     private func trackCollapse(from old: CGFloat, to new: CGFloat) {
         guard model.flag("首页顶栏收起") else {
             if tracked != 0 || collapse != 0 {
@@ -179,13 +178,28 @@ private struct RecommendPage: View {
             }
             return
         }
-        var next = tracked + (new - old)
+        if easing { return }
+        let dy = new - old
+        var next = tracked + dy
         if new <= 1 { next = 0 }
         next = min(Self.travel, max(0, next))
         if abs(next - tracked) < 0.05 { return }
         let t = next / Self.travel
         let eased = t * t * (3 - 2 * t)
-        applyCollapse(tracked: next, collapse: eased)
+        if abs(dy) > 28 {
+            easing = true
+            let duration = min(0.42, 0.22 + abs(dy) / 700)
+            withAnimation(.easeInOut(duration: duration)) {
+                tracked = next
+                collapse = eased
+            }
+            Task {
+                try? await Task.sleep(for: .milliseconds(Int(duration * 1000) + 40))
+                easing = false
+            }
+        } else {
+            applyCollapse(tracked: next, collapse: eased)
+        }
     }
 
     private func applyCollapse(tracked: CGFloat, collapse: CGFloat) {
