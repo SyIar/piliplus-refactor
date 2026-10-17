@@ -30,14 +30,65 @@ enum LiveRequest {
         ])
     }
 
-    static func area(parent: Int, page: Int) -> SignedForm {
+    /// Homepage rail. Rooms sit in `data.recommend_room_list`.
+    static func moreRecommend() -> SignedForm {
+        SignedForm(method: "GET", path: "/xlive/web-interface/v1/webMain/getMoreRecList", fields: [
+            "platform": "web",
+            "web_location": "333.1007"
+        ])
+    }
+
+    static func area(parent: Int, page: Int, sort: String = "") -> SignedForm {
         SignedForm(method: "GET", path: "/xlive/web-interface/v1/second/getList", fields: [
             "platform": "web",
             "parent_area_id": "\(parent)",
             "area_id": "0",
-            "sort_type": "",
+            "sort_type": sort,
             "page": "\(max(1, page))"
         ])
+    }
+
+    /// App homepage feed. Rooms sit in `card_list[].card_data.small_card_v1`.
+    static func appFeed(page: Int) -> SignedForm {
+        SignedForm(method: "GET", path: "/xlive/app-interface/v2/index/feed", fields: appFields(page: page, extra: [:]))
+    }
+
+    /// App area list. Rooms sit in `data.list`.
+    static func appArea(parent: Int, page: Int) -> SignedForm {
+        SignedForm(method: "GET", path: "/xlive/app-interface/v2/second/getList", fields: appFields(page: page, extra: [
+            "area_id": "0",
+            "parent_area_id": "\(parent)",
+            "module_select": "0",
+            "page_size": "20",
+            "qn": "0",
+            "sort_type": "online",
+            "tag_version": "1"
+        ]))
+    }
+
+    private static func appFields(page: Int, extra: [String: String]) -> [String: String] {
+        var fields = [
+            "actionKey": "appkey",
+            "build": "8430300",
+            "c_locale": "zh_CN",
+            "channel": "master",
+            "device": "android",
+            "device_name": "android",
+            "device_type": "0",
+            "disable_rcmd": "0",
+            "fnval": "912",
+            "https_url_req": "1",
+            "mobi_app": "android",
+            "network": "wifi",
+            "page": "\(max(1, page))",
+            "platform": "android",
+            "s_locale": "zh_CN",
+            "scale": "2",
+            "statistics": #"{"appId":1,"platform":3,"version":"8.43.0","abtest":""}"#,
+            "version": "8.43.0"
+        ]
+        for (key, value) in extra { fields[key] = value }
+        return fields
     }
 
     static func roomInfo(room: Int) -> SignedForm {

@@ -779,8 +779,12 @@ capture_live_ui() {
   dir="$(container)"
   proof="$dir/Documents/live-ui.json"
   rm -f "$proof"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
-  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   for _ in $(seq 1 70); do
     if [[ -f "$proof" ]]; then
       found=1
@@ -793,10 +797,11 @@ capture_live_ui() {
   echo "saved ${screen}.png"
   if [[ "$found" -ne 1 ]]; then
     echo "missing live ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
     return 1
   fi
   cp "$proof" "$OUT/perf/${screen}-ui.json"
-  python3 - "$screen" "$proof" <<'PY'
+  if ! python3 - "$screen" "$proof" <<'PY'
 import json, sys
 screen, path = sys.argv[1], sys.argv[2]
 data = json.load(open(path))
@@ -819,6 +824,11 @@ print(f"{screen} live ui {'ok' if ok else 'rejected'}")
 if not ok:
     raise SystemExit(f"{screen} live ui rejected: {error or 'empty'}")
 PY
+  then
+    echo "live ui log ${screen}:" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
 }
 
 capture_live_room() {
