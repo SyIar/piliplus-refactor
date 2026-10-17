@@ -142,72 +142,47 @@ private struct HomeTabStrip: View {
 /// Owns the scroll-linked collapse so the card grid is not rebuilt while the bar moves.
 private struct RecommendPage: View {
     @Environment(AppModel.self) private var model
-    @State private var tracked: CGFloat = 0
-    @State private var collapse: CGFloat = 0
-    @State private var easing = false
-
-    private static let travel: CGFloat = 72
 
     var body: some View {
         ScrollViewReader { proxy in
+            scroller
+                .task { await scrollBench(proxy) }
+        }
+    }
+
+    /// The search row is part of the scroll content, so it leaves and returns
+    /// with the feed. Animating the safe-area height to fake that move cost
+    /// several 200 ms frames. The tab strip stays pinned.
+    @ViewBuilder
+    private var scroller: some View {
+        if model.flag("首页顶栏收起") {
+            ScrollView {
+                SearchRow()
+                    .scrollTransition(.animated) { content, phase in
+                        content.opacity(phase.isIdentity ? 1 : 0)
+                    }
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        RecommendGrid()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    } header: {
+                        HomeTabStrip()
+                            .background(.ultraThinMaterial)
+                    }
+                }
+            }
+            .refreshable { await model.refreshHome() }
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectStyle(.soft, for: .bottom)
+        } else {
             ScrollView {
                 RecommendGrid()
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
             }
             .refreshable { await model.refreshHome() }
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y
-            } action: { old, new in
-                trackCollapse(from: old, to: new)
-            }
-            .feedChrome {
-                HomeChrome(collapse: model.flag("首页顶栏收起") ? collapse : 0)
-            }
-            .task { await scrollBench(proxy) }
-        }
-    }
-
-    /// Small deltas track the scroll directly. A scripted `scrollTo` often
-    /// reports the whole distance at once; that case eases the bar instead of
-    /// cutting its height to zero on a single frame.
-    private func trackCollapse(from old: CGFloat, to new: CGFloat) {
-        guard model.flag("首页顶栏收起") else {
-            if tracked != 0 || collapse != 0 {
-                applyCollapse(tracked: 0, collapse: 0)
-            }
-            return
-        }
-        if easing { return }
-        let dy = new - old
-        var next = tracked + dy
-        if new <= 1 { next = 0 }
-        next = min(Self.travel, max(0, next))
-        if abs(next - tracked) < 0.05 { return }
-        let t = next / Self.travel
-        let eased = t * t * (3 - 2 * t)
-        if abs(dy) > 28 {
-            easing = true
-            let duration = min(0.42, 0.22 + abs(dy) / 700)
-            withAnimation(.easeInOut(duration: duration)) {
-                tracked = next
-                collapse = eased
-            }
-            Task {
-                try? await Task.sleep(for: .milliseconds(Int(duration * 1000) + 40))
-                easing = false
-            }
-        } else {
-            applyCollapse(tracked: next, collapse: eased)
-        }
-    }
-
-    private func applyCollapse(tracked: CGFloat, collapse: CGFloat) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            self.tracked = tracked
-            self.collapse = collapse
+            .feedChrome { HomeChrome(collapse: 0) }
         }
     }
 
