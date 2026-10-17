@@ -363,35 +363,37 @@ struct VideoStage: View {
         }
     }
 
-    private func commentRow(_ comment: CommentItem, nested: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                RemoteImage(url: comment.face, ratio: 1).frame(width: nested ? 22 : 32, height: nested ? 22 : 32).clipShape(Circle())
-                Text(comment.name).font(.caption.weight(.semibold))
-                if model.flag("显示粉丝勋章") {
-                    Text("粉丝牌").font(.system(size: 9, weight: .bold)).padding(.horizontal, 4).padding(.vertical, 1).background(Palette.bili.opacity(0.2), in: Capsule())
+    private func commentRow(_ comment: CommentItem, nested: Bool) -> AnyView {
+        AnyView(
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    RemoteImage(url: comment.face, ratio: 1).frame(width: nested ? 22 : 32, height: nested ? 22 : 32).clipShape(Circle())
+                    Text(comment.name).font(.caption.weight(.semibold))
+                    if model.flag("显示粉丝勋章") {
+                        Text("粉丝牌").font(.system(size: 9, weight: .bold)).padding(.horizontal, 4).padding(.vertical, 1).background(Palette.bili.opacity(0.2), in: Capsule())
+                    }
+                    Spacer()
+                    Button { replyTarget = comment } label: { Image(systemName: "ellipsis") }
+                        .buttonStyle(.plain)
                 }
-                Spacer()
-                Button { replyTarget = comment } label: { Image(systemName: "ellipsis") }
-                    .buttonStyle(.plain)
-            }
-            Text(comment.message).font(.subheadline)
-            HStack(spacing: 16) {
-                Button { model.show("已赞评论") } label: { Label("\(comment.like)", systemImage: "hand.thumbsup") }
-                Button { draft = "@\(comment.name) "; model.show("正在回复 \(comment.name)") } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .buttonStyle(.plain)
-            if !nested {
-                ForEach(comment.replies.prefix(2)) { child in
-                    commentRow(child, nested: true)
-                        .padding(.leading, 20)
+                Text(comment.message).font(.subheadline)
+                HStack(spacing: 16) {
+                    Button { model.show("已赞评论") } label: { Label("\(comment.like)", systemImage: "hand.thumbsup") }
+                    Button { draft = "@\(comment.name) "; model.show("正在回复 \(comment.name)") } label: { Label("回复", systemImage: "arrowshape.turn.up.left") }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                if !nested {
+                    ForEach(comment.replies.prefix(2)) { child in
+                        commentRow(child, nested: true)
+                            .padding(.leading, 20)
+                    }
                 }
             }
-        }
-        .padding(12)
-        .glassCard(radius: nested ? 14 : 20)
+            .padding(12)
+            .glassCard(radius: nested ? 14 : 20)
+        )
     }
 
     private func playerDrag(_ video: VideoItem) -> some Gesture {
