@@ -276,7 +276,7 @@ struct VideoStage: View {
     }
 
     private func load() async {
-        if let ready = model.video(bvid: bvid), ready.playURL != nil {
+        if let ready = model.video(bvid), ready.playURL != nil {
             video = ready
             model.play(ready)
             let cid = ready.pages.first?.cid ?? ready.cid
