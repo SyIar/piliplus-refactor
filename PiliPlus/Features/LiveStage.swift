@@ -27,6 +27,9 @@ struct LiveStage: View {
             .toolbar(.hidden, for: .navigationBar)
             .toolbar(fullscreen ? .hidden : .visible, for: .tabBar)
             .statusBarHidden(fullscreen)
+            .safeAreaBar(edge: .bottom, spacing: 8) {
+                if !fullscreen { composer }
+            }
             .task(id: roomID) { await load() }
             .task { await prove() }
             .onDisappear {
@@ -47,7 +50,6 @@ struct LiveStage: View {
                 header
                 chat
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                composer
             }
         }
     }
@@ -59,9 +61,6 @@ struct LiveStage: View {
                 PlayerSurface(player: player, pipEnabled: model.flag("后台画中画"))
             } else if let cover = room?.cover, !cover.isEmpty {
                 RemoteImage(url: cover).opacity(0.45)
-            }
-            if model.danmakuOn {
-                LiveDanmakuOverlay(lines: feed.lines)
             }
             if player == nil && playError.isEmpty {
                 ProgressView("正在连接直播")
@@ -76,6 +75,9 @@ struct LiveStage: View {
                 onPlay: togglePlay,
                 onQuality: { name in Task { await switchQuality(name) } }
             )
+            if model.danmakuOn {
+                LiveDanmakuOverlay(lines: feed.lines)
+            }
         }
         .background(Color.black)
     }
@@ -108,54 +110,65 @@ struct LiveStage: View {
     }
 
     private var chat: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(feed.count > 0 ? "\(feed.count) 条弹幕" : "弹幕")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
-            if feed.lines.isEmpty {
-                ContentUnavailableView("等待弹幕", systemImage: "text.bubble", description: Text("连上直播间后，弹幕会出现在这里"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    List(feed.lines) { line in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            if !line.name.isEmpty {
-                                Text(line.name)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(Palette.bili)
-                                    .lineLimit(1)
+        GeometryReader { geo in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if feed.lines.isEmpty {
+                            ContentUnavailableView("等待弹幕", systemImage: "text.bubble", description: Text("连上直播间后，弹幕会出现在这里"))
+                        } else {
+                            ForEach(feed.lines) { line in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    if !line.name.isEmpty {
+                                        Text(line.name)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Text(line.text)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .id(line.id)
                             }
-                            Text(line.text)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                        }
-                        .id(line.id)
-                    }
-                    .listStyle(.plain)
-                    .onChange(of: feed.lines.count) { _, _ in
-                        if let last = feed.lines.last {
-                            proxy.scrollTo(last.id, anchor: .bottom)
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: feed.lines.isEmpty ? .center : .bottom)
+                }
+                .defaultScrollAnchor(.bottom)
+                .onChange(of: feed.lines.count) { _, _ in
+                    guard let last = feed.lines.last else { return }
+                    proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }
         }
     }
 
     private var composer: some View {
-        HStack(spacing: 8) {
-            TextField("发个弹幕…", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .submitLabel(.send)
-                .onSubmit { Task { await send() } }
-            Button("发送") { Task { await send() } }
-                .font(.subheadline.weight(.bold))
-                .buttonStyle(.borderedProminent)
-                .tint(Palette.bili)
+        Group {
+            if model.loggedIn {
+                HStack(spacing: 8) {
+                    TextField("发个弹幕…", text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .submitLabel(.send)
+                        .onSubmit { Task { await send() } }
+                    Button("发送") { Task { await send() } }
+                        .font(.subheadline.weight(.bold))
+                        .buttonStyle(.borderedProminent)
+                        .tint(Palette.bili)
+                }
+            } else {
+                Button { model.open(.login) } label: {
+                    Label("登录后发送弹幕", systemImage: "person.crop.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
         .padding(.vertical, 8)
     }
 
@@ -344,6 +357,7 @@ struct LiveStage: View {
             "quality": offer?.selectedName ?? "",
             "seconds": seconds,
             "danmaku": feed.count,
+            "fresh": feed.lines.filter { Date().timeIntervalSince($0.born) < 12 }.count,
             "error": playError
         ])
     }
@@ -356,11 +370,11 @@ private struct LiveDanmakuOverlay: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
             GeometryReader { geo in
                 let now = context.date
-                let visible = lines.suffix(16).filter { now.timeIntervalSince($0.born) < 14 }
+                let visible = lines.suffix(24).filter { now.timeIntervalSince($0.born) < 16 }
                 ForEach(Array(visible.enumerated()), id: \.element.id) { _, line in
                     let age = now.timeIntervalSince(line.born)
-                    let lane = abs(line.id.hashValue) % 5
-                    let x = geo.size.width * (1.05 - min(age, 14) / 14 * 1.25)
+                    let lane = abs(line.id.hashValue) % 6
+                    let x = geo.size.width * (1.05 - min(age, 16) / 16 * 1.35)
                     Text(line.text)
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)

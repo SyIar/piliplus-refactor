@@ -841,21 +841,29 @@ capture_live_room() {
   xcrun simctl launch --terminate-running-process \
     --stdout="$OUT/perf/live-room.log" --stderr="$OUT/perf/live-room.err" \
     "$UDID" "$BUNDLE" -screen live-room -perfLabel "$LABEL"
-  for _ in $(seq 1 100); do
+  local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0
+  for _ in $(seq 1 170); do
     if [[ -f "$proof" ]]; then
       cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
       err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
       dm="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("danmaku", 0))' "$proof")"
+      fresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fresh", 0))' "$proof")"
       proto="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("protocol", ""))' "$proof")"
       title="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("title", ""))' "$proof")"
-      echo "live room seconds=$cur danmaku=$dm protocol=${proto:-none} title=${title:-none} error=${err:-none}"
-      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$dm"; then
-        if [[ -z "$first" ]]; then
-          first="$cur"
-        elif python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else 1)' "$first" "$cur"; then
-          advanced=1
-          break
+      room="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("room", 0))' "$proof")"
+      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]]; then
+        if [[ "$room" != "$stay_room" ]]; then
+          stay_room="$room"
+          stay_start=$(date +%s)
         fi
+        elapsed=$(( $(date +%s) - stay_start ))
+      else
+        elapsed=0
+      fi
+      echo "live room seconds=$cur danmaku=$dm fresh=$fresh stay=${elapsed}s protocol=${proto:-none} title=${title:-none} error=${err:-none}"
+      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]] && python3 -c 'import sys; dm,fr,el,sec=int(float(sys.argv[1])),int(float(sys.argv[2])),int(sys.argv[3]),float(sys.argv[4]); sys.exit(0 if dm >= 20 and fr >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$fresh" "$elapsed" "$cur"; then
+        advanced=1
+        break
       fi
     fi
     sleep 1
@@ -870,7 +878,7 @@ capture_live_room() {
     if [[ ! -f "$proof" ]]; then
       echo "live room proof was not written" >&2
     fi
-    echo "live room clock did not advance 0.8s with danmaku" >&2
+    echo "live room did not collect 20 danmaku with one still on screen after ~60s" >&2
     xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-b.png" || true
     cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png" || true
     tail -n 60 "$OUT/perf/live-room.log" || true

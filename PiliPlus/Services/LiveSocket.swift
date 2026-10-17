@@ -70,8 +70,9 @@ enum LivePacket {
         return LiveChatLine(id: UUID().uuidString, name: name, text: text, born: Date())
     }
 
-    static func authBody(room: Int, token: String, uid: Int) -> Data {
-        let object: [String: Any] = [
+    /// Web auth. `key` is the WBI `getDanmuInfo` token. Guests (uid 0) also send `buvid`, or the server masks the chat down to a welcome line.
+    static func authBody(room: Int, token: String, uid: Int, buvid: String) -> Data {
+        var object: [String: Any] = [
             "uid": uid,
             "roomid": room,
             "protover": 3,
@@ -79,6 +80,7 @@ enum LivePacket {
             "type": 2,
             "key": token
         ]
+        if !buvid.isEmpty { object["buvid"] = buvid }
         return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
     }
 
@@ -254,7 +256,9 @@ final class LiveSocket {
         self.task = task
         task.resume()
         let uid = SessionVault.shared.current()?.mid ?? 0
-        send(op: 7, body: LivePacket.authBody(room: room, token: token, uid: uid))
+        let buvid = GuestIdentity.buvid3
+        send(op: 7, body: LivePacket.authBody(room: room, token: token, uid: uid, buvid: buvid))
+        print("live danmu auth uid \(uid) buvid \(buvid.isEmpty ? "missing" : "set")")
         send(op: 2, body: Data())
         print("live danmu connect \(host.host):\(host.wssPort)")
         receive(task)

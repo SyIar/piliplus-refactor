@@ -81,6 +81,13 @@ enum GuestIdentity {
     private static let ticketExpiresKey = "piliplus.bili_ticket_expires"
     private static let lock = NSLock()
 
+    /// Cookie `buvid3`. A guest live socket (uid 0) only receives the welcome line unless the auth packet carries this.
+    static var buvid3: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return UserDefaults.standard.string(forKey: buvid3Key) ?? ""
+    }
+
     static func cachedHeader() -> String? {
         lock.lock()
         defer { lock.unlock() }
