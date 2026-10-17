@@ -110,20 +110,35 @@ private struct RecommendPage: View {
         }
     }
 
-    /// The category strip is a fixed inset, laid out before the first scroll.
-    /// Pinning it as a section header made the first stick a long frame, and
-    /// letting cards travel under the navigation bar kept the glass edge
-    /// resampling every frame. The strip is opaque, so the system bar blends
-    /// a stable surface. Search stays on the system search tab.
+    /// Category tabs stay pinned. Search lives in the system search tab, so this
+    /// scroll view does not resize a glass bar while the bench is running.
+    @ViewBuilder
     private var scroller: some View {
-        ScrollView {
-            RecommendGrid()
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+        if model.flag("首页顶栏收起") {
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        RecommendGrid()
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    } header: {
+                        HomeTabStrip()
+                            .background(Color(.systemBackground))
+                    }
+                }
+            }
+            .refreshable { await model.refreshHome() }
+            .scrollEdgeSoft()
+        } else {
+            ScrollView {
+                RecommendGrid()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+            .refreshable { await model.refreshHome() }
+            .scrollEdgeSoft()
+            .homeTabBar()
         }
-        .refreshable { await model.refreshHome() }
-        .scrollEdgeSoft()
-        .homeTabBar()
     }
 
     private func scrollBench(_ proxy: ScrollViewProxy) async {
