@@ -860,9 +860,6 @@ capture_live_room() {
     fi
     sleep 1
   done
-  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-a.png"
-  sleep 0.9
-  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-b.png"
   if [[ -f "$proof" ]]; then
     cp "$proof" "$OUT/perf/live-room-proof.json"
     echo "live room proof:"
@@ -870,16 +867,22 @@ capture_live_room() {
     echo
   fi
   if [[ "$advanced" -ne 1 ]]; then
-    cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png" || true
     if [[ ! -f "$proof" ]]; then
       echo "live room proof was not written" >&2
     fi
     echo "live room clock did not advance 0.8s with danmaku" >&2
+    xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-b.png" || true
+    cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png" || true
     tail -n 60 "$OUT/perf/live-room.log" || true
     tail -n 40 "$OUT/perf/live-room.err" || true
     return 1
   fi
-  if ! python3 - "$OUT/screenshots/live-room-a.png" "$OUT/screenshots/live-room-b.png" <<'PY'
+  local moved=0
+  for _ in 1 2 3; do
+    xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-a.png"
+    sleep 0.9
+    xcrun simctl io "$UDID" screenshot "$OUT/screenshots/live-room-b.png"
+    if python3 - "$OUT/screenshots/live-room-a.png" "$OUT/screenshots/live-room-b.png" <<'PY'
 import struct, sys, zlib
 
 def read_png(path):
@@ -939,7 +942,8 @@ def read_png(path):
 
 def stats(path):
     width, height, bpp, rows = read_png(path)
-    y0, y1 = int(height * 0.08), int(height * 0.32)
+    # The live player is the top quarter. The 8–32% band sits on the chat list.
+    y0, y1 = int(height * 0.02), int(height * 0.22)
     total = 0.0
     squares = 0.0
     count = 0
@@ -960,7 +964,7 @@ def motion(left, right):
     bw, bh, bb, br = read_png(right)
     if (aw, ah, ab) != (bw, bh, bb):
         raise SystemExit(f"screenshot size changed {aw}x{ah} -> {bw}x{bh}")
-    y0, y1 = int(ah * 0.08), int(ah * 0.32)
+    y0, y1 = int(ah * 0.02), int(ah * 0.22)
     total = 0.0
     count = 0
     for y in range(y0, y1):
@@ -978,7 +982,13 @@ print(f"live player band {width}x{height} mean={mean_b:.2f} stddev={std_b:.2f} m
 if std_b < 15 or mean_b > 245 or delta < 2.0:
     raise SystemExit("player band does not look like moving video")
 PY
-  then
+    then
+      moved=1
+      break
+    fi
+    echo "live player band still"
+  done
+  if [[ "$moved" -ne 1 ]]; then
     cp "$OUT/screenshots/live-room-b.png" "$OUT/screenshots/live-room-failed.png"
     echo "live player band did not show moving video" >&2
     return 1

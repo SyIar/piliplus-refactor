@@ -356,11 +356,11 @@ private struct LiveDanmakuOverlay: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
             GeometryReader { geo in
                 let now = context.date
-                let visible = lines.suffix(16).filter { now.timeIntervalSince($0.born) < 8 }
+                let visible = lines.suffix(16).filter { now.timeIntervalSince($0.born) < 14 }
                 ForEach(Array(visible.enumerated()), id: \.element.id) { _, line in
                     let age = now.timeIntervalSince(line.born)
                     let lane = abs(line.id.hashValue) % 5
-                    let x = geo.size.width * (1.05 - min(age, 8) / 8 * 1.25)
+                    let x = geo.size.width * (1.05 - min(age, 14) / 14 * 1.25)
                     Text(line.text)
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)
