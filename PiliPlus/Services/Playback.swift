@@ -19,6 +19,183 @@ struct SubtitleLine: Sendable, Hashable {
     var text: String
 }
 
+enum BiliHTTP {
+    static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1"
+    static let origin = "https://www.bilibili.com"
+
+    static func referer(bvid: String) -> String {
+        bvid.isEmpty ? origin : "https://www.bilibili.com/video/\(bvid)"
+    }
+
+    static func assetHeaders(bvid: String) -> [String: String] {
+        var headers = [
+            "User-Agent": userAgent,
+            "Referer": referer(bvid: bvid),
+            "Origin": origin
+        ]
+        let cookie = mergedCookie(includeSession: true, override: nil)
+        if !cookie.isEmpty { headers["Cookie"] = cookie }
+        return headers
+    }
+
+    static func mergedCookie(includeSession: Bool, override: String?) -> String {
+        var parts: [String] = []
+        if let guest = GuestIdentity.cachedHeader() { parts.append(guest) }
+        if let override, !override.isEmpty {
+            parts.append(override)
+        } else if includeSession, let session = SessionVault.shared.cookieHeader(), !session.isEmpty {
+            parts.append(session)
+        }
+        return parts.joined(separator: "; ")
+    }
+
+    /// Upstream `Utils.base64EncodeRandomString`, with the trailing padding cut off.
+    static func randomToken(minCount: Int, maxCount: Int) -> String {
+        let count = Int.random(in: minCount...max(minCount, maxCount))
+        var bytes = [UInt8](repeating: 0, count: count)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let encoded = Data(bytes).base64EncodedString()
+        return encoded.count > 2 ? String(encoded.dropLast(2)) : encoded
+    }
+}
+
+enum GuestIdentity {
+    private static let buvid3Key = "piliplus.buvid3"
+    private static let buvid4Key = "piliplus.buvid4"
+    private static let bNutKey = "piliplus.b_nut"
+    private static let bLsidKey = "piliplus.b_lsid"
+    private static let lock = NSLock()
+
+    static func cachedHeader() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let buvid3 = UserDefaults.standard.string(forKey: buvid3Key), !buvid3.isEmpty,
+              let buvid4 = UserDefaults.standard.string(forKey: buvid4Key), !buvid4.isEmpty,
+              let bNut = UserDefaults.standard.string(forKey: bNutKey), !bNut.isEmpty else { return nil }
+        let lsid = UserDefaults.standard.string(forKey: bLsidKey) ?? makeLsid()
+        return "buvid3=\(buvid3); buvid4=\(buvid4); b_nut=\(bNut); b_lsid=\(lsid)"
+    }
+
+    static func prepare(session: URLSession) async {
+        if cachedHeader() != nil { return }
+        await refresh(session: session)
+    }
+
+    static func refresh(session: URLSession) async {
+        var buvid3 = ""
+        var buvid4 = ""
+        var bNut = String(Int(Date().timeIntervalSince1970))
+        if let remote = try? await spi(session: session) {
+            buvid3 = remote.buvid3
+            buvid4 = remote.buvid4
+        }
+        if buvid3.isEmpty || buvid4.isEmpty {
+            let homepage = (try? await homepageCookies(session: session)) ?? (buvid3: "", bNut: "")
+            if buvid3.isEmpty { buvid3 = homepage.buvid3 }
+            if homepage.bNut.isEmpty == false { bNut = homepage.bNut }
+        }
+        if buvid3.isEmpty { buvid3 = makeBuvid3() }
+        if buvid4.isEmpty { buvid4 = makeBuvid4() }
+        let lsid = makeLsid()
+        lock.lock()
+        UserDefaults.standard.set(buvid3, forKey: buvid3Key)
+        UserDefaults.standard.set(buvid4, forKey: buvid4Key)
+        UserDefaults.standard.set(bNut, forKey: bNutKey)
+        UserDefaults.standard.set(lsid, forKey: bLsidKey)
+        lock.unlock()
+    }
+
+    private static func spi(session: URLSession) async throws -> (buvid3: String, buvid4: String) {
+        guard let url = URL(string: "https://api.bilibili.com/x/frontend/finger/spi") else {
+            throw BiliError.message("地址无效")
+        }
+        var request = URLRequest(url: url)
+        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Referer")
+        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw BiliError.status(http.statusCode)
+        }
+        let object = try JSONSerialization.jsonObject(with: data)
+        let json = JSON(object)
+        guard json["code"].int == 0 else { throw BiliError.message(json["message"].string ?? "无法获取 buvid") }
+        let buvid3 = json["data"]["b_3"].string ?? ""
+        let buvid4 = json["data"]["b_4"].string ?? ""
+        guard !buvid3.isEmpty, !buvid4.isEmpty else { throw BiliError.message("buvid 为空") }
+        return (buvid3, buvid4)
+    }
+
+    private static func homepageCookies(session: URLSession) async throws -> (buvid3: String, bNut: String) {
+        guard let url = URL(string: "https://www.bilibili.com/") else { throw BiliError.message("地址无效") }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        let (_, response) = try await session.data(for: request)
+        let http = response as? HTTPURLResponse
+        let fields = http.map { cookieHeaderFields($0, url: url) } ?? []
+        let buvid3 = fields.first { $0.name == "buvid3" }?.value ?? ""
+        let bNut = fields.first { $0.name == "b_nut" }?.value ?? ""
+        return (buvid3, bNut)
+    }
+
+    private static func makeBuvid3() -> String {
+        let suffix = String(format: "%05d", Int.random(in: 0...99999))
+        return UUID().uuidString.uppercased() + suffix + "infoc"
+    }
+
+    private static func makeBuvid4() -> String {
+        makeBuvid3()
+    }
+
+    private static func cookieHeaderFields(_ response: HTTPURLResponse, url: URL) -> [HTTPCookie] {
+        var headers: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            guard let name = key as? String, let text = value as? String else { continue }
+            headers[name] = text
+        }
+        return HTTPCookie.cookies(withResponseHeaderFields: headers, for: url)
+    }
+
+    private static func makeLsid() -> String {
+        let alphabet = Array("0123456789ABCDEF")
+        let head = String((0..<8).map { _ in alphabet.randomElement() ?? "A" })
+        return head + "_" + String(Int(Date().timeIntervalSince1970), radix: 16, uppercase: true)
+    }
+}
+
+enum PlaybackProof {
+    private static let lock = NSLock()
+    private static var lastSeconds = -10.0
+    private static var failed = false
+
+    static func record(seconds: Double, quality: String, codec: String, error: String) {
+        guard LaunchMode.screen == "playback" else { return }
+        lock.lock()
+        if !error.isEmpty {
+            failed = true
+        } else if failed && seconds < 0.5 {
+            lock.unlock()
+            return
+        } else if seconds >= 0.5 {
+            failed = false
+        }
+        let due = !error.isEmpty || seconds - lastSeconds >= 0.45 || lastSeconds < 0
+        if due { lastSeconds = error.isEmpty ? seconds : -10 }
+        lock.unlock()
+        guard due else { return }
+        let payload: [String: Any] = [
+            "seconds": seconds,
+            "quality": quality,
+            "codec": codec,
+            "error": error
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        let url = LaunchClock.documents.appendingPathComponent("playback-proof.json")
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 enum QualityMap {
     static let labels: [(id: Int, name: String)] = [
         (16, "流畅 360P"),
@@ -116,11 +293,13 @@ enum PlaybackParser {
     }
 
     private static func mediaURL(_ item: JSON) -> String {
-        if let url = item["baseUrl"].string, !url.isEmpty { return url }
-        if let url = item["base_url"].string, !url.isEmpty { return url }
-        if let url = item["backupUrl"].array?.first?.string, !url.isEmpty { return url }
-        if let url = item["backup_url"].array?.first?.string, !url.isEmpty { return url }
-        return ""
+        let raw: String
+        if let url = item["baseUrl"].string, !url.isEmpty { raw = url }
+        else if let url = item["base_url"].string, !url.isEmpty { raw = url }
+        else if let url = item["backupUrl"].array?.first?.string, !url.isEmpty { raw = url }
+        else if let url = item["backup_url"].array?.first?.string, !url.isEmpty { raw = url }
+        else { return "" }
+        return BiliClient.https(raw)
     }
 
     static func pickVideo(_ streams: [DashStream], qn: Int, codecPreference: String) -> DashStream? {

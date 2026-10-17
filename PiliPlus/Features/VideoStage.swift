@@ -42,7 +42,16 @@ struct VideoStage: View {
             if let video {
                 stage(video)
             } else if !error.isEmpty {
-                ContentUnavailableView("无法打开", systemImage: "exclamationmark.triangle", description: Text(error))
+                ContentUnavailableView {
+                    Label("无法打开", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("重试") {
+                        Task { await retry() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else {
                 ProgressView("正在加载").tint(.white)
             }
@@ -350,10 +359,9 @@ struct VideoStage: View {
             var item = try await model.client.detail(bvid: bvid)
             let cid = item.pages.first?.cid ?? item.cid
             let qn = QualityMap.qn(for: model.values["默认画质"] ?? "高清 1080P")
-            if let offer = try? await requestPlayback(bvid: item.bvid, cid: cid, qn: qn) {
-                item.apply(offer)
-                model.qualityName = offer.selectedName
-            }
+            let offer = try await requestPlayback(bvid: item.bvid, cid: cid, qn: qn)
+            item.apply(offer)
+            model.qualityName = offer.selectedName
             video = item
             model.store(item)
             model.play(item)
@@ -361,8 +369,16 @@ struct VideoStage: View {
             if model.flag("自动全屏") { fullscreen = true }
             if model.flag("默认展示评论区") { tab = "评论" }
         } catch {
-            self.error = error.localizedDescription
+            let text = error.localizedDescription
+            self.error = text
+            PlaybackProof.record(seconds: 0, quality: "", codec: "", error: text)
         }
+    }
+
+    private func retry() async {
+        error = ""
+        await model.client.refreshGuest()
+        await load()
     }
 
     private func reload(_ video: VideoItem, cid: Int) async {
@@ -399,7 +415,7 @@ struct VideoStage: View {
             cid: cid,
             qn: qn,
             tryLook: model.flag("免登录1080P") || qn >= 80,
-            codecPreference: model.values["首选解码格式"] ?? "av1",
+            codecPreference: LaunchMode.playbackCodec(preferred: model.values["首选解码格式"] ?? "av1"),
             audioPreference: model.values["默认音质"] ?? "高码率"
         )
     }

@@ -268,10 +268,7 @@ final class AppModel {
         }
         guard let urlString = video.playURL, let url = URL(string: urlString) else { return }
         let audioURL = video.audioURL.flatMap(URL.init(string:))
-        let headers = [
-            "Referer": "https://www.bilibili.com/video/\(video.bvid)",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-        ]
+        let headers = BiliHTTP.assetHeaders(bvid: video.bvid)
         configurePlaybackSession()
         playGeneration += 1
         let generation = playGeneration
@@ -299,12 +296,32 @@ final class AppModel {
             } else {
                 isPlaying = false
             }
+            watchPlayback(item, generation: generation, codec: video.streamCodec)
+        }
+    }
+
+    private func watchPlayback(_ item: AVPlayerItem, generation: Int, codec: String) {
+        Task { @MainActor in
+            for _ in 0..<24 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard generation == playGeneration else { return }
+                if item.status == .readyToPlay { return }
+                if item.status == .failed {
+                    PlaybackProof.record(
+                        seconds: 0,
+                        quality: qualityName,
+                        codec: codec,
+                        error: item.error?.localizedDescription ?? "播放失败"
+                    )
+                    return
+                }
+            }
         }
     }
 
     func openFirstPlayable() async {
         let qn = QualityMap.qn(for: values["默认画质"] ?? "高清 1080P")
-        let codec = values["首选解码格式"] ?? "av1"
+        let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
         let audio = values["默认音质"] ?? "高码率"
         let tryLook = flag("免登录1080P") || qn >= 80
         for item in (feed + rank).prefix(6) where !item.bvid.isEmpty {
@@ -341,6 +358,12 @@ final class AppModel {
         playbackSeconds = seconds
         playbackAnchorSeconds = seconds
         playbackAnchorWall = Date().timeIntervalSinceReferenceDate
+        PlaybackProof.record(
+            seconds: seconds,
+            quality: qualityName,
+            codec: nowPlaying?.streamCodec ?? "",
+            error: ""
+        )
     }
 
     private func attachTimeObserver() {

@@ -117,6 +117,15 @@ enum LaunchMode {
         guard let index = args.firstIndex(of: "-perfLabel"), args.indices.contains(index + 1) else { return nil }
         return args[index + 1]
     }
+
+    /// Simulator builds often cannot decode the AV1 rendition. The playback
+    /// screenshot pass asks for AVC so a real frame can advance.
+    static func playbackCodec(preferred: String) -> String {
+        guard screen == "playback", ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
+            return preferred
+        }
+        return "avc1"
+    }
 }
 
 /// Fires on the first display refresh after the root view is in a window.

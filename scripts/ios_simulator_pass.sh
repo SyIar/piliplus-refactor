@@ -149,13 +149,165 @@ if [[ "$SCROLL_STATUS" -ne 0 ]]; then
   exit "$SCROLL_STATUS"
 fi
 
+capture_playback() {
+  local dir proof advanced=0 first="" cur="" err=""
+  dir="$(container)"
+  proof="$dir/Documents/playback-proof.json"
+  rm -f "$proof" "$OUT/screenshots/playback.png" "$OUT/screenshots/playback-failed.png"
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen playback -perfLabel "$LABEL"
+  for _ in $(seq 1 75); do
+    if [[ -f "$proof" ]]; then
+      cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
+      err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
+      echo "playback proof seconds=$cur error=${err:-none}"
+      if [[ -z "$err" ]]; then
+        if [[ -z "$first" ]]; then
+          first="$cur"
+        elif python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else 1)' "$first" "$cur"; then
+          advanced=1
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/playback-a.png"
+  sleep 0.9
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/playback-b.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/playback-proof.json"
+    echo "proof file:"
+    cat "$OUT/perf/playback-proof.json"
+    echo
+  fi
+  if [[ "$advanced" -ne 1 ]]; then
+    cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback-failed.png"
+    echo "playback clock did not advance by 0.8s" >&2
+    exit 1
+  fi
+  if ! python3 - "$OUT/screenshots/playback-a.png" "$OUT/screenshots/playback-b.png" <<'PY'
+import struct, sys, zlib
+
+def read_png(path):
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise SystemExit(f"{path} is not a png")
+    pos = 8
+    width = height = color = None
+    idat = b""
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, color, _comp, _filt, inter = struct.unpack(">IIBBBBB", chunk)
+            if depth != 8 or inter != 0 or color not in (2, 6):
+                raise SystemExit(f"unsupported png {width}x{height} depth={depth} color={color} inter={inter}")
+        elif kind == b"IDAT":
+            idat += chunk
+        elif kind == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    bpp = 4 if color == 6 else 3
+    stride = width * bpp
+    rows = []
+    index = 0
+    prev = bytearray(stride)
+    for _ in range(height):
+        filt = raw[index]
+        index += 1
+        row = bytearray(raw[index:index + stride])
+        index += stride
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            ul = prev[x - bpp] if x >= bpp else 0
+            if filt == 0:
+                value = row[x]
+            elif filt == 1:
+                value = (row[x] + left) & 255
+            elif filt == 2:
+                value = (row[x] + up) & 255
+            elif filt == 3:
+                value = (row[x] + ((left + up) // 2)) & 255
+            elif filt == 4:
+                guess = left + up - ul
+                pa, pb, pc = abs(guess - left), abs(guess - up), abs(guess - ul)
+                pred = left if pa <= pb and pa <= pc else (up if pb <= pc else ul)
+                value = (row[x] + pred) & 255
+            else:
+                raise SystemExit(f"bad png filter {filt}")
+            row[x] = value
+        rows.append(row)
+        prev = row
+    return width, height, bpp, rows
+
+def band(rows, width, height, bpp):
+    y0, y1 = int(height * 0.08), int(height * 0.32)
+    return y0, y1
+
+def stats(path):
+    width, height, bpp, rows = read_png(path)
+    y0, y1 = band(rows, width, height, bpp)
+    total = 0.0
+    squares = 0.0
+    count = 0
+    for y in range(y0, y1):
+        row = rows[y]
+        for x in range(width):
+            i = x * bpp
+            luma = 0.2126 * row[i] + 0.7152 * row[i + 1] + 0.0722 * row[i + 2]
+            total += luma
+            squares += luma * luma
+            count += 1
+    mean = total / count
+    variance = max(0.0, squares / count - mean * mean)
+    return width, height, mean, variance ** 0.5
+
+def motion(left, right):
+    aw, ah, ab, ar = read_png(left)
+    bw, bh, bb, br = read_png(right)
+    if (aw, ah, ab) != (bw, bh, bb):
+        raise SystemExit(f"screenshot size changed {aw}x{ah} -> {bw}x{bh}")
+    y0, y1 = int(ah * 0.08), int(ah * 0.32)
+    total = 0.0
+    count = 0
+    for y in range(y0, y1):
+        a = ar[y]
+        b = br[y]
+        for i in range(0, aw * ab, ab):
+            total += abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2])
+            count += 3
+    return total / count
+
+mean_a, std_a = stats(sys.argv[1])[2:]
+width, height, mean_b, std_b = stats(sys.argv[2])
+delta = motion(sys.argv[1], sys.argv[2])
+print(f"player band {width}x{height} mean={mean_b:.2f} stddev={std_b:.2f} motion={delta:.2f} first_stddev={std_a:.2f}")
+# The 412 page is near-white (mean ~254, stddev ~6.6) and does not move.
+if std_b < 15 or mean_b > 245 or delta < 2.0:
+    raise SystemExit("player band does not look like moving video")
+PY
+  then
+    cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback-failed.png"
+    echo "player band did not show moving video" >&2
+    exit 1
+  fi
+  cp "$OUT/screenshots/playback-b.png" "$OUT/screenshots/playback.png"
+  echo "saved playback.png"
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 for screen in home dynamics mine search settings video login playback; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if [[ "$screen" == "playback" ]]; then
+    capture_playback
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
-  elif [[ "$screen" == "playback" ]]; then sleep 45
   else sleep 12
   fi
   xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"

@@ -2,9 +2,30 @@ import Foundation
 
 enum BiliError: LocalizedError {
     case message(String)
+    case status(Int)
+
+    var isRiskControl: Bool {
+        if case .status(412) = self { return true }
+        return false
+    }
+
     var errorDescription: String? {
-        if case .message(let text) = self { return text }
-        return nil
+        switch self {
+        case .message(let text): return text
+        case .status(412): return "播放被风控拦住了（412）"
+        case .status(let code): return "网络 \(code)"
+        }
+    }
+}
+
+private struct PlaybackAttempt {
+    var sawRiskControl = false
+    var last: BiliError?
+
+    mutating func note(_ error: Error) {
+        let bili = (error as? BiliError) ?? BiliError.message(error.localizedDescription)
+        if bili.isRiskControl { sawRiskControl = true }
+        last = bili
     }
 }
 
@@ -13,8 +34,9 @@ struct BiliClient: Sendable {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 18
         config.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-            "Referer": "https://www.bilibili.com"
+            "User-Agent": BiliHTTP.userAgent,
+            "Referer": BiliHTTP.origin,
+            "Origin": BiliHTTP.origin
         ]
         return URLSession(configuration: config)
     }()
@@ -59,10 +81,11 @@ struct BiliClient: Sendable {
     }
 
     func detail(bvid: String) async throws -> VideoItem {
-        let data = try await getJSON("https://api.bilibili.com/x/web-interface/view?bvid=\(bvid)")
-        guard data["code"].int == 0 else { throw BiliError.message(data["message"].string ?? "无法打开视频") }
-        guard let video = Self.video(fromView: data["data"]) else { throw BiliError.message("视频数据为空") }
-        return video
+        try await loadDetail(bvid: bvid, allowRefresh: true)
+    }
+
+    func refreshGuest() async {
+        await GuestIdentity.refresh(session: session)
     }
 
     func related(bvid: String) async throws -> [VideoItem] {
@@ -76,30 +99,22 @@ struct BiliClient: Sendable {
         return (data["data"]["replies"].array ?? []).compactMap(Self.comment)
     }
 
-    /// DASH playurl. `platform=html5` is omitted on purpose: it drops the dash block and only returns 720P/360P.
-    /// Unsigned `/x/player/playurl` is used because the WBI playurl answered HTTP 412 from this client.
+    /// DASH playurl. Upstream signs `/x/player/wbi/playurl` (`fnval` 4048, no `platform=html5`).
+    /// A 412 refreshes buvid3/buvid4 and retries once, then falls back to the unsigned playurl and html5 `durl`.
     func playback(bvid: String, cid: Int, qn: Int, tryLook: Bool, codecPreference: String, audioPreference: String) async throws -> PlaybackOffer {
-        var comps = URLComponents(string: "https://api.bilibili.com/x/player/playurl")!
-        var items = [
-            URLQueryItem(name: "bvid", value: bvid),
-            URLQueryItem(name: "cid", value: "\(cid)"),
-            URLQueryItem(name: "qn", value: "\(qn)"),
-            URLQueryItem(name: "fnval", value: "4048"),
-            URLQueryItem(name: "fnver", value: "0"),
-            URLQueryItem(name: "fourk", value: "1")
-        ]
-        if tryLook { items.append(URLQueryItem(name: "try_look", value: "1")) }
-        comps.queryItems = items
-        guard let url = comps.url else { throw BiliError.message("地址无效") }
-        let data = try await getJSON(url)
-        guard data["code"].int == 0 else { throw BiliError.message(data["message"].string ?? "取流失败") }
-        guard let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codecPreference, audioPreference: audioPreference) else {
-            throw BiliError.message("没有可播放地址")
-        }
-        return offer
+        try await loadPlayback(
+            bvid: bvid,
+            cid: cid,
+            qn: qn,
+            tryLook: tryLook,
+            codecPreference: codecPreference,
+            audioPreference: audioPreference,
+            allowRefresh: true
+        )
     }
 
     func danmaku(cid: Int) async throws -> [DanmakuCue] {
+        await GuestIdentity.prepare(session: session)
         guard let url = URL(string: "https://api.bilibili.com/x/v1/dm/list.so?oid=\(cid)") else {
             throw BiliError.message("弹幕地址无效")
         }
@@ -109,8 +124,16 @@ struct BiliClient: Sendable {
     }
 
     func subtitleLines(bvid: String, cid: Int, preference: String) async -> [SubtitleLine] {
-        guard let url = URL(string: "https://api.bilibili.com/x/player/v2?bvid=\(bvid)&cid=\(cid)") else { return [] }
-        guard let data = try? await getJSON(url), data["code"].int == 0 else { return [] }
+        await GuestIdentity.prepare(session: session)
+        let params = ["bvid": bvid, "cid": "\(cid)"]
+        let data: JSON
+        if let signed = try? await requestQuery("/x/player/wbi/v2", params: params, signed: true), signed["code"].int == 0 {
+            data = signed
+        } else if let plain = try? await requestQuery("/x/player/v2", params: params, signed: false), plain["code"].int == 0 {
+            data = plain
+        } else {
+            return []
+        }
         let tracks = (data["data"]["subtitle"]["subtitles"].array ?? []).compactMap { item -> (lan: String, doc: String, url: String)? in
             let lan = item["lan"].string ?? ""
             let doc = item["lan_doc"].string ?? ""
@@ -130,6 +153,158 @@ struct BiliClient: Sendable {
             guard !text.isEmpty, let from = row["from"].double, let to = row["to"].double else { return nil }
             return SubtitleLine(from: from, to: to, text: text)
         }
+    }
+
+    private func loadDetail(bvid: String, allowRefresh: Bool) async throws -> VideoItem {
+        await GuestIdentity.prepare(session: session)
+        let params = ["bvid": bvid]
+        do {
+            let data = try await viewPayload(params)
+            guard data["code"].int == 0 else {
+                throw BiliError.message(data["message"].string ?? "无法打开视频")
+            }
+            guard let video = Self.video(fromView: data["data"]) else { throw BiliError.message("视频数据为空") }
+            return video
+        } catch let error as BiliError where error.isRiskControl && allowRefresh {
+            await GuestIdentity.refresh(session: session)
+            return try await loadDetail(bvid: bvid, allowRefresh: false)
+        }
+    }
+
+    private func viewPayload(_ params: [String: String]) async throws -> JSON {
+        let referer = BiliHTTP.referer(bvid: params["bvid"] ?? "")
+        if let signed = try? await requestQuery("/x/web-interface/wbi/view", params: params, signed: true, referer: referer),
+           signed["code"].int == 0 {
+            return signed
+        }
+        return try await requestQuery("/x/web-interface/view", params: params, signed: false, referer: referer)
+    }
+
+    private func loadPlayback(
+        bvid: String,
+        cid: Int,
+        qn: Int,
+        tryLook: Bool,
+        codecPreference: String,
+        audioPreference: String,
+        allowRefresh: Bool
+    ) async throws -> PlaybackOffer {
+        await GuestIdentity.prepare(session: session)
+        let params = dashParams(bvid: bvid, cid: cid, qn: qn, tryLook: tryLook)
+        let referer = BiliHTTP.referer(bvid: bvid)
+        var failure = PlaybackAttempt()
+        if let offer = await oneOffer(params, signed: true, qn: qn, codecPreference: codecPreference, audioPreference: audioPreference, referer: referer, failure: &failure) {
+            return offer
+        }
+        if let offer = await oneOffer(params, signed: false, qn: qn, codecPreference: codecPreference, audioPreference: audioPreference, referer: referer, failure: &failure) {
+            return offer
+        }
+        var html5 = [
+            "bvid": bvid,
+            "cid": "\(cid)",
+            "qn": "\(qn)",
+            "fnval": "1",
+            "fnver": "0",
+            "fourk": "1",
+            "platform": "html5"
+        ]
+        if tryLook { html5["try_look"] = "1" }
+        if let offer = await oneOffer(html5, signed: false, qn: qn, codecPreference: codecPreference, audioPreference: audioPreference, referer: referer, failure: &failure) {
+            return offer
+        }
+        if failure.sawRiskControl, allowRefresh {
+            await GuestIdentity.refresh(session: session)
+            return try await loadPlayback(
+                bvid: bvid,
+                cid: cid,
+                qn: qn,
+                tryLook: tryLook,
+                codecPreference: codecPreference,
+                audioPreference: audioPreference,
+                allowRefresh: false
+            )
+        }
+        if let last = failure.last { throw last }
+        throw BiliError.message("没有可播放地址")
+    }
+
+    private func oneOffer(
+        _ params: [String: String],
+        signed: Bool,
+        qn: Int,
+        codecPreference: String,
+        audioPreference: String,
+        referer: String,
+        failure: inout PlaybackAttempt
+    ) async -> PlaybackOffer? {
+        do {
+            return try await playOffer(
+                params,
+                signed: signed,
+                qn: qn,
+                codecPreference: codecPreference,
+                audioPreference: audioPreference,
+                referer: referer
+            )
+        } catch {
+            failure.note(error)
+            return nil
+        }
+    }
+
+    private func dashParams(bvid: String, cid: Int, qn: Int, tryLook: Bool) -> [String: String] {
+        var params = [
+            "bvid": bvid,
+            "cid": "\(cid)",
+            "qn": "\(qn)",
+            "fnval": "4048",
+            "fnver": "0",
+            "fourk": "1",
+            "gaia_source": "pre-load",
+            "isGaiaAvoided": "true",
+            "web_location": "1315873",
+            "dm_img_list": "[]",
+            "dm_img_str": BiliHTTP.randomToken(minCount: 16, maxCount: 64),
+            "dm_cover_img_str": BiliHTTP.randomToken(minCount: 32, maxCount: 128),
+            "dm_img_inter": "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+        ]
+        if tryLook { params["try_look"] = "1" }
+        return params
+    }
+
+    private func playOffer(
+        _ params: [String: String],
+        signed: Bool,
+        qn: Int,
+        codecPreference: String,
+        audioPreference: String,
+        referer: String
+    ) async throws -> PlaybackOffer? {
+        let path = signed ? "/x/player/wbi/playurl" : "/x/player/playurl"
+        let data = try await requestQuery(path, params: params, signed: signed, referer: referer)
+        guard data["code"].int == 0 else { return nil }
+        return PlaybackParser.offer(
+            from: data,
+            requestedQN: qn,
+            codecPreference: codecPreference,
+            audioPreference: audioPreference
+        )
+    }
+
+    private func requestQuery(_ path: String, params: [String: String], signed: Bool, referer: String? = nil) async throws -> JSON {
+        let fields = signed ? try await wbiSign(params) : params
+        let stripped = CharacterSet(charactersIn: "!'()*")
+        let query = fields.keys.sorted().map { key in
+            var value = fields[key, default: ""]
+            if signed {
+                value = value.components(separatedBy: stripped).joined()
+            }
+            return "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(value))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "https://api.bilibili.com\(path)?\(query)") else {
+            throw BiliError.message("地址无效")
+        }
+        return try await getJSON(url, referer: referer)
     }
 
     func liveRooms() async throws -> [LiveRoom] {
@@ -311,19 +486,17 @@ struct BiliClient: Sendable {
         return try await getJSON(url, includeSession: includeSession, cookieOverride: cookieOverride)
     }
 
-    private func getJSON(_ url: URL, includeSession: Bool = true, cookieOverride: String? = nil) async throws -> JSON {
-        try await send(url, method: "GET", body: nil, includeSession: includeSession, cookieOverride: cookieOverride)
+    private func getJSON(_ url: URL, includeSession: Bool = true, cookieOverride: String? = nil, referer: String? = nil) async throws -> JSON {
+        try await send(url, method: "GET", body: nil, includeSession: includeSession, cookieOverride: cookieOverride, referer: referer)
     }
 
     private func getData(_ url: URL, includeSession: Bool) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        if includeSession, let header = SessionVault.shared.cookieHeader(), !header.isEmpty {
-            request.setValue(header, forHTTPHeaderField: "Cookie")
-        }
+        applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: nil)
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw BiliError.message("网络 \(http.statusCode)")
+            throw BiliError.status(http.statusCode)
         }
         return data
     }
@@ -366,7 +539,8 @@ struct BiliClient: Sendable {
         body: Data?,
         contentType: String? = nil,
         includeSession: Bool,
-        cookieOverride: String?
+        cookieOverride: String?,
+        referer: String? = nil
     ) async throws -> JSON {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -374,16 +548,30 @@ struct BiliClient: Sendable {
         if let contentType {
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
-        let header = cookieOverride ?? (includeSession ? SessionVault.shared.cookieHeader() : nil)
-        if let header, !header.isEmpty {
-            request.setValue(header, forHTTPHeaderField: "Cookie")
+        if let referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
         }
+        applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: cookieOverride)
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw BiliError.message("网络 \(http.statusCode)")
+            throw BiliError.status(http.statusCode)
         }
         let object = try JSONSerialization.jsonObject(with: data)
         return JSON(object)
+    }
+
+    private func applyCommonHeaders(_ request: inout URLRequest, includeSession: Bool, cookieOverride: String?) {
+        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
+        if request.value(forHTTPHeaderField: "Referer") == nil {
+            request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Referer")
+        }
+        let cookie = BiliHTTP.mergedCookie(includeSession: includeSession, override: cookieOverride)
+        if !cookie.isEmpty {
+            request.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
     }
 
     static func https(_ raw: String) -> String {
