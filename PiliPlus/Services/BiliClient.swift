@@ -244,7 +244,7 @@ struct BiliClient: Sendable {
     static func unescape(_ text: String) -> String {
         var value = text
         let pairs = [("amp", "&"), ("lt", "<"), ("gt", ">"), ("quot", "\""), ("#39", "'")]
-        for name, replacement in pairs {
+        for (name, replacement) in pairs {
             value = value.replacingOccurrences(of: "&\(name);", with: replacement)
         }
         return value
