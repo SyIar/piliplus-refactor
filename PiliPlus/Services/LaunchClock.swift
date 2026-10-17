@@ -109,7 +109,10 @@ enum LaunchMode {
 
     static var perfStartup: Bool { args.contains("-perfStartup") }
     static var perfScroll: Bool { args.contains("-perfScroll") }
-    static var usesFixtures: Bool { screen != nil || perfScroll || perfStartup }
+    static var usesFixtures: Bool {
+        if screen == "playback" { return false }
+        return screen != nil || perfScroll || perfStartup
+    }
     static var label: String? {
         guard let index = args.firstIndex(of: "-perfLabel"), args.indices.contains(index + 1) else { return nil }
         return args[index + 1]

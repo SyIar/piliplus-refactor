@@ -31,9 +31,20 @@ struct VideoItem: Identifiable, Hashable, Codable {
     var pages: [VideoPage]
     var tname: String
     var playURL: String? = nil
+    var audioURL: String? = nil
     var qualities: [String] = []
+    var qualityIDs: [Int] = []
+    var streamCodec: String = ""
 
     var pageCount: Int { max(pages.count, 1) }
+
+    mutating func apply(_ offer: PlaybackOffer) {
+        playURL = offer.videoURL
+        audioURL = offer.audioURL
+        qualities = offer.qualities
+        qualityIDs = offer.qualityIDs
+        streamCodec = offer.codec
+    }
 }
 
 struct CommentItem: Identifiable, Hashable {

@@ -70,6 +70,9 @@ struct RootShell: View {
         }
         if model.feed.isEmpty { await model.refreshHome() }
         await model.refreshProfile()
+        if LaunchMode.screen == "playback" {
+            await model.openFirstPlayable()
+        }
     }
 
     @ViewBuilder

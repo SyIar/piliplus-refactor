@@ -49,8 +49,11 @@ final class AppModel {
     var player: AVPlayer?
     var isPlaying = false
     var playbackSeconds: Double = 0
+    var playbackAnchorSeconds: Double = 0
+    var playbackAnchorWall: TimeInterval = 0
     var playbackRate: Float = 1
     private var timeObserver: Any?
+    private var playGeneration = 0
     var qualityName = "高清 720P"
     var danmakuOn = true
     private let softHaptic = UIImpactFeedbackGenerator(style: .soft)
@@ -170,6 +173,7 @@ final class AppModel {
     func setFlag(_ key: String, _ value: Bool) {
         toggles[key] = value
         if key == "弹幕开关" { danmakuOn = value }
+        if key == "后台播放" || key == "后台画中画" { applyBackgroundPolicy() }
         save()
         if flag("震动反馈") {
             lightHaptic.impactOccurred()
@@ -256,35 +260,96 @@ final class AppModel {
     }
 
     func play(_ video: VideoItem) {
+        guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
         nowPlaying = video
         store(video)
         if !history.contains(where: { $0.bvid == video.bvid }) {
             history.insert(video, at: 0)
         }
         guard let urlString = video.playURL, let url = URL(string: urlString) else { return }
+        let audioURL = video.audioURL.flatMap(URL.init(string:))
         let headers = [
             "Referer": "https://www.bilibili.com/video/\(video.bvid)",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15"
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
         ]
-        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-        let item = AVPlayerItem(asset: asset)
-        if player == nil {
-            player = AVPlayer(playerItem: item)
-        } else {
-            player?.replaceCurrentItem(with: item)
+        configurePlaybackSession()
+        playGeneration += 1
+        let generation = playGeneration
+        let resume = player?.currentTime() ?? .zero
+        let shouldPlay = isPlaying || (player == nil && flag("自动播放"))
+        let rate = playbackRate
+        Task {
+            let item = await StreamComposer.item(videoURL: url, audioURL: audioURL, headers: headers)
+            guard generation == playGeneration else { return }
+            if player == nil {
+                player = AVPlayer(playerItem: item)
+            } else {
+                player?.replaceCurrentItem(with: item)
+            }
+            applyBackgroundPolicy()
+            if let player, resume.isValid, resume.seconds > 0.5 {
+                await player.seek(to: resume, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            guard generation == playGeneration else { return }
+            notePlaybackTime(resume.isValid ? resume.seconds : 0)
+            attachTimeObserver()
+            if shouldPlay {
+                player?.playImmediately(atRate: rate)
+                isPlaying = true
+            } else {
+                isPlaying = false
+            }
         }
-        if flag("自动播放") {
-            player?.play()
-            isPlaying = true
+    }
+
+    func openFirstPlayable() async {
+        let qn = QualityMap.qn(for: values["默认画质"] ?? "高清 1080P")
+        let codec = values["首选解码格式"] ?? "av1"
+        let audio = values["默认音质"] ?? "高码率"
+        let tryLook = flag("免登录1080P") || qn >= 80
+        for item in (feed + rank).prefix(6) where !item.bvid.isEmpty {
+            guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
+            let cid = detail.pages.first?.cid ?? detail.cid
+            guard cid > 0 else { continue }
+            guard (try? await client.playback(
+                bvid: detail.bvid,
+                cid: cid,
+                qn: qn,
+                tryLook: tryLook,
+                codecPreference: codec,
+                audioPreference: audio
+            )) != nil else { continue }
+            store(detail)
+            open(.video(detail.bvid))
+            return
         }
-        player?.rate = playbackRate
-        if let player {
-            if let timeObserver { player.removeTimeObserver(timeObserver) }
-            let interval = CMTime(seconds: 0.4, preferredTimescale: 600)
-            timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-                Task { @MainActor in
-                    self?.playbackSeconds = time.seconds
-                }
+        if let first = feed.first { open(.video(first.bvid)) }
+    }
+
+    private func configurePlaybackSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+    }
+
+    private func applyBackgroundPolicy() {
+        let allow = flag("后台播放") || flag("后台画中画")
+        player?.audiovisualBackgroundPlaybackPolicy = allow ? .continuesIfPossible : .pauses
+    }
+
+    private func notePlaybackTime(_ seconds: Double) {
+        playbackSeconds = seconds
+        playbackAnchorSeconds = seconds
+        playbackAnchorWall = Date().timeIntervalSinceReferenceDate
+    }
+
+    private func attachTimeObserver() {
+        guard let player else { return }
+        if let timeObserver { player.removeTimeObserver(timeObserver) }
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            Task { @MainActor in
+                self?.notePlaybackTime(time.seconds)
             }
         }
     }

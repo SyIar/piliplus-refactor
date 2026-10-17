@@ -76,23 +76,60 @@ struct BiliClient: Sendable {
         return (data["data"]["replies"].array ?? []).compactMap(Self.comment)
     }
 
-    func playURL(bvid: String, cid: Int, qn: Int) async throws -> (url: String, qualities: [String]) {
+    /// DASH playurl. `platform=html5` is omitted on purpose: it drops the dash block and only returns 720P/360P.
+    /// Unsigned `/x/player/playurl` is used because the WBI playurl answered HTTP 412 from this client.
+    func playback(bvid: String, cid: Int, qn: Int, tryLook: Bool, codecPreference: String, audioPreference: String) async throws -> PlaybackOffer {
         var comps = URLComponents(string: "https://api.bilibili.com/x/player/playurl")!
-        comps.queryItems = [
+        var items = [
             URLQueryItem(name: "bvid", value: bvid),
             URLQueryItem(name: "cid", value: "\(cid)"),
             URLQueryItem(name: "qn", value: "\(qn)"),
-            URLQueryItem(name: "fnval", value: "1"),
+            URLQueryItem(name: "fnval", value: "4048"),
             URLQueryItem(name: "fnver", value: "0"),
-            URLQueryItem(name: "fourk", value: "1"),
-            URLQueryItem(name: "platform", value: "html5")
+            URLQueryItem(name: "fourk", value: "1")
         ]
-        let data = try await getJSON(comps.url!)
+        if tryLook { items.append(URLQueryItem(name: "try_look", value: "1")) }
+        comps.queryItems = items
+        guard let url = comps.url else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
         guard data["code"].int == 0 else { throw BiliError.message(data["message"].string ?? "取流失败") }
-        let qualities = (data["data"]["accept_description"].array ?? []).compactMap(\.string)
-        let url = data["data"]["durl"][0]["url"].string ?? ""
-        guard !url.isEmpty else { throw BiliError.message("没有可播放地址") }
-        return (url, qualities)
+        guard let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codecPreference, audioPreference: audioPreference) else {
+            throw BiliError.message("没有可播放地址")
+        }
+        return offer
+    }
+
+    func danmaku(cid: Int) async throws -> [DanmakuCue] {
+        guard let url = URL(string: "https://api.bilibili.com/x/v1/dm/list.so?oid=\(cid)") else {
+            throw BiliError.message("弹幕地址无效")
+        }
+        let data = try await getData(url, includeSession: false)
+        guard let xml = RawInflate.inflate(data) else { throw BiliError.message("弹幕解压失败") }
+        return DanmakuXML.parse(xml)
+    }
+
+    func subtitleLines(bvid: String, cid: Int, preference: String) async -> [SubtitleLine] {
+        guard let url = URL(string: "https://api.bilibili.com/x/player/v2?bvid=\(bvid)&cid=\(cid)") else { return [] }
+        guard let data = try? await getJSON(url), data["code"].int == 0 else { return [] }
+        let tracks = (data["data"]["subtitle"]["subtitles"].array ?? []).compactMap { item -> (lan: String, doc: String, url: String)? in
+            let lan = item["lan"].string ?? ""
+            let doc = item["lan_doc"].string ?? ""
+            let raw = item["subtitle_url"].string ?? ""
+            guard !raw.isEmpty else { return nil }
+            return (lan, doc, Self.https(raw))
+        }
+        guard let track = tracks.enumerated().min(by: { lhs, rhs in
+            let left = SubtitlePicker.pick(lan: lhs.element.lan, doc: lhs.element.doc, preference: preference)
+            let right = SubtitlePicker.pick(lan: rhs.element.lan, doc: rhs.element.doc, preference: preference)
+            if left != right { return left < right }
+            return lhs.offset < rhs.offset
+        })?.element else { return [] }
+        guard let fileURL = URL(string: track.url), let file = try? await getJSON(fileURL) else { return [] }
+        return (file["body"].array ?? []).compactMap { row in
+            let text = row["content"].string ?? ""
+            guard !text.isEmpty, let from = row["from"].double, let to = row["to"].double else { return nil }
+            return SubtitleLine(from: from, to: to, text: text)
+        }
     }
 
     func liveRooms() async throws -> [LiveRoom] {
@@ -276,6 +313,19 @@ struct BiliClient: Sendable {
 
     private func getJSON(_ url: URL, includeSession: Bool = true, cookieOverride: String? = nil) async throws -> JSON {
         try await send(url, method: "GET", body: nil, includeSession: includeSession, cookieOverride: cookieOverride)
+    }
+
+    private func getData(_ url: URL, includeSession: Bool) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        if includeSession, let header = SessionVault.shared.cookieHeader(), !header.isEmpty {
+            request.setValue(header, forHTTPHeaderField: "Cookie")
+        }
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw BiliError.message("网络 \(http.statusCode)")
+        }
+        return data
     }
 
     private func postQuery(_ string: String, fields: [String: String], includeSession: Bool) async throws -> JSON {
@@ -471,6 +521,13 @@ struct JSON: @unchecked Sendable {
     init(_ raw: Any) { self.raw = raw }
 
     var string: String? { raw as? String }
+    var double: Double? {
+        if let value = raw as? Double { return value }
+        if let value = raw as? Int { return Double(value) }
+        if let value = raw as? NSNumber { return value.doubleValue }
+        if let value = raw as? String { return Double(value) }
+        return nil
+    }
     var bool: Bool? {
         if let value = raw as? Bool { return value }
         if let value = raw as? NSNumber { return value.boolValue }

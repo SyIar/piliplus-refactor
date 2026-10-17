@@ -151,10 +151,13 @@ fi
 
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
-for screen in home dynamics mine search settings video login; do
+for screen in home dynamics mine search settings video login playback; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
-  if [[ "$screen" == "login" ]]; then sleep 20; else sleep 12; fi
+  if [[ "$screen" == "login" ]]; then sleep 20
+  elif [[ "$screen" == "playback" ]]; then sleep 45
+  else sleep 12
+  fi
   xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
   echo "saved ${screen}.png"
 done

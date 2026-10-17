@@ -32,6 +32,8 @@ struct VideoStage: View {
     }
     @State private var localProgress: Double = 0
     @State private var danmaku: [DanmakuCue] = []
+    @State private var subtitles: [SubtitleLine] = []
+    @State private var showAudio = false
     @State private var expandedDesc = false
 
     var body: some View {
@@ -61,6 +63,7 @@ struct VideoStage: View {
         .sheet(isPresented: $showCoin) { coinSheet }
         .sheet(isPresented: $showFav) { favSheet }
         .sheet(isPresented: $showQuality) { qualitySheet }
+        .sheet(isPresented: $showAudio) { audioSheet }
         .sheet(isPresented: $showSpeed) { speedSheet }
         .sheet(isPresented: $showDanmaku) { danmakuSheet }
         .sheet(item: $replyTarget) { comment in replySheet(comment) }
@@ -83,13 +86,26 @@ struct VideoStage: View {
         ZStack {
             Color.black
             if let player = model.player {
-                PlayerSurface(player: player)
+                PlayerSurface(player: player, pipEnabled: model.flag("后台画中画"))
             } else {
                 RemoteImage(url: video.cover).opacity(0.45)
             }
             if model.danmakuOn && model.flag("弹幕开关") {
                 DanmakuLayer(cues: danmaku)
-                    .allowsHitTesting(model.flag("启用点击弹幕"))
+                    .allowsHitTesting(false)
+            }
+            if model.flag("自动启用字幕"), let line = currentSubtitle {
+                Text(line)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 58)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .allowsHitTesting(false)
             }
             if !hint.isEmpty {
                 Text(hint)
@@ -148,6 +164,11 @@ struct VideoStage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text(video.title).font(.title3.bold())
+                if !video.streamCodec.isEmpty {
+                    Text("\(model.qualityName) · \(video.streamCodec)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.bili)
+                }
                 HStack(spacing: 12) {
                     meta("play.fill", video.view)
                     meta("text.bubble", video.danmaku)
@@ -319,48 +340,80 @@ struct VideoStage: View {
         if model.isPlaying { model.player?.play() } else { model.player?.pause() }
     }
 
+    private var currentSubtitle: String? {
+        let time = model.playbackSeconds
+        return subtitles.first { $0.from <= time && time <= $0.to }?.text
+    }
+
     private func load() async {
         do {
             var item = try await model.client.detail(bvid: bvid)
             let cid = item.pages.first?.cid ?? item.cid
-            let qn = (model.values["默认画质"] ?? "").contains("1080") && model.flag("免登录1080P") ? 80 : 64
-            if let play = try? await model.client.playURL(bvid: bvid, cid: cid, qn: qn) {
-                item.playURL = play.url
-                item.qualities = play.qualities
-                model.qualityName = play.qualities.first ?? model.qualityName
+            let qn = QualityMap.qn(for: model.values["默认画质"] ?? "高清 1080P")
+            if let offer = try? await requestPlayback(bvid: item.bvid, cid: cid, qn: qn) {
+                item.apply(offer)
+                model.qualityName = offer.selectedName
             }
             video = item
             model.store(item)
             model.play(item)
-            danmaku = sampleDanmaku(for: item)
+            await loadTracks(bvid: item.bvid, cid: cid, aid: item.aid)
             if model.flag("自动全屏") { fullscreen = true }
             if model.flag("默认展示评论区") { tab = "评论" }
-            async let rel = model.client.related(bvid: bvid)
-            async let rep = model.client.replies(aid: item.aid)
-            related = (try? await rel) ?? []
-            comments = (try? await rep) ?? []
-            related.forEach(model.store)
         } catch {
             self.error = error.localizedDescription
         }
     }
 
     private func reload(_ video: VideoItem, cid: Int) async {
-        var copy = video
-        if let play = try? await model.client.playURL(bvid: video.bvid, cid: cid, qn: 64) {
-            copy.playURL = play.url
+        await switchStream(video, cid: cid, qn: QualityMap.qn(for: model.qualityName), announce: "已切换分P")
+    }
+
+    private func switchQuality(_ name: String) async {
+        guard let video else { return }
+        let cid = video.pages.indices.contains(currentPage) ? video.pages[currentPage].cid : video.cid
+        await switchStream(video, cid: cid, qn: QualityMap.qn(for: name), announce: nil)
+    }
+
+    private func switchStream(_ video: VideoItem, cid: Int, qn: Int, announce: String?) async {
+        do {
+            let offer = try await requestPlayback(bvid: video.bvid, cid: cid, qn: qn)
+            var copy = video
             copy.cid = cid
-            model.play(copy)
+            copy.apply(offer)
             self.video = copy
-            model.show("已切换分P")
+            model.qualityName = offer.selectedName
+            model.store(copy)
+            model.play(copy)
+            danmaku = (try? await model.client.danmaku(cid: cid)) ?? danmaku
+            subtitles = await model.client.subtitleLines(bvid: video.bvid, cid: cid, preference: model.values["字幕选择偏好"] ?? "自动")
+            model.show(announce ?? "画质 \(offer.selectedName)")
+        } catch {
+            model.show(error.localizedDescription)
         }
     }
 
-    private func sampleDanmaku(for video: VideoItem) -> [DanmakuCue] {
-        let lines = ["前方高能", "来了来了", "这期质量好高", "三连了", "空降成功", "UP 好强", video.ownerName, "弹幕护体", "iOS 27 液态玻璃", "PiliPlus"]
-        return lines.enumerated().map { index, text in
-            DanmakuCue(time: Double(index) * 1.4, text: text, color: index % 4 == 0 ? 0xFB7299 : 0xFFFFFF, mode: 1)
-        }
+    private func requestPlayback(bvid: String, cid: Int, qn: Int) async throws -> PlaybackOffer {
+        try await model.client.playback(
+            bvid: bvid,
+            cid: cid,
+            qn: qn,
+            tryLook: model.flag("免登录1080P") || qn >= 80,
+            codecPreference: model.values["首选解码格式"] ?? "av1",
+            audioPreference: model.values["默认音质"] ?? "高码率"
+        )
+    }
+
+    private func loadTracks(bvid: String, cid: Int, aid: Int) async {
+        async let dm = model.client.danmaku(cid: cid)
+        async let subs = model.client.subtitleLines(bvid: bvid, cid: cid, preference: model.values["字幕选择偏好"] ?? "自动")
+        async let rel = model.client.related(bvid: bvid)
+        async let rep = model.client.replies(aid: aid)
+        danmaku = (try? await dm) ?? []
+        subtitles = await subs
+        related = (try? await rel) ?? []
+        comments = (try? await rep) ?? []
+        related.forEach(model.store)
     }
 
     private func sendReply(_ parent: CommentItem?) {
@@ -376,10 +429,11 @@ struct VideoStage: View {
             switch action {
             case "添加至「稍后再看」": if let video { model.watchLater(video.bvid) }
             case "选择画质": showQuality = true
-            case "选择音质": model.show("音质：\(model.values["默认音质"] ?? "高码率")")
+            case "选择音质": showAudio = true
             case "播放顺序": model.show("播放顺序：\(model.values["播放顺序"] ?? "自动连播")")
             case "弹幕设置", "弹幕列表": showDanmaku = true
-            case "字幕设置": model.show("字幕偏好：\(model.values["字幕选择偏好"] ?? "自动")")
+            case "字幕设置":
+                model.show(subtitles.isEmpty ? "这条视频没有字幕" : "字幕偏好：\(model.values["字幕选择偏好"] ?? "自动")")
             case "定时关闭": model.show("将在 30 分钟后停止播放")
             case "播放地址":
                 UIPasteboard.general.string = video?.playURL
@@ -459,8 +513,24 @@ struct VideoStage: View {
     }
 
     private var qualitySheet: some View {
-        let options = video?.qualities.isEmpty == false ? video!.qualities : ["自动", "流畅 360P", "高清 720P", "高清 1080P", "超清 4K"]
-        return OptionSheet(title: "选择画质", options: options, selection: Binding(get: { model.qualityName }, set: { model.qualityName = $0; model.show("画质 \($0)") }))
+        let options = video?.qualities.isEmpty == false ? video!.qualities : ["流畅 360P", "高清 720P", "高清 1080P", "高清 1080P60", "超清 4K"]
+        return OptionSheet(title: "选择画质", options: options, selection: Binding(
+            get: { model.qualityName },
+            set: { name in Task { await switchQuality(name) } }
+        ))
+    }
+
+    private var audioSheet: some View {
+        OptionSheet(title: "选择音质", options: ["64K", "132K", "192K", "杜比全景声", "Hi-Res"], selection: Binding(
+            get: { model.values["默认音质"] ?? "192K" },
+            set: { name in
+                model.values["默认音质"] = name
+                model.save()
+                guard let video else { return }
+                let cid = video.pages.indices.contains(currentPage) ? video.pages[currentPage].cid : video.cid
+                Task { await switchStream(video, cid: cid, qn: QualityMap.qn(for: model.qualityName), announce: "音质 \(name)") }
+            }
+        ))
     }
 
     private var speedSheet: some View {
@@ -514,25 +584,46 @@ struct VideoStage: View {
 
 struct PlayerSurface: UIViewRepresentable {
     let player: AVPlayer
+    var pipEnabled: Bool
     func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
         view.player = player
+        view.pipEnabled = pipEnabled
         return view
     }
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         uiView.player = player
+        uiView.pipEnabled = pipEnabled
     }
 }
 
 final class PlayerUIView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    private var pip: AVPictureInPictureController?
+    var pipEnabled = false {
+        didSet { pip?.canStartPictureInPictureAutomaticallyFromInline = pipEnabled }
+    }
     var player: AVPlayer? {
         get { playerLayer.player }
         set {
             playerLayer.player = newValue
             playerLayer.videoGravity = .resizeAspect
+            installPiPIfNeeded()
         }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        installPiPIfNeeded()
+    }
+
+    private func installPiPIfNeeded() {
+        guard pip == nil, playerLayer.player != nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        let controller = AVPictureInPictureController(playerLayer: playerLayer)
+        controller?.canStartPictureInPictureAutomaticallyFromInline = pipEnabled
+        pip = controller
+        PictureInPictureBridge.shared.controller = controller
     }
 }
 
@@ -567,25 +658,35 @@ struct DanmakuLayer: View {
         Group {
             if model.isPlaying {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
-                    track(at: timeline.date)
+                    track(at: mediaTime(timeline.date))
                 }
             } else {
-                track(at: .now)
+                track(at: model.playbackSeconds)
             }
         }
         .allowsHitTesting(false)
     }
 
-    private func track(at date: Date) -> some View {
-        GeometryReader { geo in
-            let t = date.timeIntervalSinceReferenceDate
-            ForEach(Array(cues.enumerated()), id: \.element.id) { index, cue in
-                let travel = 7.0
-                let phase = (t + cue.time).truncatingRemainder(dividingBy: travel) / travel
+    private func mediaTime(_ date: Date) -> Double {
+        let wall = model.playbackAnchorWall
+        guard wall > 0 else { return model.playbackSeconds }
+        let delta = date.timeIntervalSinceReferenceDate - wall
+        return max(0, model.playbackAnchorSeconds + delta * Double(max(model.playbackRate, 0)))
+    }
+
+    private func track(at time: Double) -> some View {
+        let window = cues.filter { $0.time <= time && $0.time >= time - 8 }.prefix(28)
+        return GeometryReader { geo in
+            ForEach(Array(window.enumerated()), id: \.element.id) { _, cue in
+                let age = time - cue.time
+                let lane = abs(cue.text.hashValue) % 5
+                let scrolling = cue.mode != 4 && cue.mode != 5
+                let x = scrolling ? geo.size.width * (1.05 - min(age, 8) / 8 * 1.25) : geo.size.width / 2
+                let y = cue.mode == 4 ? geo.size.height - 36 : CGFloat(18 + lane * 24)
                 Text(cue.text)
                     .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color(hex: cue.color))
-                    .position(x: geo.size.width * (1.15 - phase * 1.4), y: 24 + CGFloat(index % 5) * 26)
+                    .foregroundStyle(Color(hex: model.flag("显示会员彩色弹幕") ? cue.color : 0xFFFFFF))
+                    .position(x: x, y: y)
             }
         }
     }
@@ -673,6 +774,9 @@ struct PlayerControls: View {
                 Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
                 Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
                 Button { showQuality = true } label: { Text(shortQuality).font(.caption.weight(.bold)) }
+                if PictureInPictureBridge.shared.supported {
+                    Button { PictureInPictureBridge.shared.toggle() } label: { Image(systemName: "pip.enter") }
+                }
                 Button { model.danmakuOn.toggle(); model.setFlag("弹幕开关", model.danmakuOn) } label: {
                     Image(systemName: model.danmakuOn ? "text.bubble.fill" : "text.bubble")
                 }
@@ -702,11 +806,20 @@ struct PlayerControls: View {
     }
 
     private var shortQuality: String {
-        if model.qualityName.contains("1080") { return "1080P" }
-        if model.qualityName.contains("720") { return "720P" }
-        if model.qualityName.contains("4K") { return "4K" }
-        if model.qualityName.contains("360") { return "360P" }
-        return "自动"
+        let base: String
+        if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { base = "1080P60" }
+        else if model.qualityName.contains("1080") { base = "1080P" }
+        else if model.qualityName.contains("720") { base = "720P" }
+        else if model.qualityName.contains("4K") { base = "4K" }
+        else if model.qualityName.contains("480") { base = "480P" }
+        else if model.qualityName.contains("360") { base = "360P" }
+        else { base = "自动" }
+        switch video.streamCodec {
+        case "av01": return "\(base) AV1"
+        case "hvc1": return "\(base) HEVC"
+        case "avc1": return "\(base) AVC"
+        default: return base
+        }
     }
 
     private func togglePlay() {
