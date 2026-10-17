@@ -686,6 +686,7 @@ struct BiliClient: Sendable {
             app.append(LiveRequest.appFeed(page: page))
         } else {
             let parent = LiveRequest.parentID(for: area)
+            web.append(LiveRequest.legacyArea(parent: parent, page: page))
             web.append(LiveRequest.area(parent: parent, page: page, sort: "online"))
             web.append(LiveRequest.area(parent: parent, page: page))
             app.append(LiveRequest.appArea(parent: parent, page: page))
@@ -693,8 +694,11 @@ struct BiliClient: Sendable {
         var last = "没有直播"
         for form in web {
             do {
-                let rooms = try await fetchLive(form)
-                if !rooms.isEmpty { return rooms }
+                let rooms = try await fetchLive(form, signed: !form.path.hasPrefix("/room/"))
+                if !rooms.isEmpty {
+                    print("live list ok \(form.path) \(rooms.count)")
+                    return rooms
+                }
                 last = "\(form.path) empty"
             } catch {
                 last = error.localizedDescription
@@ -704,7 +708,10 @@ struct BiliClient: Sendable {
         for form in app {
             do {
                 let rooms = try await fetchAppLive(form)
-                if !rooms.isEmpty { return rooms }
+                if !rooms.isEmpty {
+                    print("live list ok \(form.path) \(rooms.count)")
+                    return rooms
+                }
                 last = "\(form.path) empty"
             } catch {
                 last = error.localizedDescription
@@ -786,9 +793,17 @@ struct BiliClient: Sendable {
             let host = item["host"].string ?? ""
             guard !host.isEmpty else { return nil }
             return LiveDanmuHost(host: host, wssPort: item["wss_port"].int ?? 443)
-        }
+        }.sorted { Self.danmuHostRank($0) < Self.danmuHostRank($1) }
         guard !hosts.isEmpty else { throw BiliError.message("没有弹幕服务器") }
         return LiveDanmuInfo(token: token, hosts: hosts)
+    }
+
+    /// `broadcastlv` is the web default. Overseas comet hosts answered but then stayed quiet.
+    private static func danmuHostRank(_ host: LiveDanmuHost) -> Int {
+        let name = host.host
+        if name.contains("broadcastlv") { return 0 }
+        if name.hasPrefix("hw-") || name.hasPrefix("ali-") || name.contains("-sg-") { return 2 }
+        return 1
     }
 
     func sendLiveDanmaku(room: Int, message: String, csrf: String) async throws {
@@ -810,12 +825,12 @@ struct BiliClient: Sendable {
         try Self.requireOK(data)
     }
 
-    private func fetchLive(_ form: SignedForm) async throws -> [LiveRoom] {
+    private func fetchLive(_ form: SignedForm, signed: Bool = true) async throws -> [LiveRoom] {
         let data = try await withGuest {
             let data = try await requestQuery(
                 form.path,
                 params: form.fields,
-                signed: true,
+                signed: signed,
                 referer: "https://live.bilibili.com",
                 origin: "https://live.bilibili.com",
                 userAgent: BiliHTTP.pcUserAgent,
@@ -1761,7 +1776,15 @@ struct BiliClient: Sendable {
 
     static func liveOffer(from data: JSON, requestedQN: Int) -> LiveOffer? {
         let streams = data["data"]["playurl_info"]["playurl"]["stream"].array ?? []
-        var best: (score: Int, url: String, proto: String, qn: Int, names: [String], ids: [Int])?
+        struct Candidate {
+            var score: Int
+            var url: String
+            var proto: String
+            var qn: Int
+            var names: [String]
+            var ids: [Int]
+        }
+        var found: [Candidate] = []
         for stream in streams {
             let proto = stream["protocol_name"].string ?? ""
             for format in stream["format"].array ?? [] {
@@ -1772,27 +1795,35 @@ struct BiliClient: Sendable {
                     let accept = (codec["accept_qn"].array ?? []).compactMap(\.int)
                     let ids = accept.isEmpty ? [qn] : accept
                     let base = codec["base_url"].string ?? ""
-                    let info = codec["url_info"].array?.first
-                    var host = info?["host"].string ?? ""
-                    let extra = info?["extra"].string ?? ""
-                    if host.hasPrefix("//") { host = "https:" + host }
-                    guard !host.isEmpty, !base.isEmpty else { continue }
-                    var score = 0
-                    if proto == "http_hls" { score += 50 }
-                    if formatName == "fmp4" { score += 22 }
-                    if formatName == "ts" { score += 20 }
-                    if codecName == "avc" || codecName == "avc1" { score += 10 }
-                    if qn == requestedQN { score += 5 }
-                    var url = host + base + extra
-                    if url.hasPrefix("http://") { url = "https://" + url.dropFirst("http://".count) }
-                    let names = ids.map(LiveRequest.qualityName)
-                    if best == nil || score > best!.score {
-                        best = (score, url, proto == "http_hls" ? "hls" : "flv", qn, names, ids)
+                    let infos = codec["url_info"].array ?? []
+                    for (index, info) in infos.enumerated() {
+                        var host = info["host"].string ?? ""
+                        let extra = info["extra"].string ?? ""
+                        if host.hasPrefix("//") { host = "https:" + host }
+                        guard !host.isEmpty, !base.isEmpty else { continue }
+                        var score = 0
+                        if proto == "http_hls" { score += 80 }
+                        if formatName == "ts" { score += 30 }
+                        if formatName == "fmp4" { score += 8 }
+                        if codecName == "avc" || codecName == "avc1" { score += 24 }
+                        if qn == requestedQN { score += 3 }
+                        score -= index
+                        var url = host + base + extra
+                        if url.hasPrefix("http://") { url = "https://" + url.dropFirst("http://".count) }
+                        found.append(Candidate(
+                            score: score,
+                            url: url,
+                            proto: proto == "http_hls" ? "hls" : "flv",
+                            qn: qn,
+                            names: ids.map(LiveRequest.qualityName),
+                            ids: ids
+                        ))
                     }
                 }
             }
         }
-        guard let best else { return nil }
+        found.sort { $0.score > $1.score }
+        guard let best = found.first else { return nil }
         let selected = LiveRequest.qualityName(best.qn)
         var names: [String] = []
         var kept: [Int] = []
@@ -1806,14 +1837,28 @@ struct BiliClient: Sendable {
             names.insert(selected, at: 0)
             kept.insert(best.qn, at: 0)
         }
+        var alternates: [String] = []
+        for item in found.dropFirst() where item.proto == "hls" && item.url != best.url && !alternates.contains(item.url) {
+            alternates.append(item.url)
+            if alternates.count == 4 { break }
+        }
+        let host = URL(string: best.url)?.host ?? ""
+        print("live offer \(best.proto) \(formatName(best.url)) qn \(best.qn) \(host)")
         return LiveOffer(
             url: best.url,
+            alternates: alternates,
             protocolName: best.proto,
             qualities: names,
             qualityIDs: kept,
             selectedQN: best.qn,
             selectedName: selected
         )
+    }
+
+    private static func formatName(_ url: String) -> String {
+        if url.contains(".m3u8") { return "m3u8" }
+        if url.contains(".flv") { return "flv" }
+        return "stream"
     }
 
     static func live(fromSearch item: JSON) -> LiveRoom? {

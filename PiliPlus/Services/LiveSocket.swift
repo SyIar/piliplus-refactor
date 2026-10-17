@@ -12,6 +12,7 @@ struct LiveChatLine: Identifiable, Hashable, Sendable {
 /// Op 7 authenticates, op 2 is the heartbeat, op 5 carries notifications.
 /// Body version 2 is zlib and version 3 is brotli; both wrap more packets.
 enum LivePacket {
+    private static var inflateLogs = 0
     struct Frame {
         var op: Int
         var body: Data
@@ -34,12 +35,13 @@ enum LivePacket {
                 if let inflated = LiveInflate.decompress(body, brotli: version == 3) {
                     let nested = decode(inflated, depth: depth + 1)
                     if nested.isEmpty {
-                        if chatLine(in: inflated) != nil {
-                            found.append(Frame(op: 5, body: inflated))
-                        }
+                        found.append(Frame(op: 5, body: inflated))
                     } else {
                         found.append(contentsOf: nested)
                     }
+                } else if depth == 0, inflateLogs < 4 {
+                    inflateLogs += 1
+                    print("live danmu inflate failed \(body.count) ver \(version)")
                 }
             } else if op == 5 {
                 found.append(Frame(op: 5, body: body))
@@ -52,6 +54,9 @@ enum LivePacket {
     static func chatLine(in body: Data) -> LiveChatLine? {
         var body = body
         while body.last == 0 { body.removeLast() }
+        if let brace = body.firstIndex(of: UInt8(ascii: "{")), brace > body.startIndex {
+            body = Data(body[brace...])
+        }
         guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
         let cmd = object["cmd"] as? String ?? ""
         guard cmd == "DANMU_MSG" || cmd.hasPrefix("DANMU_MSG:") else { return nil }
@@ -190,6 +195,9 @@ final class LiveSocket {
     private var hostIndex = 0
     private var stopped = false
     private var loggedPackets = 0
+    private var loggedCommands = 0
+    private var gotLine = false
+    private var switchTask: Task<Void, Never>?
 
     init(room: Int, token: String, hosts: [LiveDanmuHost]) {
         self.room = room
@@ -204,6 +212,7 @@ final class LiveSocket {
         guard heartbeat == nil else { return }
         stopped = false
         open(0)
+        armSwitch()
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
@@ -217,6 +226,8 @@ final class LiveSocket {
         stopped = true
         heartbeat?.cancel()
         heartbeat = nil
+        switchTask?.cancel()
+        switchTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session.invalidateAndCancel()
@@ -225,6 +236,8 @@ final class LiveSocket {
     private func open(_ index: Int) {
         guard !stopped, hosts.indices.contains(index) else { return }
         hostIndex = index
+        loggedPackets = 0
+        loggedCommands = 0
         let host = hosts[index]
         guard let url = URL(string: "wss://\(host.host):\(host.wssPort)/sub") else {
             open(index + 1)
@@ -233,7 +246,7 @@ final class LiveSocket {
         task?.cancel(with: .goingAway, reason: nil)
         var request = URLRequest(url: url)
         request.setValue("https://live.bilibili.com", forHTTPHeaderField: "Origin")
-        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(BiliHTTP.pcUserAgent, forHTTPHeaderField: "User-Agent")
         let cookie = BiliHTTP.mergedCookie(includeSession: true, override: nil)
         if !cookie.isEmpty { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
         let task = session.webSocketTask(with: request)
@@ -273,12 +286,46 @@ final class LiveSocket {
             print("live danmu packet \(data.count) frames \(frames.count)")
         }
         if frames.isEmpty {
-            if let line = LivePacket.chatLine(in: data) { onLine?(line) }
+            if let line = LivePacket.chatLine(in: data) { note(line) }
             return
         }
         for frame in frames {
-            if let line = LivePacket.chatLine(in: frame.body) { onLine?(line) }
+            if let line = LivePacket.chatLine(in: frame.body) {
+                note(line)
+            } else if loggedCommands < 6 {
+                loggedCommands += 1
+                print("live danmu cmd \(Self.command(in: frame.body))")
+            }
         }
+    }
+
+    private func note(_ line: LiveChatLine) {
+        gotLine = true
+        switchTask?.cancel()
+        onLine?(line)
+    }
+
+    private func armSwitch() {
+        switchTask?.cancel()
+        switchTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard let self, !self.gotLine, !self.stopped else { return }
+            let next = self.hostIndex + 1
+            guard self.hosts.indices.contains(next) else { return }
+            print("live danmu quiet, next host")
+            self.open(next)
+            self.armSwitch()
+        }
+    }
+
+    private static func command(in body: Data) -> String {
+        var body = body
+        if let brace = body.firstIndex(of: UInt8(ascii: "{")) {
+            body = Data(body[brace...].prefix(80))
+        } else {
+            body = Data(body.prefix(40))
+        }
+        return String(data: body, encoding: .utf8) ?? "\(body.count)b"
     }
 
     private func send(op: UInt32, body: Data) {

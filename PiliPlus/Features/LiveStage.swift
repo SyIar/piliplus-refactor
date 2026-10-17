@@ -14,6 +14,11 @@ struct LiveStage: View {
     @State private var fullscreen = false
     @State private var feed = LiveDanmuFeed()
     @State private var clockToken: Any?
+    @State private var streams: [String] = []
+    @State private var streamIndex = 0
+    @State private var quietPolls = 0
+    @State private var progressMark = 0.0
+    @State private var loggedPlayer = false
 
     var body: some View {
         stage
@@ -171,7 +176,11 @@ struct LiveStage: View {
             }
             offer = next
             model.liveOffers[roomID] = next
-            startPlayback(next)
+            streams = [next.url] + next.alternates
+            streamIndex = 0
+            quietPolls = 0
+            progressMark = 0
+            startPlayback(next.url)
             print("live play \(next.protocolName) \(next.selectedName) room \(roomID)")
         } catch {
             playError = error.localizedDescription
@@ -186,21 +195,21 @@ struct LiveStage: View {
         writeProof()
     }
 
-    private func startPlayback(_ offer: LiveOffer) {
-        guard let url = URL(string: offer.url) else {
+    private func startPlayback(_ raw: String) {
+        guard let url = URL(string: raw) else {
             playError = "直播地址无效"
             return
         }
         let headers = BiliHTTP.liveAssetHeaders(room: roomID)
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 1
+        item.preferredForwardBufferDuration = 2
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .moviePlayback)
         try? session.setActive(true)
         if player == nil {
             let created = AVPlayer(playerItem: item)
-            created.automaticallyWaitsToMinimizeStalling = false
+            created.automaticallyWaitsToMinimizeStalling = true
             player = created
             attachClock(created)
         } else {
@@ -209,6 +218,8 @@ struct LiveStage: View {
         player?.play()
         playing = true
         playError = ""
+        loggedPlayer = false
+        print("live stream \(streamIndex) \(url.host ?? "")")
         watch(item)
     }
 
@@ -217,25 +228,17 @@ struct LiveStage: View {
             for _ in 0..<24 {
                 try? await Task.sleep(for: .milliseconds(400))
                 if item.status == .readyToPlay {
-                    seekLiveEdge(item)
+                    player?.play()
                     return
                 }
                 if item.status == .failed {
                     playError = item.error?.localizedDescription ?? "播放失败"
+                    print("live play failed \(playError)")
                     writeProof()
                     return
                 }
             }
         }
-    }
-
-    private func seekLiveEdge(_ item: AVPlayerItem) {
-        guard let player else { return }
-        guard let range = item.seekableTimeRanges.last?.timeRangeValue else { return }
-        let end = CMTimeRangeGetEnd(range)
-        let target = CMTimeSubtract(end, CMTime(seconds: 1, preferredTimescale: 600))
-        guard target.isValid, target.seconds > 0 else { return }
-        player.seek(to: target, toleranceBefore: .positiveInfinity, toleranceAfter: .positiveInfinity)
     }
 
     private func attachClock(_ player: AVPlayer) {
@@ -273,7 +276,11 @@ struct LiveStage: View {
             let next = try await model.client.livePlay(room: roomID, qn: qn)
             self.offer = next
             model.liveOffers[roomID] = next
-            startPlayback(next)
+            streams = [next.url] + next.alternates
+            streamIndex = 0
+            quietPolls = 0
+            progressMark = 0
+            startPlayback(next.url)
             model.show("已切换\(next.selectedName)")
         } catch {
             model.show(error.localizedDescription)
@@ -289,9 +296,41 @@ struct LiveStage: View {
 
     private func prove() async {
         while !Task.isCancelled {
+            sampleClock()
+            recoverIfStalled()
             writeProof()
             try? await Task.sleep(for: .milliseconds(500))
         }
+    }
+
+    private func sampleClock() {
+        guard let time = player?.currentTime().seconds, time.isFinite, time >= 0 else { return }
+        playedSeconds = time
+        if !loggedPlayer, let item = player?.currentItem, item.status == .readyToPlay || item.status == .failed {
+            loggedPlayer = true
+            let waiting = player?.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            print("live clock \(String(format: "%.2f", time)) rate \(player?.rate ?? 0) waiting \(waiting)")
+        }
+        if player?.rate == 0, playing, playError.isEmpty {
+            player?.play()
+        }
+    }
+
+    /// A stalled HLS host is swapped for the next candidate. The clock is sampled from the new item.
+    private func recoverIfStalled() {
+        guard offer != nil, playError.isEmpty, !streams.isEmpty else { return }
+        if playedSeconds > progressMark + 0.35 {
+            progressMark = playedSeconds
+            quietPolls = 0
+            return
+        }
+        quietPolls += 1
+        guard quietPolls >= 20, streamIndex + 1 < streams.count else { return }
+        streamIndex += 1
+        quietPolls = 0
+        progressMark = 0
+        print("live stall \(String(format: "%.2f", playedSeconds)) try \(streamIndex)")
+        startPlayback(streams[streamIndex])
     }
 
     private func writeProof() {

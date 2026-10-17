@@ -42,7 +42,7 @@ enum BiliHTTP {
 
     static func liveAssetHeaders(room: Int) -> [String: String] {
         var headers = [
-            "User-Agent": userAgent,
+            "User-Agent": pcUserAgent,
             "Referer": "https://live.bilibili.com/\(room)",
             "Origin": "https://live.bilibili.com"
         ]

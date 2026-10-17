@@ -156,6 +156,10 @@ struct RootShell: View {
             model.homeTab = "直播"
             let area = LaunchMode.screen == "live-area" ? "网游" : "推荐"
             await model.loadLive(area: area, reset: true)
+            let deadline = Date().addingTimeInterval(45)
+            while model.loadingLive, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
             LiveUIProof.record([
                 "area": model.liveArea,
                 "count": model.lives.count,

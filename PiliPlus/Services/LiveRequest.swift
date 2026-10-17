@@ -3,6 +3,7 @@ import Foundation
 
 struct LiveOffer: Equatable, Sendable {
     var url: String
+    var alternates: [String]
     var protocolName: String
     var qualities: [String]
     var qualityIDs: [Int]
@@ -51,6 +52,17 @@ enum LiveRequest {
     /// App homepage feed. Rooms sit in `card_list[].card_data.small_card_v1`.
     static func appFeed(page: Int) -> SignedForm {
         SignedForm(method: "GET", path: "/xlive/app-interface/v2/index/feed", fields: appFields(page: page, extra: [:]))
+    }
+
+    /// Older area list. `data` is the room array and it does not use WBI.
+    static func legacyArea(parent: Int, page: Int) -> SignedForm {
+        SignedForm(method: "GET", path: "/room/v1/Area/getList", fields: [
+            "parent_area_id": "\(parent)",
+            "area_id": "0",
+            "page": "\(max(1, page))",
+            "page_size": "30",
+            "sort_type": "online"
+        ])
     }
 
     /// App area list. Rooms sit in `data.list`.
