@@ -474,14 +474,25 @@ enum SubtitlePicker {
 enum StreamComposer {
     static func item(videoURL: URL, audioURL: URL?, headers: [String: String]) async -> AVPlayerItem {
         let options = ["AVURLAssetHTTPHeaderFieldsKey": headers]
-        let videoAsset = AVURLAsset(url: videoURL, options: options)
         if let audioURL {
-            let audioAsset = AVURLAsset(url: audioURL, options: options)
-            if let mixed = try? await mix(video: videoAsset, audio: audioAsset) {
-                return mixed
+            let slot = MixedItem()
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    let videoAsset = AVURLAsset(url: videoURL, options: options)
+                    let audioAsset = AVURLAsset(url: audioURL, options: options)
+                    if let mixed = try? await mix(video: videoAsset, audio: audioAsset) {
+                        slot.store(mixed)
+                    }
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(8))
+                }
+                await group.next()
+                group.cancelAll()
             }
+            if let mixed = slot.take() { return mixed }
         }
-        return await AVPlayerItem(asset: videoAsset)
+        return AVPlayerItem(asset: AVURLAsset(url: videoURL, options: options))
     }
 
     private static func mix(video: AVURLAsset, audio: AVURLAsset) async throws -> AVPlayerItem {
@@ -504,7 +515,26 @@ enum StreamComposer {
         try composedVideo.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: videoTrack, at: .zero)
         let audioSpan = CMTimeMinimum(duration, soundDuration)
         try composedAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioSpan), of: audioTrack, at: .zero)
-        return await AVPlayerItem(asset: composition)
+        return AVPlayerItem(asset: composition)
+    }
+}
+
+/// Holds the composed item across a timeout race. `AVPlayerItem` is not `Sendable`.
+private final class MixedItem: @unchecked Sendable {
+    private let lock = NSLock()
+    private var item: AVPlayerItem?
+
+    func store(_ item: AVPlayerItem) {
+        lock.lock()
+        self.item = item
+        lock.unlock()
+    }
+
+    func take() -> AVPlayerItem? {
+        lock.lock()
+        let item = self.item
+        lock.unlock()
+        return item
     }
 }
 

@@ -155,7 +155,7 @@ capture_playback() {
   proof="$dir/Documents/playback-proof.json"
   rm -f "$proof" "$OUT/screenshots/playback.png" "$OUT/screenshots/playback-failed.png"
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen playback -perfLabel "$LABEL"
-  for _ in $(seq 1 75); do
+  for _ in $(seq 1 100); do
     if [[ -f "$proof" ]]; then
       cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
       err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
