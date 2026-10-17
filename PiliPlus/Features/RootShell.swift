@@ -37,7 +37,20 @@ struct RootShell: View {
             }
         }
         .animation(.spring(duration: 0.35), value: model.toast)
-        .task { if model.feed.isEmpty { await model.refreshHome() } }
+        .task { await boot() }
+    }
+
+    private func boot() async {
+        if LaunchMode.perfStartup { return }
+        if LaunchMode.usesFixtures {
+            await LaunchClock.waitForFirstFrame()
+            model.applyFixtures()
+            if LaunchMode.screen == "search" { model.open(.search) }
+            if LaunchMode.screen == "settings" { model.open(.settings) }
+            if LaunchMode.screen == "video", let first = model.feed.first { model.open(.video(first.bvid)) }
+            return
+        }
+        if model.feed.isEmpty { await model.refreshHome() }
     }
 
     @ViewBuilder

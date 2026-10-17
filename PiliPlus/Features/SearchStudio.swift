@@ -67,7 +67,7 @@ struct SearchStudio: View {
         .navigationTitle("搜索")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showFilter) { filterSheet }
-        .task { focused = true }
+        .task { if LaunchMode.screen == nil { focused = true } }
     }
 
     private var discover: some View {

@@ -87,6 +87,24 @@ final class AppModel {
     init() {
         load()
         if toggles.isEmpty { seedDefaults() }
+        switch LaunchMode.screen {
+        case "dynamics": selectedTab = 1
+        case "mine": selectedTab = 2
+        default: break
+        }
+    }
+
+    func applyFixtures() {
+        let gallery = FixtureGallery.make()
+        feed = gallery.videos
+        hot = gallery.videos
+        rank = Array(gallery.videos.reversed())
+        lives = gallery.lives
+        hotwords = gallery.words
+        dynamics = gallery.dynamics
+        history = Array(gallery.videos.prefix(4))
+        for item in gallery.videos { store(item) }
+        loadingFeed = false
     }
 
     func seedDefaults() {

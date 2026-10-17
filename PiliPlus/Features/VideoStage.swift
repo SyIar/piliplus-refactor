@@ -48,7 +48,14 @@ struct VideoStage: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
-        .task { await load() }
+        .task {
+            if LaunchMode.usesFixtures, let cached = model.video(bvid) {
+                video = cached
+                related = Array(model.feed.prefix(4))
+                return
+            }
+            await load()
+        }
         .sheet(isPresented: $showMore) { moreSheet }
         .sheet(isPresented: $showShare) { shareSheet }
         .sheet(isPresented: $showCoin) { coinSheet }

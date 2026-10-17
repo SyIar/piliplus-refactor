@@ -107,26 +107,66 @@ struct HomeFeed: View {
     }
 
     private var recommend: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
-                if model.loadingFeed && model.feed.isEmpty {
-                    ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
+                    if model.loadingFeed && model.feed.isEmpty {
+                        ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
+                    }
+                    ForEach(model.feed) { video in
+                        VideoCard(video: video).id(video.bvid)
+                    }
                 }
-                ForEach(model.feed) { video in
-                    VideoCard(video: video)
-                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 28)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 28)
+            .refreshable { await model.refreshHome() }
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y
+            } action: { old, new in
+                guard model.flag("首页顶栏收起") else { return }
+                if new > old + 12 { hideChrome = true }
+                if new < 8 || new < old - 18 { hideChrome = false }
+            }
+            .task { await scrollBench(proxy) }
         }
-        .refreshable { await model.refreshHome() }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y
-        } action: { old, new in
-            guard model.flag("首页顶栏收起") else { return }
-            if new > old + 12 { hideChrome = true }
-            if new < 8 || new < old - 18 { hideChrome = false }
+    }
+
+    private func scrollBench(_ proxy: ScrollViewProxy) async {
+        guard LaunchMode.perfScroll else { return }
+        while model.feed.count < 8 {
+            try? await Task.sleep(for: .milliseconds(40))
         }
+        try? await Task.sleep(for: .milliseconds(450))
+        let ids = model.feed.map(\.bvid)
+        let cold = await sweep(proxy, ids: ids)
+        let warm = await sweep(proxy, ids: ids)
+        LaunchClock.write([
+            "phase": "scroll",
+            "cold": cold.dictionary,
+            "warm": warm.dictionary
+        ])
+        try? await Task.sleep(for: .milliseconds(300))
+        exit(0)
+    }
+
+    private func sweep(_ proxy: ScrollViewProxy, ids: [String]) async -> FrameStats {
+        FrameMonitor.shared.start()
+        let step = max(2, ids.count / 8)
+        var index = 0
+        while index < ids.count {
+            let id = ids[index]
+            withAnimation(.linear(duration: 0.32)) {
+                proxy.scrollTo(id, anchor: .top)
+            }
+            try? await Task.sleep(for: .milliseconds(340))
+            index += step
+        }
+        withAnimation(.linear(duration: 0.32)) {
+            proxy.scrollTo(ids[0], anchor: .top)
+        }
+        try? await Task.sleep(for: .milliseconds(360))
+        return FrameMonitor.shared.stop()
     }
 }
 

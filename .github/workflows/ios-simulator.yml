@@ -1,0 +1,65 @@
+name: iOS Simulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+
+concurrency:
+  group: ios-simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator:
+    name: Simulator screenshots and frame timing
+    runs-on: macos-26
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          if [ -d /Applications/Xcode_27.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.app
+          elif [ -d /Applications/Xcode_27.0.app ]; then
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: App icon
+        run: python3 scripts/make_icon.py
+
+      - name: Build for iOS Simulator
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project PiliPlus.xcodeproj \
+            -scheme PiliPlus \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Boot, measure, screenshot
+        env:
+          PERF_LABEL: ${{ github.sha }}
+        run: bash scripts/ios_simulator_pass.sh
+
+      - name: Upload simulator artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-${{ github.sha }}
+          path: simulator-output/
+          if-no-files-found: warn
