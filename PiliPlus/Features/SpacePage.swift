@@ -134,11 +134,16 @@ struct SpacePage: View {
         switch tab {
         case "动态":
             if dynamics.isEmpty {
-                ContentUnavailableView(
-                    dynamicGuest ? "登录后查看动态" : "暂无动态",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text(loading ? "正在加载" : (dynamicGuest ? "接口没有向访客返回动态" : "这里是空的"))
-                )
+                ContentUnavailableView {
+                    Label(dynamicGuest ? "登录后查看动态" : "暂无动态", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text(loading ? "正在加载" : (dynamicGuest ? "登录后可查看 TA 的动态" : "这里是空的"))
+                } actions: {
+                    if dynamicGuest && !loading {
+                        Button("登录") { model.open(.login) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
             }
             ForEach(dynamics) { item in
                 dynamicRow(item)
