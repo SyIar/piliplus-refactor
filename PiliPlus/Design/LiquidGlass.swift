@@ -175,19 +175,46 @@ private struct CachedImage: View {
     var maxPixel: CGFloat
     @State private var image: UIImage?
 
+    init(url: String, maxPixel: CGFloat) {
+        self.url = url
+        self.maxPixel = maxPixel
+        let initial = URL(string: url).flatMap { ImageStore.cachedImage(url: $0, maxPixel: maxPixel) }
+        _image = State(initialValue: initial)
+    }
+
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill()
-            } else {
+        ZStack {
+            if image == nil {
                 LinearGradient(colors: [Palette.bili.opacity(0.35), Color.blue.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing)
             }
+            PreparedImage(image: image)
         }
         .task(id: url) {
-            guard let parsed = URL(string: url) else { return }
+            guard image == nil, let parsed = URL(string: url) else { return }
             let loaded = await ImageStore.shared.image(url: parsed, maxPixel: maxPixel)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let loaded else { return }
             image = loaded
+        }
+    }
+}
+
+/// Assigns a prepared bitmap in place. Swapping `Image(uiImage:)` rebuilds
+/// the SwiftUI node and was showing up as a long frame when several covers landed together.
+private struct PreparedImage: UIViewRepresentable {
+    var image: UIImage?
+
+    func makeUIView(context: Context) -> UIImageView {
+        let view = UIImageView()
+        view.contentMode = .scaleAspectFill
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.image = image
+        return view
+    }
+
+    func updateUIView(_ uiView: UIImageView, context: Context) {
+        if uiView.image !== image {
+            uiView.image = image
         }
     }
 }

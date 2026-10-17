@@ -2,27 +2,67 @@ import SwiftUI
 
 struct HomeFeed: View {
     @Environment(AppModel.self) private var model
-    @State private var hideChrome = false
 
     var body: some View {
         @Bindable var model = model
-        content
+        pages
             .background { AuroraBackdrop() }
             .toolbar(.hidden, for: .navigationBar)
-            .animation(.easeOut(duration: 0.2), value: hideChrome)
     }
 
-    private var chrome: some View {
-        VStack(spacing: 0) {
-            topBar
-                .frame(height: hideChrome && model.flag("首页顶栏收起") ? 0 : nil, alignment: .top)
-                .clipped()
-                .opacity(hideChrome && model.flag("首页顶栏收起") ? 0 : 1)
-            tabStrip
+    @ViewBuilder
+    private var pages: some View {
+        switch model.homeTab {
+        case "直播":
+            LivePlaza().feedChrome { HomeChrome(collapse: 0) }
+        case "热门":
+            HotPage().feedChrome { HomeChrome(collapse: 0) }
+        case "分区":
+            RankPage().feedChrome { HomeChrome(collapse: 0) }
+        case "番剧":
+            PGCPage(kind: "番剧").feedChrome { HomeChrome(collapse: 0) }
+        case "影视":
+            PGCPage(kind: "影视").feedChrome { HomeChrome(collapse: 0) }
+        default:
+            RecommendPage()
         }
     }
+}
 
-    private var topBar: some View {
+/// Search row plus the home tabs. Only the search row tracks scroll.
+private struct HomeChrome: View {
+    var collapse: CGFloat
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CollapsingSearchRow(progress: collapse)
+            HomeTabStrip()
+        }
+    }
+}
+
+/// Height follows scroll progress. The value is already eased, and animations
+/// are disabled so the row cannot finish the move after the finger has stopped.
+private struct CollapsingSearchRow: View {
+    var progress: CGFloat
+    static let full: CGFloat = 48
+
+    var body: some View {
+        SearchRow()
+            .frame(height: Self.full, alignment: .top)
+            .offset(y: -Self.full * progress)
+            .frame(height: max(0, Self.full * (1 - progress)), alignment: .top)
+            .clipped()
+            .opacity(1 - Double(progress))
+            .accessibilityHidden(progress > 0.98)
+            .transaction { $0.animation = nil }
+    }
+}
+
+private struct SearchRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         GlassEffectContainer(spacing: 4) {
             HStack(spacing: 10) {
                 Button { model.open(.search) } label: {
@@ -67,8 +107,12 @@ struct HomeFeed: View {
         }
         .frame(width: 40, height: 40)
     }
+}
 
-    private var tabStrip: some View {
+private struct HomeTabStrip: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(model.homeTabs, id: \.self) { tab in
@@ -94,51 +138,62 @@ struct HomeFeed: View {
         }
         .frame(height: 56)
     }
+}
 
-    @ViewBuilder
-    private var content: some View {
-        switch model.homeTab {
-        case "直播":
-            LivePlaza().feedChrome { chrome }
-        case "热门":
-            HotPage().feedChrome { chrome }
-        case "分区":
-            RankPage().feedChrome { chrome }
-        case "番剧":
-            PGCPage(kind: "番剧").feedChrome { chrome }
-        case "影视":
-            PGCPage(kind: "影视").feedChrome { chrome }
-        default:
-            recommend
+/// Owns the scroll-linked collapse so the card grid is not rebuilt while the bar moves.
+private struct RecommendPage: View {
+    @Environment(AppModel.self) private var model
+    @State private var tracked: CGFloat = 0
+    @State private var collapse: CGFloat = 0
+
+    private static let travel: CGFloat = 72
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                RecommendGrid()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+            .refreshable { await model.refreshHome() }
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                // Distance into the content. Adding the top inset keeps the bar from
+                // chasing its own height change when the safe-area bar shrinks.
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { old, new in
+                trackCollapse(from: old, to: new)
+            }
+            .feedChrome {
+                HomeChrome(collapse: model.flag("首页顶栏收起") ? collapse : 0)
+            }
+            .task { await scrollBench(proxy) }
         }
     }
 
-    private var recommend: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
-                    if model.loadingFeed && model.feed.isEmpty {
-                        ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
-                    }
-                    ForEach(model.feed) { video in
-                        VideoCard(video: video).id(video.bvid)
-                    }
-                }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+    /// Collapse distance follows the scroll delta. Smoothstep eases the ends
+    /// without waiting for a threshold and then jumping.
+    private func trackCollapse(from old: CGFloat, to new: CGFloat) {
+        guard model.flag("首页顶栏收起") else {
+            if tracked != 0 || collapse != 0 {
+                applyCollapse(tracked: 0, collapse: 0)
+            }
+            return
         }
-        .refreshable { await model.refreshHome() }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y
-        } action: { old, new in
-            guard model.flag("首页顶栏收起") else { return }
-            let next = new > 8 && new > old + 12
-            let show = new < 8 || new < old - 18
-            if next, !hideChrome { hideChrome = true }
-            if show, hideChrome { hideChrome = false }
-        }
-        .feedChrome { chrome }
-        .task { await scrollBench(proxy) }
+        var next = tracked + (new - old)
+        if new <= 1 { next = 0 }
+        next = min(Self.travel, max(0, next))
+        if abs(next - tracked) < 0.05 { return }
+        let t = next / Self.travel
+        let eased = t * t * (3 - 2 * t)
+        applyCollapse(tracked: next, collapse: eased)
+    }
+
+    private func applyCollapse(tracked: CGFloat, collapse: CGFloat) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            self.tracked = tracked
+            self.collapse = collapse
         }
     }
 
@@ -147,14 +202,19 @@ struct HomeFeed: View {
         while model.feed.count < 8 {
             try? await Task.sleep(for: .milliseconds(40))
         }
-        try? await Task.sleep(for: .milliseconds(450))
+        await ImageStore.shared.prepare(urls: model.feed.map(\.cover), maxPixel: 560)
+        try? await Task.sleep(for: .milliseconds(280))
         let ids = model.feed.map(\.bvid)
+        ImageStore.prepareHits = 0
+        ImageStore.prepareMisses = 0
         let cold = await sweep(proxy, ids: ids)
         let warm = await sweep(proxy, ids: ids)
         LaunchClock.write([
             "phase": "scroll",
             "cold": cold.dictionary,
-            "warm": warm.dictionary
+            "warm": warm.dictionary,
+            "imageHits": ImageStore.prepareHits,
+            "imageMisses": ImageStore.prepareMisses
         ])
         try? await Task.sleep(for: .milliseconds(300))
         exit(0)
@@ -177,6 +237,22 @@ struct HomeFeed: View {
         }
         try? await Task.sleep(for: .milliseconds(360))
         return FrameMonitor.shared.stop()
+    }
+}
+
+/// Separated so collapse updates do not rebuild every card.
+private struct RecommendGrid: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
+            if model.loadingFeed && model.feed.isEmpty {
+                ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
+            }
+            ForEach(model.feed) { video in
+                VideoCard(video: video).id(video.bvid)
+            }
+        }
     }
 }
 

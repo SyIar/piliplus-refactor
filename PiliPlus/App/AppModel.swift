@@ -109,6 +109,8 @@ final class AppModel {
         history = Array(gallery.videos.prefix(4))
         for item in gallery.videos { store(item) }
         loadingFeed = false
+        let covers = gallery.videos.map(\.cover)
+        Task { await ImageStore.shared.prepare(urls: covers, maxPixel: 560) }
     }
 
     func seedDefaults() {
@@ -189,7 +191,7 @@ final class AppModel {
             feed = popular
             hot = popular
             loadingFeed = false
-            Task { await ImageStore.shared.prefetch(urls: popular.prefix(8).map(\.cover), maxPixel: 560) }
+            Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
             await Task.yield()
             async let ranking = client.ranking()
             async let rooms = client.liveRooms()

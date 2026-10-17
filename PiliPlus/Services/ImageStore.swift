@@ -5,7 +5,12 @@ import UIKit
 actor ImageStore {
     static let shared = ImageStore()
 
-    private let memory = NSCache<NSString, UIImage>()
+    /// Thread-safe bitmap cache. Views read it synchronously so a prepared
+    /// cover can appear without a main-thread decode or a later state update.
+    nonisolated(unsafe) static let storage = NSCache<NSString, UIImage>()
+    nonisolated(unsafe) static var prepareHits = 0
+    nonisolated(unsafe) static var prepareMisses = 0
+
     private var inflight: [String: Task<UIImage?, Never>] = [:]
 
     private let session: URLSession = {
@@ -21,13 +26,29 @@ actor ImageStore {
     }()
 
     init() {
-        memory.countLimit = 240
-        memory.totalCostLimit = 48 * 1024 * 1024
+        Self.storage.countLimit = 240
+        Self.storage.totalCostLimit = 48 * 1024 * 1024
+    }
+
+    nonisolated static func cacheKey(url: URL, maxPixel: CGFloat) -> String {
+        "\(url.absoluteString)#\(Int(maxPixel))"
+    }
+
+    nonisolated static func cachedImage(url: URL, maxPixel: CGFloat) -> UIImage? {
+        let image = storage.object(forKey: cacheKey(url: url, maxPixel: maxPixel) as NSString)
+        if image != nil {
+            prepareHits += 1
+        } else {
+            prepareMisses += 1
+        }
+        return image
     }
 
     func image(url: URL, maxPixel: CGFloat) async -> UIImage? {
-        let key = "\(url.absoluteString)#\(Int(maxPixel))"
-        if let cached = memory.object(forKey: key as NSString) { return cached }
+        let key = Self.cacheKey(url: url, maxPixel: maxPixel)
+        if let cached = Self.storage.object(forKey: key as NSString) {
+            return cached
+        }
         if let existing = inflight[key] { return await existing.value }
         let session = self.session
         let task = Task.detached(priority: .userInitiated) { () -> UIImage? in
@@ -38,17 +59,24 @@ actor ImageStore {
         inflight[key] = nil
         if let loaded {
             let cost = (loaded.cgImage?.width ?? 0) * (loaded.cgImage?.height ?? 0) * 4
-            memory.setObject(loaded, forKey: key as NSString, cost: max(cost, 1))
+            Self.storage.setObject(loaded, forKey: key as NSString, cost: max(cost, 1))
         }
         return loaded
     }
 
-    /// Warm the first screen after the feed arrives. Later cells decode as they approach.
-    func prefetch(urls: [String], maxPixel: CGFloat) async {
-        for raw in urls.prefix(8) {
-            guard let url = URL(string: raw) else { continue }
-            _ = await image(url: url, maxPixel: maxPixel)
+    /// Decode a window of covers concurrently. The decode gate still caps parallelism.
+    func prepare(urls: [String], maxPixel: CGFloat) async {
+        let unique = Array(Set(urls))
+        await withTaskGroup(of: Void.self) { group in
+            for raw in unique {
+                guard let url = URL(string: raw) else { continue }
+                group.addTask { _ = await self.image(url: url, maxPixel: maxPixel) }
+            }
         }
+    }
+
+    func prefetch(urls: [String], maxPixel: CGFloat) async {
+        await prepare(urls: Array(urls.prefix(24)), maxPixel: maxPixel)
     }
 }
 
