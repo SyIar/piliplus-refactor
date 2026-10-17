@@ -33,7 +33,7 @@ private struct HomeToolbar: ToolbarContent {
     @Environment(AppModel.self) private var model
 
     var body: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItem(placement: .topBarTrailing) {
             Button {
                 model.open(.messages)
             } label: {
@@ -41,7 +41,9 @@ private struct HomeToolbar: ToolbarContent {
             }
             .badge(model.flag("消息未读标记") ? model.unreadReply + model.unreadAt : 0)
             .accessibilityLabel("消息")
-            ToolbarSpacer(.fixed)
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItem(placement: .topBarTrailing) {
             Button {
                 if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
             } label: {

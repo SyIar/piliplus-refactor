@@ -7,7 +7,9 @@ private struct MineToolbar: ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button("搜索", systemImage: "magnifyingglass") { model.open(.search) }
             Button("我的评论", systemImage: "text.bubble") { model.open(.feature("我的评论")) }
-            ToolbarSpacer(.fixed)
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItemGroup(placement: .topBarTrailing) {
             Button(model.anonymity ? "退出无痕" : "无痕模式", systemImage: model.anonymity ? "eyeglasses" : "eyeglasses.slash") {
                 guard model.loggedIn else { model.open(.login); return }
                 model.anonymity.toggle()
