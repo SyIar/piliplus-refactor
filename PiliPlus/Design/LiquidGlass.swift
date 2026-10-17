@@ -85,15 +85,14 @@ extension View {
     }
 
     /// Registers a custom top bar so the feed can scroll under it with an edge effect.
-    /// The bar is fixed to its ideal height. A horizontal scroller inside it would
-    /// otherwise accept the full proposed height and push the feed down the screen.
+    /// The bar is fixed to its ideal height. A horizontal scroller or glass container
+    /// inside it would otherwise accept the full proposed height and push the feed down.
     func feedChrome<Bar: View>(@ViewBuilder bar: () -> Bar) -> some View {
-        safeAreaBar(edge: .top, alignment: .top, spacing: 0) {
+        safeAreaBar(edge: .top, spacing: 0) {
             bar()
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .scrollEdgeEffectStyle(.soft, for: .top)
-        .scrollEdgeEffectStyle(.soft, for: .bottom)
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
     }
 }
 
