@@ -287,14 +287,21 @@ struct FavPickerSheet: View {
                             }
                         }
                     }
+                    .buttonStyle(.plain)
                 }
-                Button("新建收藏夹", systemImage: "folder.badge.plus") { creating = true }
+                Button {
+                    creating = true
+                } label: {
+                    Label("新建收藏夹", systemImage: "folder.badge.plus")
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
             }
             .navigationTitle("收藏到")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    Button("取消", role: .cancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
@@ -305,6 +312,7 @@ struct FavPickerSheet: View {
                     }
                 }
             }
+            .tint(.primary)
             .alert("新建收藏夹", isPresented: $creating) {
                 TextField("名称", text: $draft)
                 Button("创建") {
@@ -317,6 +325,8 @@ struct FavPickerSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .presentationBackground(.regularMaterial)
+        .tint(.primary)
         .task { await prepare() }
         .onAppear {
             AccountUIProof.record([
@@ -362,35 +372,46 @@ struct AccountVideoRow: View {
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
-                    HStack(spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(video.ownerName)
                             .lineLimit(1)
+                            .truncationMode(.tail)
                             .layoutPriority(-1)
-                        Spacer(minLength: 0)
-                        if video.view > 0 {
-                            Label(CountText.format(video.view), systemImage: "play.fill")
-                                .lineLimit(1)
-                                .fixedSize()
+                        Spacer(minLength: 8)
+                        HStack(spacing: 8) {
+                            if video.view > 0 {
+                                countIcon("play.fill", CountText.format(video.view))
+                            }
+                            if video.danmaku > 0 {
+                                countIcon("text.bubble.fill", CountText.format(video.danmaku))
+                            }
+                            if let mark = progressText {
+                                Text(mark)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
-                        if video.danmaku > 0 {
-                            Label(CountText.format(video.danmaku), systemImage: "text.bubble.fill")
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
-                        if let mark = progressText {
-                            Text(mark)
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
                     }
-                    .lineLimit(1)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
             }
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
+    }
+
+    private func countIcon(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(text)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var progressText: String? {
