@@ -4,6 +4,14 @@
 
 菜单、底栏、首页分区、动态、我的、搜索筛选、视频操作（点赞 / 点踩 / 投币 / 收藏 / 再看 / 分享 / 三连）、播放器手势和设置项与上游保持同一套信息架构。界面使用系统 Liquid Glass（`glassEffect`、悬浮底栏、底部正在播放），跟随系统的「外观 → Liquid Glass」透明度。
 
+## 安装包
+
+公开仓库的 GitHub Actions 会在 `macos-26` 上编译 iPhone 包，并把未签名 IPA 放到 Release：
+
+https://github.com/SyIar/piliplus-refactor/releases/latest
+
+没有 Apple 开发者证书，所以包需要用 AltStore、SideStore、Sideloadly 或巨魔重签后再装。推送到 `main` 会重新构建并覆盖 `PiliPlus.ipa`。
+
 ## 打开
 
 需要 Xcode 26 或更新（iOS 26 SDK，部署目标 iOS 26，在 iOS 27 上为原生液态玻璃）。
