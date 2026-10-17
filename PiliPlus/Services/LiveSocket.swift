@@ -196,7 +196,7 @@ final class LiveSocket {
     private var stopped = false
     private var loggedPackets = 0
     private var loggedCommands = 0
-    private var gotLine = false
+    private var gotPacket = false
     private var switchTask: Task<Void, Never>?
 
     init(room: Int, token: String, hosts: [LiveDanmuHost]) {
@@ -238,6 +238,7 @@ final class LiveSocket {
         hostIndex = index
         loggedPackets = 0
         loggedCommands = 0
+        gotPacket = false
         let host = hosts[index]
         guard let url = URL(string: "wss://\(host.host):\(host.wssPort)/sub") else {
             open(index + 1)
@@ -280,6 +281,7 @@ final class LiveSocket {
     }
 
     private func ingest(_ data: Data) {
+        gotPacket = true
         let frames = LivePacket.decode(data)
         if loggedPackets < 3 {
             loggedPackets += 1
@@ -292,7 +294,7 @@ final class LiveSocket {
         for frame in frames {
             if let line = LivePacket.chatLine(in: frame.body) {
                 note(line)
-            } else if loggedCommands < 6 {
+            } else if loggedCommands < 8 {
                 loggedCommands += 1
                 print("live danmu cmd \(Self.command(in: frame.body))")
             }
@@ -300,32 +302,37 @@ final class LiveSocket {
     }
 
     private func note(_ line: LiveChatLine) {
-        gotLine = true
         switchTask?.cancel()
         onLine?(line)
     }
 
+    /// Leave a host only when it sends nothing. A live socket keeps chat on the first host that answers.
     private func armSwitch() {
         switchTask?.cancel()
         switchTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
-            guard let self, !self.gotLine, !self.stopped else { return }
+            guard let self, !self.gotPacket, !self.stopped else { return }
             let next = self.hostIndex + 1
             guard self.hosts.indices.contains(next) else { return }
-            print("live danmu quiet, next host")
+            print("live danmu silent, next host")
             self.open(next)
             self.armSwitch()
         }
     }
 
     private static func command(in body: Data) -> String {
-        var body = body
-        if let brace = body.firstIndex(of: UInt8(ascii: "{")) {
-            body = Data(body[brace...].prefix(80))
-        } else {
-            body = Data(body.prefix(40))
+        var bytes = body
+        while bytes.last == 0 { bytes.removeLast() }
+        if let brace = bytes.firstIndex(of: UInt8(ascii: "{")) {
+            bytes = Data(bytes[brace...])
         }
-        return String(data: body, encoding: .utf8) ?? "\(body.count)b"
+        guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+            return "\(body.count)b"
+        }
+        let cmd = object["cmd"] as? String ?? "?"
+        guard let info = object["info"] as? [Any], info.count > 1 else { return cmd }
+        let kind = String(describing: type(of: info[1]))
+        return "\(cmd) info1 \(kind)"
     }
 
     private func send(op: UInt32, body: Data) {
