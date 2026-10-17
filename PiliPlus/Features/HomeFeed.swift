@@ -157,10 +157,10 @@ private struct RecommendPage: View {
     private var scroller: some View {
         if model.flag("首页顶栏收起") {
             ScrollView {
+                // Rasterize once so the glass capsules scroll as a texture
+                // instead of resampling the feed on every frame.
                 SearchRow()
-                    .scrollTransition(.animated) { content, phase in
-                        content.opacity(phase.isIdentity ? 1 : 0)
-                    }
+                    .drawingGroup(opaque: false)
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         RecommendGrid()
@@ -168,7 +168,7 @@ private struct RecommendPage: View {
                             .padding(.bottom, 12)
                     } header: {
                         HomeTabStrip()
-                            .background(.ultraThinMaterial)
+                            .background(Color(.systemBackground).opacity(0.94))
                     }
                 }
             }
