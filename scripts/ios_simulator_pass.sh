@@ -607,14 +607,109 @@ if not ok:
 PY
 }
 
+capture_space_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/space-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen spaceProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing space request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/space-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "profile": ("GET", "/x/web-interface/card", "mid=42", False),
+    "videos-new": ("GET", "/x/space/wbi/arc/search", "mid=42&order=pubdate&pn=1&ps=30", False),
+    "videos-hot": ("GET", "/x/space/wbi/arc/search", "mid=42&order=click&pn=2&ps=30", False),
+    "dynamics": ("GET", "/x/polymer/web-dynamic/v1/feed/space", "features=itemOpusStyle&host_mid=42&offset=&timezone_offset=-480", False),
+    "folders": ("GET", "/x/v3/fav/folder/created/list-all", "up_mid=42", False),
+    "bangumi": ("GET", "/x/space/bangumi/follow/list", "follow_status=0&pn=1&ps=20&type=1&vmid=42", False),
+    "series": ("GET", "/x/polymer/web-space/seasons_series_list", "mid=42&page_num=1&page_size=20", False),
+    "follow": ("POST", "/x/relation/modify", "act=1&csrf=jct-token&fid=42&re_src=11", True),
+    "unfollow": ("POST", "/x/relation/modify", "act=2&csrf=jct-token&fid=42&re_src=11", True),
+}
+print(f"space proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("space request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"space cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+    if csrf and "csrf=jct-token" not in item["body"]:
+        raise SystemExit(f"{name} missing csrf")
+    if not csrf and "csrf" in item["body"]:
+        raise SystemExit(f"{name} unexpected csrf")
+print(f"space request proof ok ({len(expect)} cases)")
+PY
+}
+
+capture_space_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/space-ui.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 70); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing space ui proof for ${screen}" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("name", "mid", "fans", "level", "count", "title", "tab", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} showed an error: {data.get('error')}")
+name = str(data.get("name") or "")
+title = str(data.get("title") or "")
+count = int(data.get("count") or 0)
+ok = "罗翔" in name and int(data.get("mid") or 0) > 0 and int(data.get("fans") or 0) > 0 and int(data.get("level") or 0) >= 1 and count >= 1 and title != "" and "fixture" not in title
+print(f"{screen} space ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} space ui rejected")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
 social_status=0
+space_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
+capture_space_proof || space_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     capture_playback
@@ -632,6 +727,10 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     capture_social_ui "$screen" || social_status=1
     continue
   fi
+  if [[ "$screen" == "space" || "$screen" == space-* ]]; then
+    capture_space_ui "$screen" || space_status=1
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -642,8 +741,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 ]]; then
-  echo "home data, account lists, social surfaces, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 ]]; then
+  echo "home data, account lists, social surfaces, user space, or warm scroll check failed" >&2
   exit 1
 fi
 

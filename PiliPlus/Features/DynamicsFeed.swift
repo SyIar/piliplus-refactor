@@ -125,13 +125,21 @@ struct DynamicsFeed: View {
     private func dynamicCard(_ item: DynamicItem) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                RemoteImage(url: item.face, ratio: 1, maxPixel: 120)
-                    .frame(width: 40, height: 40)
-                    .clipShape(Circle())
-                VStack(alignment: .leading) {
-                    Text(item.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text("\(item.time) · \(item.kind)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Button {
+                    guard item.mid > 0 else { return }
+                    model.open(.user(item.mid, item.name))
+                } label: {
+                    HStack {
+                        RemoteImage(url: item.face, ratio: 1, maxPixel: 120)
+                            .frame(width: 40, height: 40)
+                            .clipShape(Circle())
+                        VStack(alignment: .leading) {
+                            Text(item.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+                            Text("\(item.time) · \(item.kind)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
                 }
+                .buttonStyle(.plain)
                 Spacer()
                 Button { menuItem = item } label: {
                     Image(systemName: "ellipsis")

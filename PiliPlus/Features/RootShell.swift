@@ -69,6 +69,9 @@ struct RootShell: View {
         if LaunchMode.screen == "socialProof" {
             SocialRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "spaceProof" {
+            SpaceRequestProof.writeAndExit()
+        }
         if LaunchMode.screen == "guest-dynamics" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -120,6 +123,11 @@ struct RootShell: View {
             default:
                 break
             }
+            return
+        }
+        if LaunchMode.screen == "space" || LaunchMode.screen?.hasPrefix("space-") == true {
+            await LaunchClock.waitForFirstFrame()
+            await openSampleSpace()
             return
         }
         if LaunchMode.searchCapture != nil {
@@ -190,6 +198,19 @@ struct RootShell: View {
         }
     }
 
+    private func openSampleSpace() async {
+        do {
+            let page = try await model.client.search(type: "bili_user", keyword: "罗翔", page: 1)
+            guard let user = page.users.first(where: { $0.name.contains("罗翔") }) ?? page.users.first else {
+                SpaceUIProof.record(["name": "", "mid": 0, "fans": 0, "level": 0, "sign": "", "likes": 0, "count": 0, "title": "", "tab": "", "error": "未搜索到罗翔"])
+                return
+            }
+            model.open(.user(user.mid, user.name))
+        } catch {
+            SpaceUIProof.record(["name": "", "mid": 0, "fans": 0, "level": 0, "sign": "", "likes": 0, "count": 0, "title": "", "tab": "", "error": error.localizedDescription])
+        }
+    }
+
     @ViewBuilder
     private func destination(_ route: Route) -> some View {
         switch route {
@@ -208,7 +229,7 @@ struct RootShell: View {
             default: FeaturePageView(title: title)
             }
         case .folder(let id): FolderContentsView(mediaID: id)
-        case .user(let mid, let name): MemberPage(mid: mid, name: name)
+        case .user(let mid, let name): SpacePage(mid: mid, name: name)
         }
     }
 }

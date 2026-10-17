@@ -319,6 +319,19 @@ final class AppModel {
         }
     }
 
+    func followUser(mid: Int, follow: Bool) async -> Bool {
+        guard mid > 0 else { return false }
+        guard let csrf = csrf(for: follow ? "关注" : "取消关注") else { return false }
+        do {
+            try await client.submit(SpaceRequest.relation(mid: mid, follow: follow, csrf: csrf))
+            show(follow ? "已关注" : "已取消关注")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
+    }
+
     func sendComment(aid: Int, message: String, root: Int, parent: Int) async -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }

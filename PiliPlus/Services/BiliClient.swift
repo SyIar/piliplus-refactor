@@ -689,6 +689,101 @@ struct BiliClient: Sendable {
         return (items, next, hasMore && !items.isEmpty)
     }
 
+    func spaceProfile(mid: Int) async throws -> SpaceProfile {
+        let data = try await loadPublic(SpaceRequest.profile(mid: mid), referer: "https://space.bilibili.com/\(mid)")
+        let card = data["data"]["card"]
+        let name = card["name"].string ?? ""
+        guard !name.isEmpty else { throw BiliError.message("空间资料是空的") }
+        return SpaceProfile(
+            mid: card["mid"].int ?? mid,
+            name: name,
+            face: Self.https(card["face"].string ?? ""),
+            sign: card["sign"].string ?? "",
+            level: card["level_info"]["current_level"].int ?? 0,
+            following: card["attention"].int ?? 0,
+            fans: card["fans"].int ?? data["data"]["follower"].int ?? 0,
+            likes: data["data"]["like_num"].int ?? card["likes"].int ?? 0,
+            followed: data["data"]["following"].bool ?? false
+        )
+    }
+
+    func spaceVideos(mid: Int, page: Int, order: String) async throws -> (items: [VideoItem], total: Int) {
+        var params = SpaceRequest.videos(mid: mid, page: page, order: order).fields
+        params["tid"] = "0"
+        params["keyword"] = ""
+        params["index"] = "0"
+        params["platform"] = "web"
+        params["web_location"] = "1550101"
+        params["order_avoided"] = "true"
+        params["dm_img_list"] = "[]"
+        params["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
+        params["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
+        params["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                "/x/space/wbi/arc/search",
+                params: params,
+                signed: true,
+                referer: "https://space.bilibili.com/\(mid)/video"
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        let list = data["data"]["list"]["vlist"].array ?? []
+        let total = data["data"]["page"]["count"].int ?? list.count
+        return (list.compactMap(Self.video(fromSpace:)), total)
+    }
+
+    func spaceDynamics(mid: Int, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool) {
+        let data = try await loadPublic(SpaceRequest.dynamics(mid: mid, offset: offset), referer: "https://space.bilibili.com/\(mid)/dynamic")
+        let items = (data["data"]["items"].array ?? []).compactMap(Self.dynamic(fromPolymer:))
+        let next = data["data"]["offset"].string ?? ""
+        let hasMore = data["data"]["has_more"].bool ?? !next.isEmpty
+        return (items, next, hasMore && !items.isEmpty)
+    }
+
+    func spaceFolders(mid: Int) async throws -> [FavFolder] {
+        let data = try await loadPublic(SpaceRequest.folders(mid: mid), referer: "https://space.bilibili.com/\(mid)")
+        let list = data["data"]["list"].array ?? data["data"].array ?? []
+        return list.compactMap { item in
+            let attr = item["attr"].int ?? 0
+            guard attr & 1 == 0 else { return nil }
+            return Self.folder(from: item)
+        }
+    }
+
+    func spaceBangumi(mid: Int, page: Int) async throws -> [SeasonItem] {
+        let data = try await loadPublic(SpaceRequest.bangumi(mid: mid, page: page), referer: "https://space.bilibili.com/\(mid)/bangumi")
+        return (data["data"]["list"].array ?? []).compactMap(Self.season(fromFollow:))
+    }
+
+    func spaceSeries(mid: Int, page: Int) async throws -> [SpaceSeries] {
+        let data = try await loadPublic(SpaceRequest.series(mid: mid, page: page), referer: "https://space.bilibili.com/\(mid)")
+        let lists = data["data"]["items_lists"]
+        var rows: [SpaceSeries] = []
+        for item in lists["seasons_list"].array ?? [] {
+            if let row = Self.series(from: item, kind: "合集", idKey: "season_id") { rows.append(row) }
+        }
+        for item in lists["series_list"].array ?? [] {
+            if let row = Self.series(from: item, kind: "系列", idKey: "series_id") { rows.append(row) }
+        }
+        return rows
+    }
+
+    private func loadPublic(_ form: SignedForm, referer: String) async throws -> JSON {
+        guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+        let data = try await withGuest {
+            let data = try await getJSON(url, referer: referer)
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        return data
+    }
+
     static func dynamics(from videos: [VideoItem]) -> [DynamicItem] {
         videos.enumerated().map { index, video in
             DynamicItem(
@@ -701,7 +796,8 @@ struct BiliClient: Sendable {
                 video: video,
                 like: video.like,
                 comment: video.reply,
-                repost: video.share
+                repost: video.share,
+                mid: video.ownerMid
             )
         }
     }
@@ -1033,6 +1129,63 @@ struct BiliClient: Sendable {
         video(fromPopular: item)
     }
 
+    static func video(fromSpace item: JSON) -> VideoItem? {
+        let bvid = item["bvid"].string ?? ""
+        let title = unescape(item["title"].string ?? "")
+        guard !bvid.isEmpty, !title.isEmpty else { return nil }
+        return VideoItem(
+            bvid: bvid,
+            aid: item["aid"].int ?? 0,
+            cid: 0,
+            title: title,
+            cover: https(item["pic"].string ?? ""),
+            duration: parseClock(item["length"].string ?? ""),
+            ownerName: item["author"].string ?? "",
+            ownerMid: item["mid"].int ?? 0,
+            ownerFace: "",
+            desc: unescape(item["description"].string ?? ""),
+            pubdate: item["created"].int ?? 0,
+            view: flexibleCount(item["play"]),
+            danmaku: flexibleCount(item["video_review"]),
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: item["comment"].int ?? 0,
+            pages: [],
+            tname: ""
+        )
+    }
+
+    static func season(fromFollow item: JSON) -> SeasonItem? {
+        let id = item["season_id"].int ?? 0
+        let title = plain(item["title"].string ?? "")
+        guard id > 0, !title.isEmpty else { return nil }
+        let episode = item["new_ep"]
+        return SeasonItem(
+            seasonID: id,
+            title: title,
+            cover: https(item["cover"].string ?? ""),
+            badge: item["season_type_name"].string ?? "",
+            subtitle: plain(episode["index_show"].string ?? episode["display"].string ?? ""),
+            view: item["stat"]["follow"].int ?? 0
+        )
+    }
+
+    static func series(from item: JSON, kind: String, idKey: String) -> SpaceSeries? {
+        let meta = item["meta"]
+        let id = meta[idKey].int ?? item[idKey].int ?? 0
+        let title = meta["name"].string ?? item["name"].string ?? ""
+        guard id > 0, !title.isEmpty else { return nil }
+        return SpaceSeries(
+            id: "\(kind)-\(id)",
+            title: unescape(title),
+            cover: https(meta["cover"].string ?? item["cover"].string ?? ""),
+            count: meta["total"].int ?? item["total"].int ?? 0,
+            kind: kind
+        )
+    }
+
     static func video(fromSearch item: JSON) -> VideoItem? {
         let bvid = item["bvid"].string ?? ""
         guard !bvid.isEmpty else { return nil }
@@ -1172,7 +1325,8 @@ struct BiliClient: Sendable {
             video: clip,
             like: stat["like"]["count"].int ?? 0,
             comment: stat["comment"]["count"].int ?? 0,
-            repost: stat["forward"]["count"].int ?? 0
+            repost: stat["forward"]["count"].int ?? 0,
+            mid: author["mid"].int ?? 0
         )
     }
 
