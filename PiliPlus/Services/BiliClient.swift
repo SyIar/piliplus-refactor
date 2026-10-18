@@ -2100,6 +2100,137 @@ struct BiliClient: Sendable {
         if parts.count == 2 { return parts[0] * 60 + parts[1] }
         return parts.first ?? 0
     }
+
+    func messageUnread() async throws -> MessageUnread {
+        let data = try await messageJSON(MessageRequest.unread())
+        try Self.requireMessageOK(data)
+        return MessageParser.unread(data)
+    }
+
+    func messageNotices(kind: String, cursor: Int, time: Int) async throws -> NoticePage {
+        let call: MessageCall
+        switch kind {
+        case "@我": call = MessageRequest.at(cursor: cursor, time: time)
+        case "收到的赞": call = MessageRequest.like(cursor: cursor, time: time)
+        case "系统通知": call = MessageRequest.system(cursor: cursor)
+        default: call = MessageRequest.reply(cursor: cursor, time: time)
+        }
+        let data = try await messageJSON(call)
+        try Self.requireMessageOK(data)
+        let page = MessageParser.notices(kind: kind, data: data)
+        return NoticePage(items: page.items, cursor: page.cursor, cursorTime: page.cursorTime, ended: page.ended)
+    }
+
+    func chatSessions(endTs: Int) async throws -> SessionPage {
+        let data = try await messageJSON(MessageRequest.sessions(endTs: endTs))
+        try Self.requireMessageOK(data)
+        var page = MessageParser.sessions(data)
+        let ids = page.items.map(\.id)
+        if !ids.isEmpty, let names = try? await messageCards(ids) {
+            page.items = page.items.map { item in
+                guard let card = names[item.id] else { return item }
+                var copy = item
+                copy.name = card.name
+                copy.face = card.face
+                return copy
+            }
+        }
+        return SessionPage(items: page.items, hasMore: page.hasMore)
+    }
+
+    func chatLines(talker: Int, endSeqno: Int) async throws -> ChatPage {
+        let mine = SessionVault.shared.current()?.mid ?? 0
+        let data = try await messageJSON(MessageRequest.messages(talker: talker, endSeqno: endSeqno))
+        try Self.requireMessageOK(data)
+        let page = MessageParser.lines(data, mine: mine)
+        return ChatPage(items: page.items, hasMore: page.hasMore, maxSeqno: page.items.map(\.id).max() ?? 0)
+    }
+
+    func ackChat(talker: Int, seqno: Int) async throws {
+        guard let csrf = SessionVault.shared.current()?.csrf, !csrf.isEmpty, talker > 0, seqno > 0 else {
+            throw BiliError.message("请先登录")
+        }
+        let data = try await messageJSON(MessageRequest.ack(talker: talker, seqno: seqno, csrf: csrf))
+        try Self.requireMessageOK(data)
+    }
+
+    func sendChat(receiver: Int, text: String) async throws {
+        guard let session = SessionVault.shared.current(), session.mid > 0, !session.csrf.isEmpty else {
+            throw BiliError.message("请先登录")
+        }
+        let device = UUID().uuidString.lowercased()
+        let stamp = Int(Date().timeIntervalSince1970)
+        guard let call = MessageRequest.send(
+            sender: session.mid,
+            receiver: receiver,
+            text: text,
+            device: device,
+            timestamp: stamp,
+            csrf: session.csrf
+        ) else {
+            throw BiliError.message("消息是空的")
+        }
+        let signed = try await wbiSign([
+            "w_sender_uid": "\(session.mid)",
+            "w_receiver_id": "\(receiver)",
+            "w_dev_id": device
+        ])
+        let query = signed.keys.sorted().map { key in
+            "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(signed[key, default: ""]))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "\(call.host)\(call.path)?\(query)") else {
+            throw BiliError.message("地址无效")
+        }
+        let data = try await postForm(
+            url,
+            fields: call.fields,
+            includeCSRF: false,
+            referer: call.referer,
+            origin: call.origin
+        )
+        try Self.requireMessageOK(data)
+    }
+
+    private func messageCards(_ ids: [Int]) async throws -> [Int: (name: String, face: String)] {
+        let data = try await messageJSON(MessageRequest.cards(ids: ids))
+        try Self.requireMessageOK(data)
+        return MessageParser.cards(data)
+    }
+
+    private func messageJSON(_ call: MessageCall) async throws -> JSON {
+        if call.signed {
+            do {
+                let data = try await requestQuery(
+                    call.path,
+                    params: call.fields,
+                    signed: true,
+                    referer: call.referer,
+                    origin: call.origin,
+                    host: call.host
+                )
+                let code = data["code"].int ?? -1
+                if code == 0 || code == -101 { return data }
+            } catch {
+                // The unsigned query is the fallback when WBI is refused.
+            }
+        }
+        return try await requestQuery(
+            call.path,
+            params: call.fields,
+            signed: false,
+            referer: call.referer,
+            origin: call.origin,
+            host: call.host
+        )
+    }
+
+    private static func requireMessageOK(_ data: JSON) throws {
+        let code = data["code"].int ?? -1
+        if code == -101 { throw BiliError.message("登录已失效") }
+        guard code == 0 else {
+            throw BiliError.message(data["message"].string ?? data["msg"].string ?? "操作没有成功")
+        }
+    }
 }
 
 struct NavSnapshot: Sendable {

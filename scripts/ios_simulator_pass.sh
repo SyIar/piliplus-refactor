@@ -1303,6 +1303,107 @@ PY
   echo "saved offline.png"
 }
 
+capture_message_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/message-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen messageProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing message request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/message-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+api = "https://api.bilibili.com"
+msg = "https://message.bilibili.com"
+vc = "https://api.vc.bilibili.com"
+expect = {
+    "reply": ("GET", api, "/x/msgfeed/reply", "build=0&mobi_app=web&platform=web&web_location=333.40164", False),
+    "reply-page": ("GET", api, "/x/msgfeed/reply", "build=0&id=9&mobi_app=web&platform=web&reply_time=1700000000&web_location=333.40164", False),
+    "at": ("GET", api, "/x/msgfeed/at", "build=0&mobi_app=web&platform=web&web_location=333.40164", False),
+    "at-page": ("GET", api, "/x/msgfeed/at", "at_time=1700000000&build=0&id=9&mobi_app=web&platform=web&web_location=333.40164", False),
+    "like": ("GET", api, "/x/msgfeed/like", "build=0&mobi_app=web&platform=web&web_location=333.40164", False),
+    "like-page": ("GET", api, "/x/msgfeed/like", "build=0&id=9&like_time=1700000000&mobi_app=web&platform=web&web_location=333.40164", False),
+    "system": ("GET", msg, "/x/sys-msg/query_notify_list", "build=0&mobi_app=web&page_size=20&web_location=333.40164", False),
+    "system-page": ("GET", msg, "/x/sys-msg/query_notify_list", "build=0&cursor=99&mobi_app=web&page_size=20&web_location=333.40164", False),
+    "unread": ("GET", api, "/x/msgfeed/unread", "build=0&mobi_app=web&web_location=333.1365", False),
+    "sessions": ("GET", vc, "/session_svr/v1/session_svr/get_sessions", "build=0&group_fold=1&mobi_app=web&session_type=1&sort_rule=2&unfollow_fold=0", False),
+    "sessions-page": ("GET", vc, "/session_svr/v1/session_svr/get_sessions", "build=0&end_ts=1700000000&group_fold=1&mobi_app=web&session_type=1&sort_rule=2&unfollow_fold=0", False),
+    "cards": ("GET", vc, "/account/v1/user/cards", "build=0&mobi_app=web&uids=7%2C8", False),
+    "messages": ("GET", vc, "/svr_sync/v1/svr_sync/fetch_session_msgs", "build=0&mobi_app=web&sender_device_id=1&session_type=1&size=20&talker_id=7", False),
+    "messages-older": ("GET", vc, "/svr_sync/v1/svr_sync/fetch_session_msgs", "build=0&end_seqno=100&mobi_app=web&sender_device_id=1&session_type=1&size=20&talker_id=7", False),
+    "ack": ("GET", vc, "/session_svr/v1/session_svr/update_ack", "ack_seqno=99&build=0&csrf=jct-token&csrf_token=jct-token&mobi_app=web&session_type=1&talker_id=7", True),
+    "send": ("POST", vc, "/web_im/v1/web_im/send_msg", "build=0&csrf=jct-token&csrf_token=jct-token&from_firework=0&mobi_app=web&msg%5Bcontent%5D=%7B%22content%22%3A%22%E4%BD%A0%E5%A5%BD%22%7D&msg%5Bdev_id%5D=device-1&msg%5Bmsg_status%5D=0&msg%5Bmsg_type%5D=1&msg%5Bnew_face_version%5D=1&msg%5Breceiver_id%5D=7&msg%5Breceiver_type%5D=1&msg%5Bsender_uid%5D=42&msg%5Btimestamp%5D=1700000000", True),
+    "send-quote": ("POST", vc, "/web_im/v1/web_im/send_msg", "build=0&csrf=jct-token&csrf_token=jct-token&from_firework=0&mobi_app=web&msg%5Bcontent%5D=%7B%22content%22%3A%22a%5C%22b%22%7D&msg%5Bdev_id%5D=device-1&msg%5Bmsg_status%5D=0&msg%5Bmsg_type%5D=1&msg%5Bnew_face_version%5D=1&msg%5Breceiver_id%5D=7&msg%5Breceiver_type%5D=1&msg%5Bsender_uid%5D=42&msg%5Btimestamp%5D=1700000000", True),
+}
+print(f"message proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("message request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"message cases {sorted(set(found) ^ set(expect))}")
+for name, (method, host, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("host"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, host, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+    if csrf and "csrf=jct-token" not in item["body"]:
+        raise SystemExit(f"{name} missing csrf")
+    if not csrf and "csrf" in item["body"]:
+        raise SystemExit(f"{name} unexpected csrf")
+print(f"message request proof ok ({len(expect)} cases)")
+PY
+}
+
+capture_message_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/message-ui.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 45); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing message ui proof for ${screen}" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("prompt", "rows", "sessions", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} showed an error: {data.get('error')}")
+ok = data.get("prompt") is True and int(data.get("rows") or 0) == 0
+print(f"{screen} message ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} message ui rejected")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
@@ -1312,12 +1413,14 @@ playback_status=0
 live_status=0
 sponsor_status=0
 download_status=0
+message_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
+capture_message_proof || message_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1336,6 +1439,10 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
   fi
   if [[ "$screen" == "dynamics" || "$screen" == "guest-dynamics" || "$screen" == "comments" || "$screen" == search-* ]]; then
     capture_social_ui "$screen" || social_status=1
+    continue
+  fi
+  if [[ "$screen" == "guest-messages" || "$screen" == "guest-chat" ]]; then
+    capture_message_ui "$screen" || message_status=1
     continue
   fi
   if [[ "$screen" == "space" || "$screen" == space-* ]]; then
@@ -1385,8 +1492,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, or warm scroll check failed" >&2
   exit 1
 fi
 

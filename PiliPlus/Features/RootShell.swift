@@ -75,6 +75,21 @@ struct RootShell: View {
         if LaunchMode.screen == "liveProof" {
             LiveRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "messageProof" {
+            MessageRequestProof.writeAndExit()
+        }
+        if LaunchMode.screen == "guest-messages" || LaunchMode.screen == "messages" {
+            await LaunchClock.waitForFirstFrame()
+            if LaunchMode.screen == "guest-messages" { model.loggedIn = false }
+            model.open(.messages)
+            return
+        }
+        if LaunchMode.screen == "guest-chat" {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            model.open(.chat(0, "私信"))
+            return
+        }
         if LaunchMode.screen == "guest-dynamics" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -298,7 +313,9 @@ struct RootShell: View {
         case .live(let id): LiveStage(roomID: id)
         case .settings: SettingsStudio()
         case .setting(let name): SettingDetail(name: name)
-        case .messages: InboxView()
+        case .messages: MessageHome()
+        case .notices(let kind): NoticeListView(kind: kind)
+        case .chat(let id, let name): ChatView(talkerID: id, name: name)
         case .login: LoginGate()
         case .feature(let title):
             switch title {
@@ -306,6 +323,8 @@ struct RootShell: View {
             case "稍后再看": WatchLaterListView()
             case "我的收藏": FavoritesView()
             case "离线缓存": DownloadsPage()
+            case "私信": MessageHome()
+            case "回复我的", "@我", "收到的赞", "系统通知": NoticeListView(kind: title)
             default: FeaturePageView(title: title)
             }
         case .folder(let id): FolderContentsView(mediaID: id)
