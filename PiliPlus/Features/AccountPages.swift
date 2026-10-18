@@ -171,7 +171,23 @@ struct FanListPage: View {
                 ProgressView("正在加载粉丝")
             } else {
                 List(people) { person in
-                    personRow(person)
+                    HStack(spacing: 12) {
+                        RemoteImage(url: person.face, ratio: 1, maxPixel: 120)
+                            .frame(width: 40, height: 40)
+                            .clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(person.name)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                                .layoutPriority(1)
+                            if !person.sign.isEmpty {
+                                Text(person.sign)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
                 }
                 .listStyle(.plain)
             }
