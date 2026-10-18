@@ -21,7 +21,6 @@ struct LoginPrompt: View {
 struct HistoryListView: View {
     @Environment(AppModel.self) private var model
     @State private var confirmClear = false
-    @State private var searching = false
 
     private var showPrompt: Bool { !model.loggedIn && !LaunchMode.accountPreview }
     private var rows: [VideoItem] { model.filtered(model.history) }
@@ -53,10 +52,11 @@ struct HistoryListView: View {
                     }
                 }
                 .listStyle(.plain)
-                .searchable(text: libraryQuery, isPresented: $searching, prompt: "搜索观看记录")
+                .searchable(text: libraryQuery, prompt: "搜索观看记录")
             }
         }
         .navigationTitle("观看记录")
+        .navigationSubtitle(model.libraryQuery.isEmpty ? "" : "搜索 \(model.libraryQuery)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
@@ -82,7 +82,6 @@ struct HistoryListView: View {
             await model.loadHistory(reset: true)
         }
         .onAppear {
-            if !model.libraryQuery.isEmpty { searching = true }
             AccountUIProof.record([
                 "prompt": showPrompt,
                 "rows": showPrompt ? 0 : model.history.count,
@@ -95,7 +94,6 @@ struct HistoryListView: View {
 struct WatchLaterListView: View {
     @Environment(AppModel.self) private var model
     @State private var confirmClear = false
-    @State private var searching = false
 
     private var showPrompt: Bool { !model.loggedIn && !LaunchMode.accountPreview }
     private var rows: [VideoItem] { model.filtered(model.laterVideos) }
@@ -123,10 +121,11 @@ struct WatchLaterListView: View {
                     }
                 }
                 .listStyle(.plain)
-                .searchable(text: libraryQuery, isPresented: $searching, prompt: "搜索稍后再看")
+                .searchable(text: libraryQuery, prompt: "搜索稍后再看")
             }
         }
         .navigationTitle("稍后再看")
+        .navigationSubtitle(model.libraryQuery.isEmpty ? "" : "搜索 \(model.libraryQuery)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
@@ -144,7 +143,6 @@ struct WatchLaterListView: View {
         }
         .task { await model.loadLater() }
         .onAppear {
-            if !model.libraryQuery.isEmpty { searching = true }
             AccountUIProof.record([
                 "prompt": showPrompt,
                 "rows": showPrompt ? 0 : model.laterVideos.count,
@@ -231,7 +229,6 @@ struct FavoritesView: View {
 struct FolderContentsView: View {
     @Environment(AppModel.self) private var model
     let mediaID: Int
-    @State private var searching = false
 
     private var folder: FavFolder? { model.favFolders.first { $0.id == mediaID } }
     private var videos: [VideoItem] { model.folderVideos[mediaID] ?? [] }
@@ -279,16 +276,25 @@ struct FolderContentsView: View {
                     }
                 }
                 .listStyle(.plain)
-                .searchable(text: libraryQuery, isPresented: $searching, prompt: "搜索收藏")
+                .searchable(text: libraryQuery, prompt: "搜索收藏")
                 .onSubmit(of: .search) {
                     Task { await reload() }
                 }
             }
         }
         .navigationTitle(folder?.title ?? "收藏")
+        .navigationSubtitle(model.libraryQuery.isEmpty ? model.libraryOrder : "\(model.libraryQuery) · \(model.libraryOrder)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
+                if model.libraryEditing, !model.libraryPicked.isEmpty {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("删除 \(model.libraryPicked.count)", role: .destructive) {
+                            let chosen = videos.filter { model.libraryPicked.contains($0.bvid) }
+                            Task { await model.deleteFavoriteItems(chosen, mediaID: mediaID) }
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu(model.libraryOrder) {
                         ForEach(["最近收藏", "最多播放", "最近投稿"], id: \.self) { option in
@@ -316,7 +322,6 @@ struct FolderContentsView: View {
             }
         }
         .task {
-            if !model.libraryQuery.isEmpty { searching = true }
             let primed = LaunchMode.screen == "lib-fav" && !videos.isEmpty
             if !primed {
                 await model.loadFolder(mediaID, reset: true, keyword: model.libraryQuery, order: model.libraryOrder)
