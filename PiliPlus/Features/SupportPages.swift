@@ -15,7 +15,7 @@ struct SettingsStudio: View {
                 ForEach(Menus.settingSections, id: \.title) { item in
                     Button { model.open(.setting(item.title)) } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: item.system).frame(width: 28).foregroundStyle(Palette.bili)
+                            Image(systemName: item.system).frame(width: 28).foregroundStyle(model.accentColor)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title).foregroundStyle(.primary)
                                 if !item.subtitle.isEmpty {
@@ -63,8 +63,13 @@ struct SettingDetail: View {
                 about
             } else if name == "空降助手" {
                 SponsorSettings()
+            } else if name == "弹幕屏蔽词" {
+                DanmakuBlockPage()
             } else {
                 List {
+                    if name == "推荐流设置" {
+                        filterSummary
+                    }
                     ForEach(Menus.settings[name] ?? []) { row in
                         rowView(row)
                     }
@@ -87,8 +92,21 @@ struct SettingDetail: View {
                     Text(row.subtitle).font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .tint(Palette.bili)
+            .tint(model.accentColor)
         case .options, .text:
+            if row.title == "弹幕屏蔽词" {
+                Button { model.open(.setting("弹幕屏蔽词")) } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title).foregroundStyle(.primary)
+                            Text(model.values[row.title].flatMap { $0.isEmpty ? nil : $0 } ?? row.subtitle)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            } else {
             Button { editor = row; draft = model.values[row.title] ?? "" } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -99,13 +117,16 @@ struct SettingDetail: View {
                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                 }
             }
+            }
         }
     }
 
     private func editorSheet(_ row: SettingRow) -> some View {
         NavigationStack {
             Group {
-                if case .options(let options) = row.kind {
+                if row.title == "首页标签页" {
+                    HomeTabEditor()
+                } else if case .options(let options) = row.kind {
                     List(options, id: \.self) { option in
                         Button {
                             model.values[row.title] = option
@@ -116,7 +137,7 @@ struct SettingDetail: View {
                             HStack {
                                 Text(option).foregroundStyle(.primary)
                                 Spacer()
-                                if model.values[row.title] == option { Image(systemName: "checkmark").foregroundStyle(Palette.bili) }
+                                if model.values[row.title] == option { Image(systemName: "checkmark").foregroundStyle(model.accentColor) }
                             }
                         }
                     }
@@ -143,10 +164,30 @@ struct SettingDetail: View {
     private func applySideEffect(_ title: String, bool: Bool? = nil, text: String? = nil) {
         if title == "主题模式", let text, let choice = ThemeChoice.allCases.first(where: { $0.label == text }) {
             model.theme = choice
+            model.toggles["纯黑主题"] = choice == .black
+            model.save()
         }
-        if title == "纯黑主题", bool == true { model.theme = .black }
+        if title == "纯黑主题" {
+            model.theme = bool == true ? .black : (model.theme == .black ? .dark : model.theme)
+        }
         if title == "弹幕开关", let bool { model.danmakuOn = bool }
-        if title == "首页标签页" { model.show("可在下方调整首页标签顺序") }
+    }
+
+    @ViewBuilder
+    private var filterSummary: some View {
+        let titles = model.terms(in: "标题关键词过滤")
+        let zones = model.terms(in: "分区关键词过滤")
+        if !titles.isEmpty || !zones.isEmpty {
+            Section("当前过滤") {
+                if !titles.isEmpty {
+                    LabeledContent("标题关键词", value: titles.joined(separator: " "))
+                }
+                if !zones.isEmpty {
+                    LabeledContent("分区关键词", value: zones.joined(separator: " "))
+                }
+                LabeledContent("已隐藏", value: "\(model.feed.filter { model.hidesVideo($0) }.count) 条推荐")
+            }
+        }
     }
 
     private var about: some View {
@@ -171,6 +212,83 @@ struct SettingDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+private struct HomeTabEditor: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        List {
+            ForEach(Array(model.homeTabs.enumerated()), id: \.offset) { index, tab in
+                HStack {
+                    Text(tab).foregroundStyle(.primary)
+                    Spacer()
+                    Button("上移") { model.moveHomeTab(tab, up: true) }
+                        .disabled(index == 0)
+                    Button("下移") { model.moveHomeTab(tab, up: false) }
+                        .disabled(index == model.homeTabs.count - 1)
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+    }
+}
+
+struct DanmakuBlockPage: View {
+    @Environment(AppModel.self) private var model
+    @State private var draft = ""
+
+    var body: some View {
+        List {
+            Section("屏蔽词") {
+                let words = model.terms(in: "弹幕屏蔽词")
+                if words.isEmpty {
+                    Text("还没有屏蔽词").foregroundStyle(.secondary)
+                } else {
+                    ForEach(words, id: \.self) { word in
+                        Text(word)
+                    }
+                }
+                TextField("添加屏蔽词，空格或逗号分隔", text: $draft)
+                Button("添加") {
+                    let piece = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !piece.isEmpty else { return }
+                    let existing = model.values["弹幕屏蔽词"] ?? ""
+                    model.values["弹幕屏蔽词"] = existing.isEmpty ? piece : existing + " " + piece
+                    model.save()
+                    draft = ""
+                }
+            }
+            Section("预览") {
+                previewRow("广告来了")
+                previewRow("正常弹幕")
+            }
+        }
+        .navigationTitle("弹幕屏蔽词")
+    }
+
+    private func previewRow(_ text: String) -> some View {
+        let blocked = model.blocksDanmaku(text)
+        return HStack {
+            Text(text)
+                .strikethrough(blocked)
+                .foregroundStyle(blocked ? .secondary : .primary)
+            Spacer()
+            Text(blocked ? "已屏蔽" : "显示")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(blocked ? .secondary : model.accentColor)
+        }
+    }
+}
+
+enum SettingsUIProof {
+    static func record(_ payload: [String: Any]) {
+        guard let screen = LaunchMode.screen, screen.hasPrefix("set-") else { return }
+        var body = payload
+        body["screen"] = screen
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
+        try? data.write(to: LaunchClock.documents.appendingPathComponent("settings-ui.json"), options: .atomic)
     }
 }
 

@@ -1262,7 +1262,7 @@ struct DanmakuLayer: View {
     }
 
     private func track(at time: Double) -> some View {
-        let window = cues.filter { $0.time <= time && $0.time >= time - 8 }.prefix(28)
+        let window = cues.filter { $0.time <= time && $0.time >= time - 8 && !model.blocksDanmaku($0.text) }.prefix(28)
         return GeometryReader { geo in
             ForEach(Array(window.enumerated()), id: \.element.id) { _, cue in
                 let age = time - cue.time
@@ -1951,6 +1951,7 @@ struct CommentRow: View {
     var onMore: (CommentItem) -> Void = { _ in }
     /// Dynamic detail uses a flat row. Video comments keep the plate.
     var plain: Bool = false
+    @State private var unfolded = false
 
     var body: some View {
         let row = VStack(alignment: .leading, spacing: plain ? 4 : 6) {
@@ -1980,7 +1981,13 @@ struct CommentRow: View {
                 Button { onReply(comment) } label: { Image(systemName: "ellipsis") }
                     .buttonStyle(.plain)
             }
-            Text(comment.message).font(.subheadline)
+            if !unfolded && model.foldsComment(comment.message) {
+                Button("该评论已折叠") { unfolded = true }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(comment.message).font(.subheadline)
+            }
             HStack(spacing: 16) {
                 Button { model.show("已赞评论") } label: { Label("\(comment.like)", systemImage: "hand.thumbsup") }
                 Button {

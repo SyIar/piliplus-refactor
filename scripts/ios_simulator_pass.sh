@@ -1446,6 +1446,65 @@ print(f"{screen} dynamic ui ok")
 PY
 }
 
+capture_settings_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/settings-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing settings ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("keyword","hidden","shown","removed","kept","after","words","blocked","shown","accent","theme","pure","first","tabs","font","error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} {data.get('error')}")
+if screen == "set-filter":
+    ok = str(data.get("keyword") or "") != "" and int(data.get("hidden") or 0) >= 1
+elif screen == "set-dislike":
+    ok = data.get("kept") is True and str(data.get("removed") or "") != "" and int(data.get("after") or 0) >= 1
+elif screen == "set-danmaku":
+    ok = data.get("blocked") is True and data.get("shown") is True and "广告" in str(data.get("words") or "")
+elif screen == "set-accent":
+    ok = data.get("accent") == "蓝色"
+elif screen == "set-black":
+    ok = data.get("theme") == "black" and data.get("pure") is True
+elif screen == "set-tabs":
+    ok = data.get("first") == "推荐"
+elif screen == "set-font":
+    ok = data.get("font") == "更大"
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} settings ui rejected")
+print(f"{screen} settings ui ok")
+PY
+}
+
 capture_message_proof() {
   local dir proof found=0
   dir="$(container)"
@@ -1762,8 +1821,16 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, or warm scroll check failed" >&2
+settings_status=0
+for screen in set-filter set-dislike set-danmaku set-accent set-black set-tabs set-font; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_settings_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_settings_ui "$screen" || settings_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, or warm scroll check failed" >&2
   exit 1
 fi
 
