@@ -147,7 +147,21 @@ struct DynamicsFeed: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text(item.text).font(.subheadline).lineLimit(4)
+            Button {
+                model.dynamicFocus = item
+                model.open(.dynamic(item.id))
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.text).font(.subheadline).foregroundStyle(.primary).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+                    if !item.images.isEmpty {
+                        DynamicImageStrip(images: item.images)
+                    }
+                    if item.hasPoll {
+                        DynamicPollBlock(title: item.pollTitle, options: item.pollOptions, counts: item.pollCounts, joined: item.pollJoined)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
             if let video = item.video, model.flag("动态页启用瀑布流") || true {
                 VideoCard(video: video)
             }
@@ -160,11 +174,13 @@ struct DynamicsFeed: View {
                     .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             HStack {
-                ActionChip(system: "arrow.2.squarepath", title: CountText.format(item.repost)) { model.show("已打开转发") }
+                ActionChip(system: "arrow.2.squarepath", title: CountText.format(item.repost)) {
+                    model.dynamicFocus = item
+                    model.open(.feature("转发动态"))
+                }
                 ActionChip(system: "text.bubble", title: CountText.format(item.comment)) { model.open(.feature("评论")) }
-                ActionChip(system: "hand.thumbsup", title: CountText.format(item.like), selected: false) {
-                    guard model.requireLogin("点赞") else { return }
-                    model.show("已赞动态")
+                ActionChip(system: item.liked ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(item.like), selected: item.liked) {
+                    Task { await model.likeDynamic(item) }
                 }
             }
         }
@@ -175,7 +191,9 @@ struct DynamicsFeed: View {
 
     private func handle(_ action: String, _ item: DynamicItem) {
         switch action {
-        case "转发": model.open(.feature("发布动态"))
+        case "转发":
+            model.dynamicFocus = item
+            model.open(.feature("转发动态"))
         case "复制动态":
             UIPasteboard.general.string = item.text
             model.show("已复制")

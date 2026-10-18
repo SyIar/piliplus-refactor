@@ -14,6 +14,8 @@ enum Route: Hashable {
     case feature(String)
     case folder(Int)
     case user(Int, String)
+    case dynamic(String)
+    case topic(Int, String)
 }
 
 enum ThemeChoice: String, CaseIterable, Identifiable {
@@ -64,6 +66,8 @@ final class AppModel {
     var liveOffers: [Int: LiveOffer] = [:]
     private var liveGeneration = 0
     var dynamics: [DynamicItem] = []
+    var dynamicFocus: DynamicItem?
+    var dynamicError = ""
     var dynamicOffset = ""
     var dynamicHasMore = false
     var loadingDynamics = false
@@ -470,6 +474,86 @@ final class AppModel {
             Task { await ImageStore.shared.prepare(urls: page.items.compactMap { $0.video?.cover }, maxPixel: 560) }
         } catch {
             if reset { show(error.localizedDescription) }
+        }
+    }
+
+    func loadSampleDynamic(requirePoll: Bool) async -> DynamicItem? {
+        var topics: [TopicItem] = []
+        if requirePoll {
+            topics += (try? await client.searchTopics(keyword: "投票")) ?? []
+        }
+        let hot = (try? await client.hotTopics()) ?? []
+        let known = Set(topics.map(\.id))
+        topics += hot.filter { !known.contains($0.id) }
+        for topic in topics.prefix(requirePoll ? 6 : 8) {
+            let items = (try? await client.topicDynamics(id: topic.id)) ?? []
+            if requirePoll, let found = items.first(where: \.hasPoll) { return found }
+            if !requirePoll {
+                if let draw = items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty }) { return draw }
+                if let any = items.first(where: { !$0.text.isEmpty }) { return any }
+            }
+        }
+        return nil
+    }
+
+    func publishDynamic(text: String, images: [Data], topicName: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            show("写点内容再发布")
+            return false
+        }
+        guard let csrf = csrf(for: "发布动态") else { return false }
+        do {
+            var remote: [String] = []
+            for data in images {
+                let url = try await client.uploadDynamicImage(data, csrf: csrf)
+                remote.append(url)
+            }
+            try await client.publishDynamic(text: trimmed, images: remote, topicID: 0, topicName: topicName, repostID: "", csrf: csrf)
+            show("动态已发布")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
+    }
+
+    func repostDynamic(_ item: DynamicItem, text: String) async -> Bool {
+        guard !item.id.isEmpty else { return false }
+        guard let csrf = csrf(for: "转发") else { return false }
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "转发动态" : text
+        do {
+            try await client.publishDynamic(text: message, images: [], topicID: 0, topicName: "", repostID: item.id, csrf: csrf)
+            show("已转发")
+            return true
+        } catch {
+            do {
+                try await client.repostDynamic(id: item.id, content: message, csrf: csrf)
+                show("已转发")
+                return true
+            } catch {
+                show(error.localizedDescription)
+                return false
+            }
+        }
+    }
+
+    func likeDynamic(_ item: DynamicItem) async {
+        guard !item.id.isEmpty else { return }
+        guard let csrf = csrf(for: "点赞") else { return }
+        let next = !item.liked
+        do {
+            try await client.likeDynamic(id: item.id, liked: next, csrf: csrf)
+            if let index = dynamics.firstIndex(where: { $0.id == item.id }) {
+                dynamics[index].liked = next
+                dynamics[index].like += next ? 1 : -1
+            }
+            if dynamicFocus?.id == item.id {
+                dynamicFocus?.liked = next
+            }
+            show(next ? "已赞动态" : "已取消赞")
+        } catch {
+            show(error.localizedDescription)
         }
     }
 

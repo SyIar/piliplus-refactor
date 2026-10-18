@@ -151,6 +151,7 @@ enum LaunchMode {
         if screen == "messageProof" || screen == "messages" { return false }
         if screen == "playbackExtra" || screen == "resume" || screen == "autoplay" || screen == "bangumi-play" { return false }
         if screen == "detail" || screen == "detail-dark" { return false }
+        if screen == "dynProof" || screen?.hasPrefix("dyn-") == true { return false }
         if screen == "chapters" || screen == "scrub" || screen == "sleep" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup

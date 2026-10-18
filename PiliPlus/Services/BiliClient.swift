@@ -913,6 +913,234 @@ struct BiliClient: Sendable {
         return (items, next, hasMore && !items.isEmpty)
     }
 
+    func dynamicDetail(id: String) async throws -> DynamicItem {
+        let data = try await wbiJSON(
+            "/x/polymer/web-dynamic/v1/detail",
+            params: [
+                "timezone_offset": "-480",
+                "id": id,
+                "features": DynamicRequest.features
+            ],
+            referer: "https://t.bilibili.com/\(id)",
+            origin: "https://t.bilibili.com"
+        )
+        try Self.requireOK(data)
+        let item = data["data"]["item"]
+        guard let built = Self.dynamic(fromPolymer: item) else {
+            throw BiliError.message("这条动态没有内容")
+        }
+        return await enrichPoll(built)
+    }
+
+    func hotTopics() async throws -> [TopicItem] {
+        if let hot = try? await topicGET("/x/topic/web/hot", fields: ["page_num": "1", "page_size": "20"]) {
+            let parsed = Self.topics(in: hot)
+            if !parsed.isEmpty { return parsed }
+        }
+        return try await mergedTopics(keywords: ["日常", "游戏", "音乐", "动画"])
+    }
+
+    func searchTopics(keyword: String) async throws -> [TopicItem] {
+        let data = try await topicGET("/x/topic/pub/search", fields: [
+            "keywords": keyword,
+            "page_num": "1",
+            "page_size": "20"
+        ])
+        return Self.topics(in: data)
+    }
+
+    private func mergedTopics(keywords: [String]) async throws -> [TopicItem] {
+        var seen = Set<Int>()
+        var rows: [TopicItem] = []
+        var last: Error?
+        for word in keywords {
+            do {
+                for topic in try await searchTopics(keyword: word) where seen.insert(topic.id).inserted {
+                    rows.append(topic)
+                }
+            } catch {
+                last = error
+            }
+        }
+        if rows.isEmpty, let last { throw last }
+        return rows
+    }
+
+    func followedTopics() async throws -> [TopicItem] {
+        let data = try await topicGET("/x/topic/web/fav/list", fields: ["page_num": "1", "page_size": "20"])
+        return Self.topics(in: data)
+    }
+
+    func topicDynamics(id: Int) async throws -> [DynamicItem] {
+        let data = try await topicGET("/x/topic/web/details/cards", fields: [
+            "topic_id": "\(id)",
+            "sort_by": "3",
+            "page_size": "15",
+            "offset": ""
+        ])
+        let items = data["data"]["topic_card_list"]["items"].array
+            ?? data["data"]["topic_card_list"]["dynamic_list"].array
+            ?? data["data"]["items"].array
+            ?? []
+        var rows: [DynamicItem] = []
+        for item in items {
+            guard var built = Self.dynamic(fromPolymer: Self.polymerCard(item)) else { continue }
+            built = await enrichPoll(built)
+            rows.append(built)
+        }
+        return rows
+    }
+
+    func repostDynamic(id: String, content: String, csrf: String) async throws {
+        guard let url = URL(string: DynamicRequest.repostURL) else { throw BiliError.message("地址无效") }
+        let data = try await postForm(
+            url,
+            fields: DynamicRequest.repostFields(dynamicID: id, content: content, csrf: csrf),
+            includeCSRF: false,
+            referer: "https://t.bilibili.com",
+            origin: "https://t.bilibili.com"
+        )
+        try Self.requireOK(data)
+    }
+
+    func likeDynamic(id: String, liked: Bool, csrf: String) async throws {
+        guard let url = URL(string: DynamicRequest.likeURL) else { throw BiliError.message("地址无效") }
+        let data = try await postForm(
+            url,
+            fields: DynamicRequest.likeFields(dynamicID: id, liked: liked, csrf: csrf),
+            includeCSRF: false,
+            referer: "https://t.bilibili.com",
+            origin: "https://t.bilibili.com"
+        )
+        try Self.requireOK(data)
+    }
+
+    func publishDynamic(text: String, images: [String], topicID: Int, topicName: String, repostID: String, csrf: String) async throws {
+        guard let url = URL(string: "https://api.bilibili.com/x/dynamic/feed/create/dyn?csrf=\(PercentEncoding.encodeURIComponent(csrf))") else {
+            throw BiliError.message("地址无效")
+        }
+        let raw = DynamicRequest.createBody(text: text, images: images, topicID: topicID, topicName: topicName, repostID: repostID)
+        guard !raw.isEmpty else { throw BiliError.message("动态内容无效") }
+        let body = Data(raw.utf8)
+        let data = try await send(
+            url,
+            method: "POST",
+            body: body,
+            contentType: "application/json",
+            includeSession: true,
+            cookieOverride: nil,
+            referer: "https://t.bilibili.com",
+            origin: "https://t.bilibili.com"
+        )
+        try Self.requireOK(data)
+    }
+
+    func uploadDynamicImage(_ data: Data, csrf: String) async throws -> String {
+        let boundary = "PiliPlus\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        var body = Data()
+        func append(_ text: String) { body.append(Data(text.utf8)) }
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file_up\"; filename=\"image.jpg\"\r\n")
+        append("Content-Type: image/jpeg\r\n\r\n")
+        body.append(data)
+        append("\r\n")
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"category\"\r\n\r\ndaily\r\n")
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"csrf\"\r\n\r\n\(csrf)\r\n")
+        append("--\(boundary)--\r\n")
+        guard let url = URL(string: "https://api.bilibili.com/x/dynamic/feed/draw/upload_bfs") else {
+            throw BiliError.message("地址无效")
+        }
+        let json = try await send(
+            url,
+            method: "POST",
+            body: body,
+            contentType: "multipart/form-data; boundary=\(boundary)",
+            includeSession: true,
+            cookieOverride: nil,
+            referer: "https://t.bilibili.com",
+            origin: "https://t.bilibili.com"
+        )
+        try Self.requireOK(json)
+        let remote = Self.https(json["data"]["image_url"].string ?? json["data"]["url"].string ?? "")
+        guard !remote.isEmpty else { throw BiliError.message("图片没有传上去") }
+        return remote
+    }
+
+    private static func polymerCard(_ item: JSON) -> JSON {
+        if item["dynamic_card_item"]["id_str"].string?.isEmpty == false {
+            return item["dynamic_card_item"]
+        }
+        return item
+    }
+
+    private func enrichPoll(_ item: DynamicItem) async -> DynamicItem {
+        guard item.pollOptions.isEmpty, item.pollVoteID > 0 else { return item }
+        guard let info = try? await voteInfo(id: item.pollVoteID), info.options.count >= 2 else { return item }
+        var copy = item
+        if copy.pollTitle.isEmpty { copy.pollTitle = info.title }
+        copy.pollOptions = info.options
+        copy.pollCounts = info.counts
+        if info.joined > 0 { copy.pollJoined = info.joined }
+        return copy
+    }
+
+    private func voteInfo(id: Int) async throws -> (title: String, options: [String], counts: [Int], joined: Int) {
+        guard let url = URL(string: "https://api.vc.bilibili.com/vote_svr/v1/vote_svr/vote_info?vote_id=\(id)") else {
+            throw BiliError.message("地址无效")
+        }
+        let data = try await getJSON(url, referer: "https://t.bilibili.com", origin: "https://t.bilibili.com")
+        try Self.requireOK(data)
+        let info = data["data"]["info"]
+        let title = info["title"].string ?? info["desc"].string ?? ""
+        var options: [String] = []
+        var counts: [Int] = []
+        for choice in info["options"].array ?? [] {
+            let name = choice["desc"].string ?? choice["title"].string ?? ""
+            guard !name.isEmpty else { continue }
+            options.append(name)
+            counts.append(choice["cnt"].int ?? 0)
+        }
+        let joined = info["cnt"].int ?? info["join_num"].int ?? counts.reduce(0, +)
+        return (title.isEmpty ? "投票" : title, options, counts, joined)
+    }
+
+    private func topicGET(_ path: String, fields: [String: String]) async throws -> JSON {
+        let data = try await requestQuery(
+            path,
+            params: fields,
+            signed: false,
+            referer: "https://www.bilibili.com",
+            origin: "https://www.bilibili.com",
+            host: "https://app.bilibili.com"
+        )
+        try Self.requireOK(data)
+        return data
+    }
+
+    private static func topics(in data: JSON) -> [TopicItem] {
+        let lists = [
+            data["data"]["topic_list"].array,
+            data["data"]["topic_items"].array,
+            data["data"]["list"].array,
+            data["data"]["items"].array
+        ].compactMap { $0 }
+        let raw = lists.first ?? []
+        return raw.compactMap { item in
+            let id = item["id"].int ?? item["topic_id"].int ?? 0
+            let name = item["name"].string ?? item["topic_name"].string ?? ""
+            guard id > 0, !name.isEmpty else { return nil }
+            return TopicItem(
+                id: id,
+                name: name,
+                view: item["view"].int ?? item["view_count"].int ?? 0,
+                discuss: item["discuss"].int ?? item["discuss_count"].int ?? 0,
+                summary: item["description"].string ?? item["desc"].string ?? ""
+            )
+        }
+    }
+
     func spaceProfile(mid: Int) async throws -> SpaceProfile {
         let data = try await loadPublic(SpaceRequest.profile(mid: mid), referer: "https://space.bilibili.com/\(mid)")
         let card = data["data"]["card"]
@@ -1936,7 +2164,7 @@ struct BiliClient: Sendable {
         default: kind = "动态"
         }
         let text = unescape(desc.isEmpty ? (clip?.title ?? author["pub_action"].string ?? kind) : desc)
-        return DynamicItem(
+        var built = DynamicItem(
             id: id,
             name: author["name"].string ?? "用户",
             face: https(author["face"].string ?? ""),
@@ -1949,6 +2177,53 @@ struct BiliClient: Sendable {
             repost: stat["forward"]["count"].int ?? 0,
             mid: author["mid"].int ?? 0
         )
+        let body = modules["module_dynamic"]
+        built.images = dynamicImages(in: body)
+        let poll = dynamicPoll(in: body)
+        built.pollTitle = poll.title
+        built.pollOptions = poll.options
+        built.pollCounts = poll.counts
+        built.pollJoined = poll.joined
+        built.topicName = body["topic"]["name"].string ?? ""
+        built.topicID = body["topic"]["id"].int ?? 0
+        built.pollVoteID = body["additional"]["vote"]["vote_id"].int ?? 0
+        built.liked = stat["like"]["status"].bool ?? false
+        if item["orig"]["id_str"].string != nil, let orig = dynamic(fromPolymer: item["orig"]) {
+            built.origText = orig.text
+        }
+        return built
+    }
+
+    private static func dynamicImages(in dynamic: JSON) -> [String] {
+        let major = dynamic["major"]
+        let draw = major["draw"]["items"].array ?? []
+        let opus = major["opus"]["pics"].array ?? []
+        let raw = draw + opus
+        var seen = Set<String>()
+        var images: [String] = []
+        for item in raw {
+            let src = https(item["src"].string ?? item["url"].string ?? "")
+            guard !src.isEmpty, seen.insert(src).inserted else { continue }
+            images.append(src)
+        }
+        return images
+    }
+
+    private static func dynamicPoll(in dynamic: JSON) -> (title: String, options: [String], counts: [Int], joined: Int) {
+        let vote = dynamic["additional"]["vote"]
+        let title = vote["desc"].string ?? vote["title"].string ?? ""
+        let choices = vote["options"].array ?? vote["choice"].array ?? []
+        var options: [String] = []
+        var counts: [Int] = []
+        for choice in choices {
+            let name = choice["desc"].string ?? choice["opt_desc"].string ?? choice["title"].string ?? ""
+            guard !name.isEmpty else { continue }
+            options.append(name)
+            counts.append(choice["cnt"].int ?? choice["count"].int ?? 0)
+        }
+        let joined = vote["join_num"].int ?? vote["cnt"].int ?? counts.reduce(0, +)
+        guard !options.isEmpty else { return ("", [], [], 0) }
+        return (title.isEmpty ? "投票" : title, options, counts, joined)
     }
 
     static func dynamic(fromLegacy item: JSON) -> DynamicItem? {

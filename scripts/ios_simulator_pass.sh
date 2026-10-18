@@ -1350,6 +1350,102 @@ PY
   echo "saved offline.png"
 }
 
+capture_dyn_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/dynamic-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen dynProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing dynamic request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/dynamic-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+print("dynamic proof", data.get("checked"), data.get("failures"))
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit(f"dynamic request proof failed: {data.get('failures')}")
+if int(data.get("checked") or 0) < 8:
+    raise SystemExit("dynamic request proof is short")
+print("dynamic request proof ok")
+PY
+}
+
+capture_dyn_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/dynamic-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing dynamic ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("text","author","hot","rows","poll","options","repost","source","error","images")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+error = str(data.get("error") or "")
+if error:
+    raise SystemExit(f"{screen} {error}")
+def covers_ready(data):
+    images = int(data.get("images") or 0)
+    covers = int(data.get("covers") or 0)
+    if images <= 0:
+        return True
+    return covers >= min(images, 3)
+
+if screen == "dyn-compose":
+    ok = data.get("composer") is True and data.get("image") is True and data.get("loginGuide") is True
+elif screen == "dyn-repost":
+    ok = data.get("repost") is True and str(data.get("source") or "") != "" and data.get("loginGuide") is True
+elif screen == "dyn-detail":
+    ok = str(data.get("text") or "") != "" and str(data.get("author") or "") != "" and covers_ready(data)
+elif screen == "dyn-topic":
+    ok = str(data.get("topic") or "") != "" and int(data.get("rows") or 0) >= 1 and covers_ready(data)
+elif screen == "dyn-topics":
+    ok = int(data.get("hot") or 0) >= 1 and data.get("followingPrompt") is True
+elif screen == "dyn-poll":
+    ok = data.get("poll") is True and int(data.get("options") or 0) >= 2 and str(data.get("pollTitle") or "") != "" and covers_ready(data)
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} dynamic ui rejected")
+print(f"{screen} dynamic ui ok")
+PY
+}
+
 capture_message_proof() {
   local dir proof found=0
   dir="$(container)"
@@ -1564,14 +1660,16 @@ download_status=0
 message_status=0
 extra_status=0
 detail_status=0
+dyn_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
 capture_message_proof || message_status=1
 capture_playback_extra || extra_status=1
+capture_dyn_proof || dyn_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback resume autoplay bangumi-play chapters scrub sleep history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline detail detail-dark; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback resume autoplay bangumi-play chapters scrub sleep history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline detail detail-dark dyn-compose dyn-repost dyn-detail dyn-topic dyn-topics dyn-poll; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1640,6 +1738,13 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     fi
     continue
   fi
+  if [[ "$screen" == dyn-* ]]; then
+    if ! capture_dyn_ui "$screen"; then
+      echo "retrying ${screen}" >&2
+      capture_dyn_ui "$screen" || dyn_status=1
+    fi
+    continue
+  fi
   if [[ "$screen" == "detail" || "$screen" == "detail-dark" ]]; then
     if ! capture_detail "$screen"; then
       echo "retrying ${screen}" >&2
@@ -1657,8 +1762,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, or warm scroll check failed" >&2
   exit 1
 fi
 

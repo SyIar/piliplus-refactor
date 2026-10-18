@@ -134,6 +134,26 @@ struct DynamicItem: Identifiable, Hashable {
     var comment: Int
     var repost: Int
     var mid: Int = 0
+    var images: [String] = []
+    var pollTitle: String = ""
+    var pollOptions: [String] = []
+    var pollCounts: [Int] = []
+    var pollJoined: Int = 0
+    var pollVoteID: Int = 0
+    var topicName: String = ""
+    var topicID: Int = 0
+    var origText: String = ""
+    var liked: Bool = false
+
+    var hasPoll: Bool { !pollOptions.isEmpty }
+}
+
+struct TopicItem: Identifiable, Hashable, Sendable {
+    var id: Int
+    var name: String
+    var view: Int
+    var discuss: Int
+    var summary: String
 }
 
 struct SpaceProfile: Hashable, Sendable {
