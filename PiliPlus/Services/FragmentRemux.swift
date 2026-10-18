@@ -142,14 +142,23 @@ private extension FragmentRemux {
                 }
             }
         }
-        var built = tracks
+        let fragmentCount = top.filter { $0.type == "moof" }.count
+        print("offline boxes \(data.count) moof \(fragmentCount) tracks \(tracks.count)")
+        var sampleMap: [UInt32: [FragSample]] = [:]
         for box in top where box.type == "moof" {
             for traf in try boxes(in: data, from: box.payload, to: box.end) where traf.type == "traf" {
                 let parsed = try readTraf(data, traf, moof: box.start, defaults: defaults)
-                guard var media = built[parsed.id] else { continue }
-                media.samples.append(contentsOf: parsed.samples)
-                built[parsed.id] = media
+                guard tracks[parsed.id] != nil else { continue }
+                var bucket = sampleMap.removeValue(forKey: parsed.id) ?? []
+                bucket.append(contentsOf: parsed.samples)
+                sampleMap[parsed.id] = bucket
             }
+        }
+        var built = tracks
+        for (id, samples) in sampleMap {
+            guard var media = built[id] else { continue }
+            media.samples = samples
+            built[id] = media
         }
         let candidates = built.values.filter { !$0.samples.isEmpty }
         let chosen = candidates.first { $0.handler == role }
