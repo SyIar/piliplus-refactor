@@ -691,7 +691,9 @@ final class DownloadCenter {
         done.fraction = 1
         replace(done)
         publish(done)
-        try? await Task.sleep(for: .seconds(2))
+        // Stay on this row long enough for the simulator screenshot to land
+        // before the row moves into the completed section.
+        try? await Task.sleep(for: .seconds(6))
         let movie = OfflineFiles.movie(done)
         let videoFile = OfflineFiles.video(done)
         let audioFile = OfflineFiles.audio(done)
@@ -743,7 +745,7 @@ final class DownloadCenter {
         storageBytes = OfflineFiles.usage()
         save()
         mergeOffset = 0
-        try? await Task.sleep(for: .milliseconds(400))
+        try? await Task.sleep(for: .seconds(1))
         publish(done, merge: probe)
         print("offline ready \(done.bvid) \(done.bytesWritten) danmaku \(done.danmakuCount)")
     }
