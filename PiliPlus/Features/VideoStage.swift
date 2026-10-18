@@ -1851,10 +1851,10 @@ struct CommentThreadList: View {
                         CommentRow(
                             comment: comment,
                             nested: false,
-                            plain: true,
                             onReply: { replyTarget = $0 },
                             mention: { draft = "@\($0.name) " },
-                            onMore: { item in Task { await loadReplies(item) } }
+                            onMore: { item in Task { await loadReplies(item) } },
+                            plain: true
                         )
                         .onAppear {
                             guard comment.id == comments.last?.id else { return }
