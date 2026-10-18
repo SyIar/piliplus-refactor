@@ -358,11 +358,23 @@ extension BiliClient {
 
     func chargeRank(mid: Int) async throws -> [RankPerson] {
         let form = AccountManageRequest.charge(mid: mid)
-        let data = try await accountGET(form.path, query: form.fields, referer: "https://space.bilibili.com/\(mid)")
-        guard data["code"].int == 0 else {
-            throw BiliError.message(data["message"].string ?? "充电榜不可用")
+        let referer = "https://space.bilibili.com/\(mid)"
+        var last = "充电榜不可用"
+        for signed in [false, true] {
+            do {
+                let data = try await accountGET(form.path, query: form.fields, referer: referer, signed: signed)
+                guard data["code"].int == 0 else {
+                    last = data["message"].string ?? last
+                    continue
+                }
+                let rows = AccountReads.charge(data)
+                if !rows.isEmpty { return rows }
+                last = "没有充电榜"
+            } catch {
+                last = error.localizedDescription
+            }
         }
-        return AccountReads.charge(data)
+        throw BiliError.message(last)
     }
 
     func guardRank(room: Int, uid: Int) async throws -> [RankPerson] {

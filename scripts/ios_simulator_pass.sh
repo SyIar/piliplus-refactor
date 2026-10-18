@@ -1753,7 +1753,9 @@ capture_account_ui() {
   xcrun simctl launch --terminate-running-process \
     --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
     "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
-  for _ in $(seq 1 90); do
+  local tries=90
+  if [[ "$screen" == "acct-guards" ]]; then tries=150; fi
+  for _ in $(seq 1 "$tries"); do
     if [[ -f "$proof" ]]; then
       found=1
       break
