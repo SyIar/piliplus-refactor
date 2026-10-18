@@ -133,7 +133,7 @@ enum LaunchMode {
 
     static var accountPreview: Bool {
         switch screen {
-        case "history", "later", "fav", "favsheet", "lib-history", "lib-later": return true
+        case "history", "later", "fav", "favsheet": return true
         default: return false
         }
     }

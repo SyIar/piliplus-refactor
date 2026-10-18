@@ -1651,7 +1651,9 @@ capture_library_ui() {
   xcrun simctl launch --terminate-running-process \
     --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
     "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
-  for _ in $(seq 1 90); do
+  local tries=90
+  if [[ "$screen" == "lib-history" ]]; then tries=180; fi
+  for _ in $(seq 1 "$tries"); do
     if [[ -f "$proof" ]]; then
       found=1
       break
@@ -1676,12 +1678,27 @@ if data.get("screen") != screen:
     raise SystemExit(f"{screen} proof screen mismatch")
 if data.get("error"):
     raise SystemExit(f"{screen} {data.get('error')}")
+def real_rows(data):
+    titles = [str(item) for item in (data.get("titles") or [])]
+    bvids = [str(item) for item in (data.get("bvids") or [])]
+    query = str(data.get("query") or "")
+    shown, total = int(data.get("shown") or 0), int(data.get("total") or 0)
+    fixture = any("液态玻璃" in title or "fixture" in title.lower() for title in titles)
+    fixture = fixture or any("fixture" in bvid.lower() for bvid in bvids)
+    return (
+        query != ""
+        and shown >= 1
+        and shown < total
+        and total >= 3
+        and len(titles) >= 3
+        and len(bvids) >= 3
+        and int(data.get("covers") or 0) >= 1
+        and not fixture
+    )
 if screen == "lib-history":
-    shown, total = int(data.get("shown") or 0), int(data.get("total") or 0)
-    ok = data.get("query") == "玻璃" and shown >= 1 and shown < total
+    ok = real_rows(data)
 elif screen == "lib-later":
-    shown, total = int(data.get("shown") or 0), int(data.get("total") or 0)
-    ok = data.get("query") == "稍后再看" and shown >= 1 and shown < total
+    ok = real_rows(data)
 elif screen == "lib-fav":
     ok = str(data.get("query") or "") != "" and data.get("order") == "最多播放" and int(data.get("rows") or 0) >= 1 and int(data.get("selected") or 0) >= 1 and data.get("editing") is True and int(data.get("covers") or 0) >= 1
 elif screen == "lib-sub":

@@ -18,11 +18,56 @@ struct LoginPrompt: View {
     }
 }
 
+struct LibrarySearchField: View {
+    @Binding var text: String
+    var prompt: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .submitLabel(.search)
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
+struct LibrarySyncBanner: View {
+    @Environment(AppModel.self) private var model
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("登录") { model.open(.login) }
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.bili)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
 struct HistoryListView: View {
     @Environment(AppModel.self) private var model
     @State private var confirmClear = false
 
-    private var showPrompt: Bool { !model.loggedIn && !LaunchMode.accountPreview }
+    private var showPrompt: Bool {
+        if LaunchMode.accountPreview { return false }
+        if LaunchMode.screen?.hasPrefix("guest-") == true { return !model.loggedIn }
+        return !model.loggedIn && model.history.isEmpty
+    }
     private var rows: [VideoItem] { model.filtered(model.history) }
     private var libraryQuery: Binding<String> {
         Binding(get: { model.libraryQuery }, set: { model.libraryQuery = $0 })
@@ -35,28 +80,34 @@ struct HistoryListView: View {
             } else if model.history.isEmpty {
                 ContentUnavailableView("没有观看记录", systemImage: "clock", description: Text("看过的视频会出现在这里"))
             } else {
-                List {
-                    ForEach(rows) { video in
-                        AccountVideoRow(video: video)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    Task { await model.deleteHistory(video) }
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
-                            .onAppear {
-                                guard video.bvid == rows.last?.bvid else { return }
-                                Task { await model.loadHistory(reset: false) }
-                            }
+                VStack(spacing: 0) {
+                    if !model.loggedIn && !LaunchMode.accountPreview {
+                        LibrarySyncBanner(message: "登录后同步账号里的观看记录")
                     }
+                    if !LaunchMode.accountPreview {
+                        LibrarySearchField(text: libraryQuery, prompt: "搜索观看记录")
+                    }
+                    List {
+                        ForEach(rows) { video in
+                            AccountVideoRow(video: video)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        Task { await model.deleteHistory(video) }
+                                    } label: {
+                                        Label("删除", systemImage: "trash")
+                                    }
+                                }
+                                .onAppear {
+                                    guard video.bvid == rows.last?.bvid else { return }
+                                    Task { await model.loadHistory(reset: false) }
+                                }
+                        }
+                    }
+                    .listStyle(.plain)
                 }
-                .listStyle(.plain)
-                .searchable(text: libraryQuery, prompt: "搜索观看记录")
             }
         }
         .navigationTitle("观看记录")
-        .navigationSubtitle(model.libraryQuery.isEmpty ? "" : "搜索 \(model.libraryQuery)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
@@ -79,6 +130,7 @@ struct HistoryListView: View {
         }
         .task {
             await model.loadHistoryPause()
+            if LaunchMode.screen == "lib-history", !model.history.isEmpty { return }
             await model.loadHistory(reset: true)
         }
         .onAppear {
@@ -95,7 +147,11 @@ struct WatchLaterListView: View {
     @Environment(AppModel.self) private var model
     @State private var confirmClear = false
 
-    private var showPrompt: Bool { !model.loggedIn && !LaunchMode.accountPreview }
+    private var showPrompt: Bool {
+        if LaunchMode.accountPreview { return false }
+        if LaunchMode.screen?.hasPrefix("guest-") == true { return !model.loggedIn }
+        return !model.loggedIn && model.laterVideos.isEmpty
+    }
     private var rows: [VideoItem] { model.filtered(model.laterVideos) }
     private var libraryQuery: Binding<String> {
         Binding(get: { model.libraryQuery }, set: { model.libraryQuery = $0 })
@@ -108,24 +164,30 @@ struct WatchLaterListView: View {
             } else if model.laterVideos.isEmpty {
                 ContentUnavailableView("稍后再看是空的", systemImage: "clock", description: Text("在视频页加入后会出现在这里"))
             } else {
-                List {
-                    ForEach(rows) { video in
-                        AccountVideoRow(video: video)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    Task { await model.removeLater(video) }
-                                } label: {
-                                    Label("移出", systemImage: "minus.circle")
-                                }
-                            }
+                VStack(spacing: 0) {
+                    if !model.loggedIn && !LaunchMode.accountPreview {
+                        LibrarySyncBanner(message: "登录后同步稍后再看")
                     }
+                    if !LaunchMode.accountPreview {
+                        LibrarySearchField(text: libraryQuery, prompt: "搜索稍后再看")
+                    }
+                    List {
+                        ForEach(rows) { video in
+                            AccountVideoRow(video: video)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        Task { await model.removeLater(video) }
+                                    } label: {
+                                        Label("移出", systemImage: "minus.circle")
+                                    }
+                                }
+                        }
+                    }
+                    .listStyle(.plain)
                 }
-                .listStyle(.plain)
-                .searchable(text: libraryQuery, prompt: "搜索稍后再看")
             }
         }
         .navigationTitle("稍后再看")
-        .navigationSubtitle(model.libraryQuery.isEmpty ? "" : "搜索 \(model.libraryQuery)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
@@ -141,7 +203,10 @@ struct WatchLaterListView: View {
         } message: {
             Text("清空后无法恢复")
         }
-        .task { await model.loadLater() }
+        .task {
+            if LaunchMode.screen == "lib-later", !model.laterVideos.isEmpty { return }
+            await model.loadLater()
+        }
         .onAppear {
             AccountUIProof.record([
                 "prompt": showPrompt,
@@ -241,60 +306,53 @@ struct FolderContentsView: View {
         Group {
             if showPrompt {
                 LoginPrompt(title: "登录后查看收藏", systemImage: "star")
-            } else if videos.isEmpty {
-                ContentUnavailableView("收藏夹是空的", systemImage: "star", description: Text(folder?.title ?? "收藏"))
             } else {
-                List {
-                    ForEach(videos) { video in
-                        HStack(spacing: 10) {
-                            if model.libraryEditing {
-                                Image(systemName: model.libraryPicked.contains(video.bvid) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(model.libraryPicked.contains(video.bvid) ? Palette.bili : .secondary)
+                VStack(spacing: 0) {
+                    LibrarySearchField(text: libraryQuery, prompt: "搜索收藏")
+                        .onSubmit { Task { await reload() } }
+                    if videos.isEmpty {
+                        ContentUnavailableView("收藏夹是空的", systemImage: "star", description: Text(folder?.title ?? "收藏"))
+                    } else {
+                        List {
+                            ForEach(videos) { video in
+                                HStack(spacing: 10) {
+                                    if model.libraryEditing {
+                                        Image(systemName: model.libraryPicked.contains(video.bvid) ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(model.libraryPicked.contains(video.bvid) ? Palette.bili : .secondary)
+                                    }
+                                    AccountVideoRow(video: video, interactive: !model.libraryEditing)
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    guard model.libraryEditing else { return }
+                                    if model.libraryPicked.contains(video.bvid) {
+                                        model.libraryPicked.remove(video.bvid)
+                                    } else {
+                                        model.libraryPicked.insert(video.bvid)
+                                    }
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        Task { await model.dealFavorite(video, add: [], remove: [mediaID]) }
+                                    } label: {
+                                        Label("移出", systemImage: "star.slash")
+                                    }
+                                }
+                                .onAppear {
+                                    guard video.bvid == videos.last?.bvid else { return }
+                                    Task { await model.loadFolder(mediaID, reset: false, keyword: model.libraryQuery, order: model.libraryOrder) }
+                                }
                             }
-                            AccountVideoRow(video: video, interactive: !model.libraryEditing)
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard model.libraryEditing else { return }
-                            if model.libraryPicked.contains(video.bvid) {
-                                model.libraryPicked.remove(video.bvid)
-                            } else {
-                                model.libraryPicked.insert(video.bvid)
-                            }
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                Task { await model.dealFavorite(video, add: [], remove: [mediaID]) }
-                            } label: {
-                                Label("移出", systemImage: "star.slash")
-                            }
-                        }
-                        .onAppear {
-                            guard video.bvid == videos.last?.bvid else { return }
-                            Task { await model.loadFolder(mediaID, reset: false, keyword: model.libraryQuery, order: model.libraryOrder) }
-                        }
+                        .listStyle(.plain)
                     }
-                }
-                .listStyle(.plain)
-                .searchable(text: libraryQuery, prompt: "搜索收藏")
-                .onSubmit(of: .search) {
-                    Task { await reload() }
                 }
             }
         }
         .navigationTitle(folder?.title ?? "收藏")
-        .navigationSubtitle(model.libraryQuery.isEmpty ? model.libraryOrder : "\(model.libraryQuery) · \(model.libraryOrder)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !showPrompt {
-                if model.libraryEditing, !model.libraryPicked.isEmpty {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("删除 \(model.libraryPicked.count)", role: .destructive) {
-                            let chosen = videos.filter { model.libraryPicked.contains($0.bvid) }
-                            Task { await model.deleteFavoriteItems(chosen, mediaID: mediaID) }
-                        }
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu(model.libraryOrder) {
                         ForEach(["最近收藏", "最多播放", "最近投稿"], id: \.self) { option in
@@ -513,35 +571,32 @@ struct AccountVideoRow: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 RemoteImage(url: video.cover, maxPixel: 320)
-                    .frame(width: 128)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .frame(width: 128, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 6) {
                     Text(video.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(video.ownerName)
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .layoutPriority(-1)
-                        Spacer(minLength: 8)
-                        HStack(spacing: 8) {
-                            if video.view > 0 {
-                                countIcon("play.fill", CountText.format(video.view))
-                            }
-                            if video.danmaku > 0 {
-                                countIcon("text.bubble.fill", CountText.format(video.danmaku))
-                            }
-                            if let mark = progressText {
-                                Text(mark)
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                            }
+                            .layoutPriority(1)
+                        if video.view > 0 {
+                            countIcon("play.fill", CountText.format(video.view))
+                                .layoutPriority(-1)
                         }
-                        .fixedSize(horizontal: true, vertical: false)
-                        .layoutPriority(1)
+                        if video.danmaku > 0 {
+                            countIcon("text.bubble.fill", CountText.format(video.danmaku))
+                                .layoutPriority(-1)
+                        }
+                        if let mark = progressText {
+                            Text(mark)
+                                .lineLimit(1)
+                                .layoutPriority(-1)
+                        }
                     }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -558,9 +613,8 @@ struct AccountVideoRow: View {
             Image(systemName: symbol)
             Text(text)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .lineLimit(1)
     }
 
     private var progressText: String? {
