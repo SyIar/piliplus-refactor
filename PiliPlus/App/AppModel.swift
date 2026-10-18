@@ -661,7 +661,7 @@ final class AppModel {
         open(.video(item.bvid))
     }
 
-    func playLocal(_ video: VideoItem, file: URL) {
+    func playLocal(_ video: VideoItem, file: URL, audio: URL? = nil) {
         guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
         nowPlaying = video
         store(video)
@@ -671,8 +671,12 @@ final class AppModel {
         let generation = playGeneration
         let rate = playbackRate
         Task {
-            let asset = AVURLAsset(url: file)
-            let item = AVPlayerItem(asset: asset)
+            let item: AVPlayerItem
+            if let audio, FileManager.default.fileExists(atPath: audio.path) {
+                item = await StreamComposer.item(videoURL: file, audioURL: audio, headers: [:])
+            } else {
+                item = AVPlayerItem(asset: AVURLAsset(url: file))
+            }
             guard generation == playGeneration else { return }
             if player == nil {
                 player = AVPlayer(playerItem: item)

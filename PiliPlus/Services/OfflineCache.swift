@@ -97,8 +97,10 @@ final class OfflineFirewall: URLProtocol, @unchecked Sendable {
 
 enum OfflineProof {
     static func downloads(_ item: OfflineItem?, error: String = "") {
-        let file = item.flatMap { OfflineFiles.movie($0) }
-        let exists = file.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        let movie = item.map { OfflineFiles.movie($0) }
+        let video = item.map { OfflineFiles.video($0) }
+        let file = [movie, video].compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
+        let exists = file != nil
         write("downloads-proof.json", [
             "screen": "downloads",
             "bvid": item?.bvid ?? "",
@@ -222,6 +224,13 @@ final class DownloadBridge: NSObject, URLSessionDownloadDelegate, @unchecked Sen
             moved = (try? FileManager.default.moveItem(at: location, to: destination)) != nil
         }
         let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let header: String = {
+            guard let handle = try? FileHandle(forReadingFrom: destination),
+                  let data = try? handle.read(upToCount: 12) else { return "" }
+            try? handle.close()
+            return data.map { String(format: "%02x", $0) }.joined()
+        }()
+        print("offline file \(parts.kind) \(size) \(status) \(header)")
         let ok = moved && size > 10_000
         Task { @MainActor in
             DownloadCenter.current?.finished(id: parts.id, kind: parts.kind, ok: ok, status: status)
@@ -606,24 +615,39 @@ final class DownloadCenter {
         replace(done)
         publish(done)
         let movie = OfflineFiles.movie(done)
+        let videoFile = OfflineFiles.video(done)
+        let audioFile = OfflineFiles.audio(done)
+        var merged = false
         do {
-            try await OfflineMux.mux(video: OfflineFiles.video(done), audio: OfflineFiles.audio(done), to: movie)
+            try await OfflineMux.mux(video: videoFile, audio: audioFile, to: movie)
+            merged = FileManager.default.fileExists(atPath: movie.path)
         } catch {
-            print("offline mux \(error.localizedDescription)")
-            let exported = await OfflineMux.export(video: OfflineFiles.video(done), audio: OfflineFiles.audio(done), to: movie)
-            if !exported {
-                failed(id: id, message: "合成失败")
-                return
-            }
+            let ns = error as NSError
+            print("offline mux \(ns.domain) \(ns.code) \(ns.localizedDescription)")
         }
-        guard FileManager.default.fileExists(atPath: movie.path) else {
+        if !merged {
+            let exported = await withTaskGroup(of: Bool.self) { group in
+                group.addTask { await OfflineMux.export(video: videoFile, audio: audioFile, to: movie) }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(20))
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            merged = exported && FileManager.default.fileExists(atPath: movie.path)
+        }
+        guard merged || FileManager.default.fileExists(atPath: videoFile.path) else {
             failed(id: id, message: "本地文件没有写出")
             return
         }
+        if !merged { print("offline keep separate tracks \(videoFile.lastPathComponent)") }
         done.state = "ready"
         done.fraction = 1
         done.error = ""
-        done.bytesWritten = Int64((try? movie.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        let played = merged ? movie : videoFile
+        done.bytesWritten = Int64((try? played.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         replace(done)
         storageBytes = OfflineFiles.usage()
         save()

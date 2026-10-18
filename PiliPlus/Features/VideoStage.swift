@@ -439,7 +439,11 @@ struct VideoStage: View {
             return
         }
         model.offlineTarget = item.id
-        let file = OfflineFiles.movie(item)
+        let movie = OfflineFiles.movie(item)
+        let videoFile = OfflineFiles.video(item)
+        let audioFile = OfflineFiles.audio(item)
+        let file = FileManager.default.fileExists(atPath: movie.path) ? movie : videoFile
+        let audio = file == movie ? nil : (FileManager.default.fileExists(atPath: audioFile.path) ? audioFile : nil)
         guard FileManager.default.fileExists(atPath: file.path) else {
             error = "本地文件不存在"
             return
@@ -467,6 +471,7 @@ struct VideoStage: View {
             tname: ""
         )
         local.playURL = file.absoluteString
+        local.audioURL = audio?.absoluteString
         local.streamCodec = item.codec
         local.qualities = [item.quality]
         video = local
@@ -475,7 +480,7 @@ struct VideoStage: View {
             danmaku = DanmakuXML.parse(data)
         }
         model.offlineDanmaku = danmaku.count
-        model.playLocal(local, file: file)
+        model.playLocal(local, file: file, audio: audio)
     }
 
     private func load() async {
