@@ -1741,7 +1741,7 @@ print("account manage request proof ok")
 PY
 }
 
-capture_account_ui() {
+capture_account_manage_ui() {
   local screen="$1"
   local dir proof found=0
   dir="$(container)"
@@ -2164,9 +2164,9 @@ account_manage_status=0
 capture_account_proof || account_manage_status=1
 for screen in acct-likes acct-coins acct-articles acct-charge acct-guards acct-search acct-fans acct-shop acct-comics acct-follows acct-black acct-profile acct-coinlog acct-explog acct-devices acct-accounts; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
-  if ! capture_account_ui "$screen"; then
+  if ! capture_account_manage_ui "$screen"; then
     echo "retrying ${screen}" >&2
-    capture_account_ui "$screen" || account_manage_status=1
+    capture_account_manage_ui "$screen" || account_manage_status=1
   fi
 done
 if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 ]]; then
