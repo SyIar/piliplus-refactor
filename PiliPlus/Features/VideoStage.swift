@@ -1829,7 +1829,7 @@ struct CommentThreadList: View {
     }
 
     private var stack: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             if oid <= 0 || type <= 0 {
                 ContentUnavailableView("还没有评论", systemImage: "text.bubble", description: Text("这条动态没有打开评论区"))
             } else {
@@ -1843,17 +1843,23 @@ struct CommentThreadList: View {
                     }
                     .font(.caption.weight(.semibold))
                 }
-                ForEach(comments) { comment in
-                    CommentRow(
-                        comment: comment,
-                        nested: false,
-                        onReply: { replyTarget = $0 },
-                        mention: { draft = "@\($0.name) " },
-                        onMore: { item in Task { await loadReplies(item) } }
-                    )
-                    .onAppear {
-                        guard comment.id == comments.last?.id else { return }
-                        Task { await loadMore() }
+                VStack(spacing: 0) {
+                    ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
+                        if index > 0 {
+                            Divider()
+                        }
+                        CommentRow(
+                            comment: comment,
+                            nested: false,
+                            plain: true,
+                            onReply: { replyTarget = $0 },
+                            mention: { draft = "@\($0.name) " },
+                            onMore: { item in Task { await loadReplies(item) } }
+                        )
+                        .onAppear {
+                            guard comment.id == comments.last?.id else { return }
+                            Task { await loadMore() }
+                        }
                     }
                 }
                 if comments.isEmpty {
@@ -1943,9 +1949,11 @@ struct CommentRow: View {
     var onReply: (CommentItem) -> Void
     var mention: (CommentItem) -> Void
     var onMore: (CommentItem) -> Void = { _ in }
+    /// Dynamic detail uses a flat row. Video comments keep the plate.
+    var plain: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let row = VStack(alignment: .leading, spacing: plain ? 4 : 6) {
             HStack {
                 Button {
                     guard comment.mid > 0 else { return }
@@ -1985,7 +1993,7 @@ struct CommentRow: View {
             .buttonStyle(.plain)
             if !nested {
                 ForEach(comment.replies) { child in
-                    CommentRow(comment: child, nested: true, onReply: onReply, mention: mention)
+                    CommentRow(comment: child, nested: true, onReply: onReply, mention: mention, plain: plain)
                         .padding(.leading, 20)
                 }
                 if comment.replyCount > comment.replies.count {
@@ -1995,8 +2003,13 @@ struct CommentRow: View {
                 }
             }
         }
-        .padding(12)
-        .contentPlate(radius: nested ? 14 : 20)
+        .padding(.vertical, plain ? 8 : 12)
+        .padding(.horizontal, plain ? 0 : 12)
+        if plain {
+            row
+        } else {
+            row.contentPlate(radius: nested ? 14 : 20)
+        }
     }
 }
 
