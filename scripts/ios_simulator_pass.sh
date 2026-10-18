@@ -841,16 +841,19 @@ capture_live_room() {
   xcrun simctl launch --terminate-running-process \
     --stdout="$OUT/perf/live-room.log" --stderr="$OUT/perf/live-room.err" \
     "$UDID" "$BUNDLE" -screen live-room -perfLabel "$LABEL"
-  local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0
-  for _ in $(seq 1 170); do
+  local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0 deadline
+  deadline=$(( $(date +%s) + 180 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
     if [[ -f "$proof" ]]; then
-      cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
-      err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
-      dm="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("danmaku", 0))' "$proof")"
-      fresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fresh", 0))' "$proof")"
-      proto="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("protocol", ""))' "$proof")"
-      title="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("title", ""))' "$proof")"
-      room="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("room", 0))' "$proof")"
+      line="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+vals=[d.get("seconds",0), d.get("error") or "", d.get("danmaku",0), d.get("fresh",0), d.get("protocol") or "", d.get("room",0), str(d.get("title") or "").replace("\t"," ")]
+print("\t".join(str(v) for v in vals))' "$proof" 2>/dev/null || true)"
+      if [[ -z "$line" ]]; then
+        sleep 1
+        continue
+      fi
+      IFS=$'\t' read -r cur err dm fresh proto room title <<< "$line"
       if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]]; then
         if [[ "$room" != "$stay_room" ]]; then
           stay_room="$room"

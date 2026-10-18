@@ -1087,10 +1087,10 @@ struct PlayerControls: View {
                 ForEach(segments) { segment in
                     let start = min(1, max(0, segment.start / duration))
                     let end = min(1, max(start, segment.end / duration))
-                    Rectangle()
+                    RoundedRectangle(cornerRadius: 1)
                         .fill(segment.color)
-                        .frame(width: max(4, geo.size.width * (end - start)), height: max(bar, 5))
-                        .offset(x: geo.size.width * start)
+                        .frame(width: max(8, geo.size.width * (end - start)), height: 8)
+                        .offset(x: geo.size.width * start, y: -2)
                 }
                 if thick {
                     Circle()
