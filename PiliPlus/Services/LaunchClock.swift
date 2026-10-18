@@ -146,6 +146,7 @@ enum LaunchMode {
         if screen?.hasPrefix("guest-") == true || screen?.hasPrefix("search-") == true { return false }
         if screen == "space" || screen?.hasPrefix("space-") == true { return false }
         if screen == "live" || screen == "live-area" || screen == "live-room" || screen == "liveProof" { return false }
+        if screen == "sponsor" || screen == "sponsor-settings" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }
@@ -157,7 +158,7 @@ enum LaunchMode {
     /// Simulator builds often cannot decode the AV1 rendition. The playback
     /// screenshot pass asks for AVC so a real frame can advance.
     static func playbackCodec(preferred: String) -> String {
-        guard screen == "playback", ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
+        guard screen == "playback" || screen == "sponsor", ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             return preferred
         }
         return "avc1"

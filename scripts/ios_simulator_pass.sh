@@ -1016,6 +1016,66 @@ PY
   echo "saved live-room.png danmaku=$dm"
 }
 
+capture_sponsor() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/sponsor-proof.json"
+  rm -f "$proof" "$OUT/screenshots/sponsor.png"
+  : > "$OUT/perf/sponsor.log"
+  : > "$OUT/perf/sponsor.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/sponsor.log" --stderr="$OUT/perf/sponsor.err" \
+    "$UDID" "$BUNDLE" -screen sponsor -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if int(d.get("count") or 0) >= 1 and d.get("skipped") is True and str(d.get("server") or "") and str(d.get("prefix") or "") and not d.get("error") else 1)' "$proof"; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/sponsor-proof.json"
+    echo "sponsor proof:"
+    cat "$OUT/perf/sponsor-proof.json"
+    echo
+  fi
+  if [[ "$found" -ne 1 ]]; then
+    echo "sponsor segments were not skipped on a real video" >&2
+    xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor.png" || true
+    tail -n 40 "$OUT/perf/sponsor.log" || true
+    return 1
+  fi
+  sleep 0.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor.png"
+  echo "saved sponsor.png"
+}
+
+capture_sponsor_settings() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/sponsor-settings-proof.json"
+  rm -f "$proof" "$OUT/screenshots/sponsor-settings.png"
+  xcrun simctl launch --terminate-running-process \
+    "$UDID" "$BUNDLE" -screen sponsor-settings -perfLabel "$LABEL"
+  for _ in $(seq 1 40); do
+    if [[ -f "$proof" ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("sponsor") == "自动跳过" and d.get("screen") == "sponsor-settings" else 1)' "$proof"; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor-settings.png"
+  echo "saved sponsor-settings.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/sponsor-settings-proof.json"
+  fi
+  if [[ "$found" -ne 1 ]]; then
+    echo "sponsor settings proof missing" >&2
+    return 1
+  fi
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
@@ -1023,12 +1083,13 @@ social_status=0
 space_status=0
 playback_status=0
 live_status=0
+sponsor_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1064,6 +1125,17 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     fi
     continue
   fi
+  if [[ "$screen" == "sponsor" ]]; then
+    if ! capture_sponsor; then
+      echo "retrying sponsor capture" >&2
+      capture_sponsor || sponsor_status=1
+    fi
+    continue
+  fi
+  if [[ "$screen" == "sponsor-settings" ]]; then
+    capture_sponsor_settings || sponsor_status=1
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -1074,8 +1146,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, or warm scroll check failed" >&2
   exit 1
 fi
 
