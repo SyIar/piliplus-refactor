@@ -48,6 +48,7 @@ struct LiveStage: View {
                 .frame(maxHeight: fullscreen ? .infinity : 230)
             if !fullscreen {
                 header
+                tools
                 chat
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -76,7 +77,7 @@ struct LiveStage: View {
                 onQuality: { name in Task { await switchQuality(name) } }
             )
             if model.danmakuOn {
-                LiveDanmakuOverlay(lines: feed.lines)
+                LiveDanmakuOverlay(lines: visibleChat)
             }
         }
         .background(Color.black)
@@ -109,6 +110,39 @@ struct LiveStage: View {
         return "\(name) · \(area) · \(online) 人气"
     }
 
+    private var visibleChat: [LiveChatLine] {
+        feed.lines.filter { LiveBlockList.allows($0.text) }
+    }
+
+    private var tools: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                liveTool("高能榜", "chart.bar", "高能榜")
+                liveTool("醒目留言", "megaphone", "醒目留言")
+                liveTool("表情", "face.smiling", "直播表情")
+                liveTool("屏蔽", "hand.raised", "弹幕屏蔽")
+            }
+            .padding(.horizontal, 16)
+        }
+        .padding(.bottom, 4)
+    }
+
+    private func liveTool(_ title: String, _ symbol: String, _ feature: String) -> some View {
+        Button {
+            model.liveFocusRoom = roomID
+            model.liveFocusUID = room?.mid ?? 0
+            model.liveFocusTitle = room?.title ?? ""
+            model.open(.feature(feature))
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .contentPlate(radius: 14)
+        }
+        .buttonStyle(.plain)
+    }
+
     private var chat: some View {
         GeometryReader { geo in
             ScrollViewReader { proxy in
@@ -116,8 +150,10 @@ struct LiveStage: View {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         if feed.lines.isEmpty {
                             ContentUnavailableView("等待弹幕", systemImage: "text.bubble", description: Text("连上直播间后，弹幕会出现在这里"))
+                        } else if visibleChat.isEmpty {
+                            ContentUnavailableView("弹幕已被屏蔽", systemImage: "hand.raised", description: Text("含有屏蔽词的弹幕不会出现在这里"))
                         } else {
-                            ForEach(feed.lines) { line in
+                            ForEach(visibleChat) { line in
                                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                                     if !line.name.isEmpty {
                                         Text(line.name)
@@ -139,8 +175,8 @@ struct LiveStage: View {
                     .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: feed.lines.isEmpty ? .center : .bottom)
                 }
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: feed.lines.count) { _, _ in
-                    guard let last = feed.lines.last else { return }
+                .onChange(of: visibleChat.count) { _, _ in
+                    guard let last = visibleChat.last else { return }
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }

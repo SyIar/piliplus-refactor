@@ -145,7 +145,7 @@ enum LaunchMode {
         if screen == "accountProof" || screen == "socialProof" || screen == "spaceProof" || screen == "comments" { return false }
         if screen?.hasPrefix("guest-") == true || screen?.hasPrefix("search-") == true { return false }
         if screen == "space" || screen?.hasPrefix("space-") == true { return false }
-        if screen == "live" || screen == "live-area" || screen == "live-room" || screen == "liveProof" { return false }
+        if screen == "live" || screen == "liveProof" || screen?.hasPrefix("live-") == true { return false }
         if screen == "sponsor" || screen == "sponsor-settings" { return false }
         if screen == "downloads" || screen == "offline" { return false }
         if screen == "messageProof" || screen == "messages" { return false }

@@ -363,6 +363,11 @@ struct FeaturePageView: View {
             Task { await model.refreshHome() }
         case "发布", "话题", "投票", "预约", "表情", "提及":
             model.show("已打开\(action)")
+        case "关注的直播", "搜索直播":
+            model.open(.feature(action))
+        case "分区":
+            model.liveFocusArea = model.liveArea == "推荐" ? "网游" : model.liveArea
+            model.open(.feature("直播分区"))
         default:
             model.show(action)
         }
