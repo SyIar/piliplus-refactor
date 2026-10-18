@@ -350,23 +350,23 @@ final class AppModel {
             livePage = rooms.isEmpty ? 0 : 1
             liveHasMore = rooms.count >= 8
         }
-        let deadline = Date().addingTimeInterval(90)
+        let deadline = Date().addingTimeInterval(130)
         var attempts = 0
         var quietest: (room: LiveRoom, offer: LiveOffer, count: Int)?
-        for room in rooms where attempts < 4 {
+        for room in rooms where attempts < 8 {
             if Date() >= deadline { break }
             attempts += 1
             guard let offer = try? await client.livePlay(room: room.id, qn: 10_000),
                   offer.protocolName == "hls",
                   URL(string: offer.url) != nil,
                   let info = try? await client.liveDanmuInfo(room: room.id) else { continue }
-            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 8)
+            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 12)
             print("live probe \(room.id) online \(room.online) danmu \(count)")
             let previous = quietest?.count ?? -1
             if count > previous {
                 quietest = (room, offer, count)
             }
-            guard count >= 3 else { continue }
+            guard count >= 4 else { continue }
             liveOffers[room.id] = offer
             print("live open \(room.id) online \(room.online) probe \(count) \(offer.selectedName)")
             open(.live(room.id))
@@ -393,6 +393,8 @@ final class AppModel {
         absorb((try? await client.liveList(area: "推荐", page: 1)) ?? [])
         absorb((try? await client.liveList(area: "网游", page: 1)) ?? [])
         absorb((try? await client.liveList(area: "娱乐", page: 1)) ?? [])
+        absorb((try? await client.liveList(area: "虚拟主播", page: 1)) ?? [])
+        absorb((try? await client.liveList(area: "电台", page: 1)) ?? [])
         let ranked = best.values.sorted { lhs, rhs in
             if lhs.online != rhs.online { return lhs.online > rhs.online }
             return lhs.id < rhs.id
