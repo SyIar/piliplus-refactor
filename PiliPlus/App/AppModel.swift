@@ -489,7 +489,9 @@ final class AppModel {
         for topic in topics.prefix(requirePoll ? 6 : 8) {
             let items = (try? await client.topicDynamics(id: topic.id)) ?? []
             if requirePoll, let found = items.first(where: { $0.hasPoll && $0.pollCounts.contains { $0 > 0 } }) { return found }
-            if requirePoll, fallback = fallback ?? items.first(where: \.hasPoll)
+            if requirePoll {
+                fallback = fallback ?? items.first(where: \.hasPoll)
+            }
             if !requirePoll {
                 if let draw = items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty && $0.comment > 0 && $0.commentID > 0 }) {
                     return draw
