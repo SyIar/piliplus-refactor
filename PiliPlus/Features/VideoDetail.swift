@@ -131,10 +131,12 @@ struct VideoDetailIntro: View {
                             .font(.subheadline)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text(ownerMeta)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        if !ownerMeta.isEmpty {
+                            Text(ownerMeta)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
             }
@@ -159,9 +161,10 @@ struct VideoDetailIntro: View {
     }
 
     private var ownerMeta: String {
-        let fanText = fans > 0 ? "\(CountText.format(fans))粉丝" : "粉丝"
-        let videoText = videos > 0 ? "\(CountText.format(videos))视频" : "视频"
-        return "\(fanText) \(videoText)"
+        var parts: [String] = []
+        if fans > 0 { parts.append("\(CountText.format(fans))粉丝") }
+        if videos > 0 { parts.append("\(CountText.format(videos))视频") }
+        return parts.joined(separator: " ")
     }
 
     private var titleBlock: some View {

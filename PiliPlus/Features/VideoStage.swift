@@ -348,7 +348,9 @@ struct VideoStage: View {
         async let rep = model.client.replies(aid: aid)
         danmaku = (try? await dm) ?? []
         subtitles = await subs
-        related = (try? await rel) ?? []
+        let nextRelated = (try? await rel) ?? []
+        await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
+        related = nextRelated
         comments = (try? await rep) ?? []
         related.forEach(model.store)
     }
