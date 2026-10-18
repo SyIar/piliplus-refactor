@@ -67,7 +67,6 @@ private extension View {
     func homeTabBar() -> some View {
         safeAreaInset(edge: .top, spacing: 0) {
             HomeTabStrip()
-                .background(model.pureBlack ? Color.black : Color(.systemBackground))
         }
     }
 }
@@ -100,6 +99,7 @@ private struct HomeTabStrip: View {
             .padding(.vertical, 8)
         }
         .frame(height: 56)
+        .background(model.pureBlack ? Color.black : Color(.systemBackground))
     }
 }
 
@@ -125,9 +125,8 @@ private struct RecommendPage: View {
                         RecommendGrid()
                             .padding(.horizontal, 16)
                             .padding(.bottom, 12)
-                    } header: {
+                    }                     header: {
                         HomeTabStrip()
-                            .background(model.pureBlack ? Color.black : Color(.systemBackground))
                     }
                 }
             }
