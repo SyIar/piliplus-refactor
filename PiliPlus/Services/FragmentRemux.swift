@@ -4,9 +4,12 @@ import Foundation
 /// that container with `AVFoundationErrorDomain` -11828, so this rebuilds one
 /// progressive `.mp4` whose samples AVPlayer can open from a `file://` URL.
 enum FragmentRemux {
-    static func writeMovie(video videoURL: URL, audio audioURL: URL?, to output: URL) throws {
+    static func writeMovie(video videoURL: URL, audio audioURL: URL?, to output: URL, progress: @escaping @Sendable (Double) -> Void = { _ in }) throws {
+        progress(0.08)
         let videoData = try Data(contentsOf: videoURL)
+        progress(0.22)
         let video = try parse(videoData, role: "vide")
+        progress(0.4)
         var audio: MediaTrack?
         var audioData: Data?
         if let audioURL, FileManager.default.fileExists(atPath: audioURL.path) {
@@ -14,13 +17,16 @@ enum FragmentRemux {
             audio = try parse(loaded, role: "soun")
             audioData = loaded
         }
+        progress(0.55)
         let file = try assemble(video: video, videoData: videoData, audio: audio, audioData: audioData)
+        progress(0.9)
         let partial = output.appendingPathExtension("part")
         try file.write(to: partial, options: .atomic)
         if FileManager.default.fileExists(atPath: output.path) {
             try FileManager.default.removeItem(at: output)
         }
         try FileManager.default.moveItem(at: partial, to: output)
+        progress(1)
         print("offline movie \(file.count) video \(video.samples.count) audio \(audio?.samples.count ?? 0) \(video.entryType)/\(audio?.entryType ?? "-")")
     }
 

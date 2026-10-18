@@ -14,29 +14,47 @@ struct DownloadsPage: View {
                     Text("在视频页选择画质、编码和分P后开始缓存")
                 }
             } else {
-                List {
-                    if !active.isEmpty {
-                        Section("正在下载") {
-                            ForEach(active) { item in
-                                activeRow(item)
+                ScrollViewReader { proxy in
+                    List {
+                        Color.clear
+                            .frame(height: 1)
+                            .id("downloads-top")
+                            .listRowSeparator(.hidden)
+                            .accessibilityHidden(true)
+                        if !active.isEmpty {
+                            Section("正在下载") {
+                                ForEach(active) { item in
+                                    activeRow(item)
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                            Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
+                                        }
+                                }
+                            }
+                        }
+                        ForEach(groups, id: \.bvid) { group in
+                            Section(group.title) {
+                                ForEach(group.parts) { item in
+                                    Button { model.playOffline(item) } label: {
+                                        completedRow(item)
+                                    }
+                                    .buttonStyle(.plain)
                                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                         Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
                                     }
+                                }
                             }
+                        }
+                        if LaunchMode.screen == "downloads" {
+                            Color.clear
+                                .frame(height: 1400)
+                                .id("downloads-bottom")
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .accessibilityHidden(true)
                         }
                     }
-                    ForEach(groups, id: \.bvid) { group in
-                        Section(group.title) {
-                            ForEach(group.parts) { item in
-                                Button { model.playOffline(item) } label: {
-                                    completedRow(item)
-                                }
-                                .buttonStyle(.plain)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
-                                }
-                            }
-                        }
+                    .onChange(of: model.downloads.mergeOffset) { _, value in
+                        proxy.scrollTo(value % 2 == 0 ? "downloads-top" : "downloads-bottom", anchor: .top)
                     }
                 }
             }

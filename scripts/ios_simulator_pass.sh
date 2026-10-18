@@ -1112,7 +1112,24 @@ print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
           echo "saved downloads-progress.png"
         fi
         if [[ "$state" == "ready" && "$scheme" == "file" && "$err" == "-" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$danmaku"; then
-          ready=1
+          if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+frames = int(d.get("mergeFrames") or 0)
+p95 = float(d.get("mergeP95") or 0)
+scrolls = int(d.get("mergeScrolls") or 0)
+elapsed = float(d.get("mergeMs") or 0)
+on_main = d.get("mergeOnMain") is True
+print("merge frames=%s p95=%s max=%s scrolls=%s ms=%s onMain=%s" % (frames, p95, d.get("mergeMax"), scrolls, elapsed, d.get("mergeOnMain")))
+ok = (not on_main) and scrolls >= 1 and frames >= 4 and 0 < p95 <= 50
+if elapsed >= 500:
+    ok = ok and frames >= 12
+sys.exit(0 if ok else 1)
+' "$proof"; then
+            ready=1
+            break
+          fi
+          echo "downloads list did not stay responsive while merging" >&2
           break
         fi
         if [[ "$state" == "failed" && "$err" != "-" ]]; then

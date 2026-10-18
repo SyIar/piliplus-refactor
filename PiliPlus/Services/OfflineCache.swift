@@ -96,12 +96,12 @@ final class OfflineFirewall: URLProtocol, @unchecked Sendable {
 }
 
 enum OfflineProof {
-    static func downloads(_ item: OfflineItem?, error: String = "") {
+    static func downloads(_ item: OfflineItem?, error: String = "", merge: MergeProbe? = nil) {
         let movie = item.map { OfflineFiles.movie($0) }
         let video = item.map { OfflineFiles.video($0) }
         let file = [movie, video].compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
         let exists = file != nil
-        write("downloads-proof.json", [
+        var payload: [String: Any] = [
             "screen": "downloads",
             "bvid": item?.bvid ?? "",
             "title": item?.title ?? "",
@@ -116,7 +116,16 @@ enum OfflineProof {
             "asset": exists ? (file?.absoluteString ?? "") : "",
             "scheme": exists ? (file?.scheme ?? "") : "",
             "error": error.isEmpty ? (item?.error ?? "") : error
-        ])
+        ]
+        if let merge {
+            payload["mergeFrames"] = merge.frames
+            payload["mergeP95"] = merge.p95
+            payload["mergeMax"] = merge.max
+            payload["mergeScrolls"] = merge.scrolls
+            payload["mergeOnMain"] = merge.onMain
+            payload["mergeMs"] = merge.ms
+        }
+        write("downloads-proof.json", payload)
     }
 
     static func playback(item: OfflineItem, asset: String, seconds: Double, danmaku: Int, error: String) {
@@ -275,6 +284,47 @@ final class DownloadBridge: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     }
 }
 
+struct MergeProbe: Sendable {
+    var frames: Int
+    var p95: Double
+    var max: Double
+    var scrolls: Int
+    var onMain: Bool
+    var ms: Double
+}
+
+struct RemuxOutcome: Sendable {
+    var ok: Bool
+    var onMain: Bool
+}
+
+/// Rebuilds a progressive movie off the main actor.
+///
+/// `Task.detached` from `DownloadCenter` stayed on the main actor: the closure was
+/// formed in a `@MainActor` method, and `Task.detached` keeps that isolation.
+/// `writeMovie` also printed only after the parse finished, so a slow parse looked
+/// like a task that never started. `AVAssetExportSession` still cannot open the
+/// iso5 `.m4s` (`AVFoundationErrorDomain` -11828). The main actor awaits this
+/// actor and applies progress back on itself.
+actor OfflineRemux {
+    static let shared = OfflineRemux()
+
+    func writeMovie(video: URL, audio: URL?, to output: URL, progress: @escaping @Sendable (Double) -> Void) -> RemuxOutcome {
+        let onMain = Thread.isMainThread
+        print("offline remux actor main=\(onMain) \(video.lastPathComponent)")
+        progress(0.05)
+        do {
+            try FragmentRemux.writeMovie(video: video, audio: audio, to: output, progress: progress)
+        } catch {
+            print("offline remux \(error.localizedDescription)")
+            return RemuxOutcome(ok: false, onMain: onMain)
+        }
+        let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        print("offline remux wrote \(size)")
+        return RemuxOutcome(ok: size > 10_000, onMain: onMain)
+    }
+}
+
 @MainActor
 @Observable
 final class DownloadCenter {
@@ -287,6 +337,8 @@ final class DownloadCenter {
     private var tracks: [String: TrackPair] = [:]
     private var waiters: [String: CheckedContinuation<TrackResult, Never>] = [:]
     var storageBytes: Int64 = 0
+    /// Bumps while a merge is in flight so the downloads list scrolls on the main actor.
+    var mergeOffset = 0
 
     var storageLabel: String {
         ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file)
@@ -481,26 +533,26 @@ final class DownloadCenter {
         DownloadBridge.shared.startInProcess(id: id, kind: kind, url: remote, headers: pair.headers)
     }
 
-    /// AVFoundation cannot open a Bilibili fragmented `.m4s` (-11828). Rebuild a progressive movie on this actor; a detached task never started on the simulator.
-    private func remux(video: URL, audio: URL?, to movie: URL) -> Bool {
-        print("offline remux begin \(video.lastPathComponent)")
-        do {
-            try FragmentRemux.writeMovie(video: video, audio: audio, to: movie)
-        } catch {
-            print("offline remux \(error.localizedDescription)")
-            return false
+    /// Formed outside the main actor so the remux actor can call it without hopping back.
+    private nonisolated static func mergeProgress(id: String) -> @Sendable (Double) -> Void {
+        { fraction in
+            Task { @MainActor in
+                DownloadCenter.current?.reportMerge(id: id, fraction: fraction)
+            }
         }
-        let size = (try? movie.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        print("offline remux wrote \(size)")
-        return size > 10_000
     }
 
-    private func mergeFailed(id: String, message: String) {
+    func reportMerge(id: String, fraction: Double) {
+        guard let index = items.firstIndex(where: { $0.id == id }), items[index].state == "merging" else { return }
+        items[index].fraction = min(1, max(0, fraction))
+    }
+
+    private func mergeFailed(id: String, message: String, merge: MergeProbe? = nil) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         items[index].state = "failed"
         items[index].error = message
         save()
-        publish(items[index])
+        publish(items[index], merge: merge)
         print("offline fail \(id) \(message)")
     }
 
@@ -641,24 +693,51 @@ final class DownloadCenter {
         let movie = OfflineFiles.movie(done)
         let videoFile = OfflineFiles.video(done)
         let audioFile = OfflineFiles.audio(done)
-        var merged = remux(video: videoFile, audio: audioFile, to: movie)
-        if !merged {
-            print("offline remux drop audio")
-            merged = remux(video: videoFile, audio: nil, to: movie)
+        let progress = Self.mergeProgress(id: id)
+        FrameMonitor.shared.start()
+        mergeOffset = 0
+        let scrolling = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled, let self else { return }
+                self.mergeOffset += 1
+            }
         }
-        guard merged else {
-            mergeFailed(id: id, message: "合成文件无法播放")
+        let clock = Date()
+        var outcome = await OfflineRemux.shared.writeMovie(video: videoFile, audio: audioFile, to: movie, progress: progress)
+        if !outcome.ok {
+            print("offline remux drop audio")
+            let retry = await OfflineRemux.shared.writeMovie(video: videoFile, audio: nil, to: movie, progress: progress)
+            outcome = RemuxOutcome(ok: retry.ok, onMain: outcome.onMain || retry.onMain)
+        }
+        scrolling.cancel()
+        let scrolls = mergeOffset
+        let stats = FrameMonitor.shared.stop()
+        let mergeMs = Date().timeIntervalSince(clock) * 1000
+        let probe = MergeProbe(
+            frames: stats.count,
+            p95: (stats.p95Ms * 100).rounded() / 100,
+            max: (stats.maxMs * 100).rounded() / 100,
+            scrolls: scrolls,
+            onMain: outcome.onMain,
+            ms: (mergeMs * 100).rounded() / 100
+        )
+        print("offline merge main=\(probe.onMain) frames=\(probe.frames) p95=\(probe.p95) max=\(probe.max) scrolls=\(probe.scrolls) ms=\(probe.ms)")
+        guard outcome.ok else {
+            mergeOffset = 0
+            mergeFailed(id: id, message: "合成文件无法播放", merge: probe)
             return
         }
         done.state = "ready"
         done.fraction = 1
         done.error = ""
-        let played = merged ? movie : videoFile
-        done.bytesWritten = Int64((try? played.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        done.bytesWritten = Int64((try? movie.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         replace(done)
         storageBytes = OfflineFiles.usage()
         save()
-        publish(done)
+        mergeOffset = 0
+        try? await Task.sleep(for: .milliseconds(400))
+        publish(done, merge: probe)
         print("offline ready \(done.bvid) \(done.bytesWritten) danmaku \(done.danmakuCount)")
     }
 
@@ -667,8 +746,8 @@ final class DownloadCenter {
         items[index] = item
     }
 
-    private func publish(_ item: OfflineItem) {
-        OfflineProof.downloads(item)
+    private func publish(_ item: OfflineItem, merge: MergeProbe? = nil) {
+        OfflineProof.downloads(item, merge: merge)
     }
 
     private func save() {
