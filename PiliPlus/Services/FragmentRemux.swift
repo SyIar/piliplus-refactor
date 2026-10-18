@@ -68,7 +68,7 @@ enum FragmentRemux {
     }
 
     private static func validate(_ file: Data, dataStart: Int, payload: Int, video: MediaTrack, audio: MediaTrack?) throws {
-        let boxes = try boxes(in: file, from: 0, to: file.count)
+        let boxes = try boxes(in: MP4File(file), from: 0, to: file.count)
         let covered = boxes.reduce(0) { $0 + $1.size }
         guard covered == file.count,
               boxes.contains(where: { $0.type == "ftyp" }),
