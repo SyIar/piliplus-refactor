@@ -85,6 +85,9 @@ struct RootShell: View {
         if LaunchMode.screen == "dynProof" {
             DynamicRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "hotProof" {
+            HotRequestProof.writeAndExit()
+        }
         if LaunchMode.screen == "dyn-compose" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -113,6 +116,11 @@ struct RootShell: View {
                 model.dynamicError = topics.isEmpty ? "没有话题" : "这个话题还没有动态"
                 model.open(.feature("话题"))
             }
+            return
+        }
+        if LaunchMode.screen == "hot-weekly" || LaunchMode.screen == "hot-precious" {
+            await LaunchClock.waitForFirstFrame()
+            model.open(.feature(LaunchMode.screen == "hot-weekly" ? "每周必看" : "入站必刷"))
             return
         }
         if let screen = LaunchMode.screen, screen.hasPrefix("set-") {
@@ -426,6 +434,8 @@ struct RootShell: View {
             case "发布动态": DynamicComposer()
             case "转发动态": DynamicComposer(repost: model.dynamicFocus)
             case "话题": TopicHome()
+            case "每周必看": WeeklyPage()
+            case "入站必刷": PreciousPage()
             default: FeaturePageView(title: title)
             }
         case .dynamic(let id): DynamicDetailPage(id: id)

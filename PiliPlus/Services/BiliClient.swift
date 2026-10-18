@@ -52,6 +52,53 @@ struct BiliClient: Sendable {
         return list.compactMap(Self.video(fromPopular:))
     }
 
+    func weeklyIssues() async throws -> [WeeklyIssue] {
+        guard let url = HotRequest.issues().endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "每周必看不可用")
+        }
+        return (data["data"]["list"].array ?? []).compactMap { item in
+            let number = item["number"].int ?? 0
+            guard number > 0 else { return nil }
+            return WeeklyIssue(
+                number: number,
+                name: item["name"].string ?? "",
+                subject: item["subject"].string ?? ""
+            )
+        }
+    }
+
+    func weeklyVideos(number: Int) async throws -> [VideoItem] {
+        let data = try await withGuest {
+            let params = ["number": "\(number)"]
+            if let signed = try? await requestQuery("/x/web-interface/popular/series/one", params: params, signed: true) {
+                let code = signed["code"].int ?? -1
+                if code == 0 { return signed }
+                if code == -352 || code == 412 { throw BiliError.risk(code) }
+            }
+            let plain = try await requestQuery("/x/web-interface/popular/series/one", params: params, signed: false)
+            let code = plain["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return plain
+        }
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "这一期没有打开")
+        }
+        let list = data["data"]["list"].array ?? data["data"]["archives"].array ?? []
+        return list.compactMap { Self.video(fromPopular: $0) ?? Self.video(fromFavorite: $0) }
+    }
+
+    func preciousVideos() async throws -> (videos: [VideoItem], explain: String) {
+        guard let url = HotRequest.precious().endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "入站必刷不可用")
+        }
+        let videos = (data["data"]["list"].array ?? []).compactMap(Self.video(fromPopular:))
+        return (videos, data["data"]["explain"].string ?? data["data"]["title"].string ?? "")
+    }
+
     func ranking(rid: Int = 0) async throws -> [VideoItem] {
         let data = try await withGuest {
             let data = try await getJSON("https://api.bilibili.com/x/web-interface/ranking/v2?rid=\(rid)&type=all")

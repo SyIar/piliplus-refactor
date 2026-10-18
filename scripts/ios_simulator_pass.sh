@@ -1505,6 +1505,98 @@ print(f"{screen} settings ui ok")
 PY
 }
 
+capture_hot_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/hot-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen hotProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing hot request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/hot-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "weekly-list": ("GET", "/x/web-interface/popular/series/list", ""),
+    "weekly-one": ("GET", "/x/web-interface/popular/series/one", "number=395"),
+    "precious": ("GET", "/x/web-interface/popular/precious", ""),
+}
+print("hot proof", data.get("checked"), data.get("failures"))
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("hot request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"hot cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body")) != (method, path, body):
+        raise SystemExit(f"{name} drifted: {item}")
+print("hot request proof ok")
+PY
+}
+
+capture_hot_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/hot-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing hot ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("issue","name","subject","title","rows","covers","error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} {data.get('error')}")
+rows = int(data.get("rows") or 0)
+covers = int(data.get("covers") or 0)
+if screen == "hot-weekly":
+    ok = int(data.get("issue") or 0) > 0 and str(data.get("name") or "") != "" and rows >= 8 and covers >= 4
+elif screen == "hot-precious":
+    ok = str(data.get("title") or "") != "" and rows >= 8 and covers >= 4
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} hot ui rejected")
+print(f"{screen} hot ui ok")
+PY
+}
+
 capture_message_proof() {
   local dir proof found=0
   dir="$(container)"
@@ -1829,8 +1921,17 @@ for screen in set-filter set-dislike set-danmaku set-accent set-black set-tabs s
     capture_settings_ui "$screen" || settings_status=1
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, or warm scroll check failed" >&2
+hot_status=0
+capture_hot_proof || hot_status=1
+for screen in hot-weekly hot-precious; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_hot_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_hot_ui "$screen" || hot_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, or warm scroll check failed" >&2
   exit 1
 fi
 
