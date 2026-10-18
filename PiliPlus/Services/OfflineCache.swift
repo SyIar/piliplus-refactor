@@ -578,13 +578,13 @@ final class DownloadCenter {
         if let remote = URL(string: cover), let (data, _) = try? await URLSession.shared.data(from: remote), !data.isEmpty {
             try? data.write(to: OfflineFiles.cover(current), options: .atomic)
         }
+        let headers = BiliHTTP.assetHeaders(bvid: video.bvid)
         var pair = TrackPair()
         pair.wantsAudio = true
         pair.videoURL = videoURL
         pair.audioURL = audioURL
         pair.headers = headers
         tracks[id] = pair
-        let headers = BiliHTTP.assetHeaders(bvid: video.bvid)
         print("offline start \(video.bvid) \(page.cid) \(offer.selectedName) \(offer.codec)")
         DownloadBridge.shared.start(id: id, kind: "video", url: videoURL, headers: headers)
         DownloadBridge.shared.start(id: id, kind: "audio", url: audioURL, headers: headers)
