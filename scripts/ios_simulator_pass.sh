@@ -1119,11 +1119,10 @@ frames = int(d.get("mergeFrames") or 0)
 p95 = float(d.get("mergeP95") or 0)
 scrolls = int(d.get("mergeScrolls") or 0)
 elapsed = float(d.get("mergeMs") or 0)
+work = float(d.get("mergeWorkMs") or 0)
 on_main = d.get("mergeOnMain") is True
-print("merge frames=%s p95=%s max=%s scrolls=%s ms=%s onMain=%s" % (frames, p95, d.get("mergeMax"), scrolls, elapsed, d.get("mergeOnMain")))
-ok = (not on_main) and scrolls >= 1 and frames >= 4 and 0 < p95 <= 50
-if elapsed >= 500:
-    ok = ok and frames >= 12
+print("merge frames=%s p95=%s max=%s scrolls=%s ms=%s workMs=%s onMain=%s" % (frames, p95, d.get("mergeMax"), scrolls, elapsed, work, d.get("mergeOnMain")))
+ok = (not on_main) and scrolls >= 2 and frames >= 12 and 0 < p95 <= 50
 sys.exit(0 if ok else 1)
 ' "$proof"; then
             ready=1

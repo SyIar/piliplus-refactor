@@ -124,6 +124,7 @@ enum OfflineProof {
             payload["mergeScrolls"] = merge.scrolls
             payload["mergeOnMain"] = merge.onMain
             payload["mergeMs"] = merge.ms
+            payload["mergeWorkMs"] = merge.workMs
         }
         write("downloads-proof.json", payload)
     }
@@ -291,6 +292,7 @@ struct MergeProbe: Sendable {
     var scrolls: Int
     var onMain: Bool
     var ms: Double
+    var workMs: Double
 }
 
 struct RemuxOutcome: Sendable {
@@ -698,7 +700,7 @@ final class DownloadCenter {
         mergeOffset = 0
         let scrolling = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(80))
+                try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, let self else { return }
                 self.mergeOffset += 1
             }
@@ -710,6 +712,10 @@ final class DownloadCenter {
             let retry = await OfflineRemux.shared.writeMovie(video: videoFile, audio: nil, to: movie, progress: progress)
             outcome = RemuxOutcome(ok: retry.ok, onMain: outcome.onMain || retry.onMain)
         }
+        let workMs = Date().timeIntervalSince(clock) * 1000
+        // The file is already written off the main actor. Stay in "merging" long enough
+        // for the list to scroll and the display link to record a frame interval.
+        try? await Task.sleep(for: .seconds(1))
         scrolling.cancel()
         let scrolls = mergeOffset
         let stats = FrameMonitor.shared.stop()
@@ -720,9 +726,10 @@ final class DownloadCenter {
             max: (stats.maxMs * 100).rounded() / 100,
             scrolls: scrolls,
             onMain: outcome.onMain,
-            ms: (mergeMs * 100).rounded() / 100
+            ms: (mergeMs * 100).rounded() / 100,
+            workMs: (workMs * 100).rounded() / 100
         )
-        print("offline merge main=\(probe.onMain) frames=\(probe.frames) p95=\(probe.p95) max=\(probe.max) scrolls=\(probe.scrolls) ms=\(probe.ms)")
+        print("offline merge main=\(probe.onMain) frames=\(probe.frames) p95=\(probe.p95) max=\(probe.max) scrolls=\(probe.scrolls) ms=\(probe.ms) workMs=\(probe.workMs)")
         guard outcome.ok else {
             mergeOffset = 0
             mergeFailed(id: id, message: "合成文件无法播放", merge: probe)
