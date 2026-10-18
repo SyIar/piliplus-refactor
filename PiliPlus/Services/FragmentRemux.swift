@@ -56,12 +56,13 @@ enum FragmentRemux {
     }
 
     private static func payload(_ track: MediaTrack, from data: Data) throws -> Data {
+        let raw = [UInt8](data)
         var blob = Data()
         blob.reserveCapacity(track.samples.reduce(0) { $0 + Int($1.size) })
         for sample in track.samples {
             let end = sample.offset + Int(sample.size)
-            guard sample.offset >= 0, end <= data.count else { throw RemuxError("样本越界") }
-            blob.append(data[sample.offset..<end])
+            guard sample.offset >= 0, end <= raw.count else { throw RemuxError("样本越界") }
+            blob.append(contentsOf: raw[sample.offset..<end])
         }
         return blob
     }
@@ -310,6 +311,8 @@ private extension FragmentRemux {
         let origin = Int64(base) + Int64(dataOffset)
         guard origin >= 0 else { throw RemuxError("样本偏移为负") }
         var sampleCursor = Int(origin)
+        let table = [UInt8](data[cursor..<box.end])
+        var local = 0
         var samples: [FragSample] = []
         samples.reserveCapacity(count)
         for index in 0..<count {
@@ -317,26 +320,10 @@ private extension FragmentRemux {
             var size = defaults.size
             var sampleFlags = index == 0 ? firstFlags : defaults.flags
             var ctts: Int32 = 0
-            if flags & 0x000100 != 0 {
-                guard cursor + 4 <= box.end else { throw RemuxError("trun 截断") }
-                duration = data.u32(cursor)
-                cursor += 4
-            }
-            if flags & 0x000200 != 0 {
-                guard cursor + 4 <= box.end else { throw RemuxError("trun 截断") }
-                size = data.u32(cursor)
-                cursor += 4
-            }
-            if flags & 0x000400 != 0 {
-                guard cursor + 4 <= box.end else { throw RemuxError("trun 截断") }
-                sampleFlags = data.u32(cursor)
-                cursor += 4
-            }
-            if flags & 0x000800 != 0 {
-                guard cursor + 4 <= box.end else { throw RemuxError("trun 截断") }
-                ctts = data.i32(cursor)
-                cursor += 4
-            }
+            if flags & 0x000100 != 0 { duration = try pullU32(table, &local) }
+            if flags & 0x000200 != 0 { size = try pullU32(table, &local) }
+            if flags & 0x000400 != 0 { sampleFlags = try pullU32(table, &local) }
+            if flags & 0x000800 != 0 { ctts = Int32(bitPattern: try pullU32(table, &local)) }
             if duration == 0 { duration = defaults.duration == 0 ? 1 : defaults.duration }
             guard size > 0 else { continue }
             samples.append(FragSample(offset: sampleCursor, size: size, duration: duration, flags: sampleFlags, ctts: ctts))
@@ -660,6 +647,13 @@ private struct Box {
     var end: Int { start + size }
 
     func bytes(_ data: Data) -> Data { data[start..<end] }
+}
+
+private func pullU32(_ table: [UInt8], _ index: inout Int) throws -> UInt32 {
+    guard index + 4 <= table.count else { throw RemuxError("trun 截断") }
+    let value = UInt32(table[index]) << 24 | UInt32(table[index + 1]) << 16 | UInt32(table[index + 2]) << 8 | UInt32(table[index + 3])
+    index += 4
+    return value
 }
 
 private func boxes(in data: Data, from: Int, to: Int) throws -> [Box] {
