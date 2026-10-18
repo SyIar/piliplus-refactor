@@ -2281,6 +2281,19 @@ struct BiliClient: Sendable {
         return UIImage(data: data)
     }
 
+    func seasonPlayback(ep: Int, cid: Int, qn: Int, codec: String) async -> PlaybackOffer? {
+        guard ep > 0, cid > 0 else { return nil }
+        let referer = "https://www.bilibili.com/bangumi/play/ep\(ep)"
+        for fnval in [4048, 16, 1] {
+            guard let url = URL(string: "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=\(fnval)&fourk=1") else { continue }
+            guard let data = try? await getJSON(url, referer: referer), data["code"].int == 0 else { continue }
+            if let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codec, audioPreference: "高码率") {
+                return offer
+            }
+        }
+        return nil
+    }
+
     func seasonGuide(id: Int) async throws -> SeasonGuide {
         guard let url = URL(string: "https://api.bilibili.com/pgc/view/web/season?season_id=\(id)") else {
             throw BiliError.message("番剧地址无效")

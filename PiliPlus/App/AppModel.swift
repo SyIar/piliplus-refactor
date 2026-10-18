@@ -860,14 +860,57 @@ final class AppModel {
 
     func openBangumiPlayback() async {
         if bangumi.isEmpty { await loadSeasons("番剧") }
-        for season in bangumi.prefix(4) {
-            guard let guide = try? await client.seasonGuide(id: season.seasonID) else { continue }
+        let qn = QualityMap.qn(for: values["默认画质"] ?? "高清 1080P")
+        let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
+        for season in bangumi.prefix(3) {
+            let guide: SeasonGuide
+            do {
+                guide = try await client.seasonGuide(id: season.seasonID)
+            } catch {
+                PlaybackLog.line("bangumi season \(season.seasonID) \(error.localizedDescription)")
+                continue
+            }
             guard guide.episodes.count >= 2,
-                  let episode = guide.episodes.first(where: { !$0.bvid.isEmpty && $0.cid > 0 }) else { continue }
-            seasonTitle = guide.title
-            seasonEpisodes = guide.episodes
-            open(.video(episode.bvid))
-            return
+                  let episode = guide.episodes.first(where: { !$0.bvid.isEmpty && $0.cid > 0 }) else {
+                PlaybackLog.line("bangumi season \(season.seasonID) episodes \(guide.episodes.count) no bvid")
+                continue
+            }
+            PlaybackLog.line("bangumi play \(guide.title) \(episode.bvid) ep \(episode.id)")
+            var item = (try? await client.detail(bvid: episode.bvid)) ?? VideoItem(
+                bvid: episode.bvid,
+                aid: episode.aid,
+                cid: episode.cid,
+                title: episode.label,
+                cover: season.cover,
+                duration: episode.duration,
+                ownerName: "番剧",
+                ownerMid: 0,
+                ownerFace: "",
+                desc: "",
+                pubdate: 0,
+                view: 0,
+                danmaku: 0,
+                like: 0,
+                coin: 0,
+                favorite: 0,
+                share: 0,
+                reply: 0,
+                pages: [VideoPage(cid: episode.cid, index: 1, title: episode.label, duration: episode.duration)],
+                tname: "番剧"
+            )
+            item.cid = episode.cid
+            if let offer = await client.seasonPlayback(ep: episode.id, cid: episode.cid, qn: qn, codec: codec)
+                ?? (try? await client.playback(bvid: episode.bvid, cid: episode.cid, qn: qn, tryLook: true, codecPreference: codec, audioPreference: values["默认音质"] ?? "高码率")) {
+                item.apply(offer)
+                qualityName = offer.selectedName
+                seasonTitle = guide.title
+                seasonEpisodes = guide.episodes
+                store(item)
+                PlaybackLog.line("bangumi ready \(offer.selectedName) \(offer.codec)")
+                open(.video(item.bvid))
+                return
+            }
+            PlaybackLog.line("bangumi no playurl \(episode.bvid)")
         }
         PlaybackUIProof.record("bangumi-play", [
             "count": 0,
@@ -879,15 +922,21 @@ final class AppModel {
     }
 
     func openChapterSample() async {
-        let pool = await playbackPool(leadingSearch: "章节")
-        for item in pool.prefix(8) {
-            guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
+        var pool = await playbackPool(leadingSearch: "进度条分段")
+        if let seeded = try? await client.detail(bvid: "BV1vL411G7N7") {
+            pool.insert(seeded, at: 0)
+        }
+        var seen = Set<String>()
+        for item in pool.prefix(16) where seen.insert(item.bvid).inserted {
+            let detail = item.pages.isEmpty ? (try? await client.detail(bvid: item.bvid)) : item
+            guard let detail else { continue }
             let cid = detail.pages.first?.cid ?? detail.cid
             guard cid > 0 else { continue }
             async let marksTask = client.playerChapters(bvid: detail.bvid, cid: cid)
             async let barsTask = client.energyBars(cid: cid)
             let marks = await marksTask
             let bars = await barsTask
+            PlaybackLog.line("chapter probe \(detail.bvid) marks=\(marks.count) energy=\(bars.count) \(marks.first?.title ?? "-")")
             guard marks.count >= 1, bars.count >= 8, !marks[0].title.isEmpty else { continue }
             chapterMarks = marks
             energySamples = bars

@@ -212,6 +212,13 @@ enum PlaybackMarkup {
     }
 }
 
+enum PlaybackLog {
+    static func line(_ text: String) {
+        print(text)
+        fflush(stdout)
+    }
+}
+
 enum PlaybackUIProof {
     static func record(_ name: String, _ payload: [String: Any]) {
         guard LaunchMode.screen == name else { return }

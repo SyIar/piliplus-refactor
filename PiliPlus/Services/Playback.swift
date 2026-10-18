@@ -317,7 +317,7 @@ struct DashStream: Sendable {
 
 enum PlaybackParser {
     static func offer(from data: JSON, requestedQN: Int, codecPreference: String, audioPreference: String) -> PlaybackOffer? {
-        let payload = data["data"]
+        let payload = playPayload(data)
         let videos = streams(payload["dash"]["video"])
         if let video = pickVideo(videos, qn: requestedQN, codecPreference: codecPreference) {
             var audioStreams = streams(payload["dash"]["audio"])
@@ -350,6 +350,17 @@ enum PlaybackParser {
             selectedName: QualityMap.name(for: selected),
             codec: "progressive"
         )
+    }
+
+    /// UGC playurl uses `data`. Bangumi playurl uses `result`.
+    private static func playPayload(_ data: JSON) -> JSON {
+        if data["data"]["dash"]["video"].array != nil || !(data["data"]["durl"][0]["url"].string ?? "").isEmpty {
+            return data["data"]
+        }
+        if data["result"]["dash"]["video"].array != nil || !(data["result"]["durl"][0]["url"].string ?? "").isEmpty {
+            return data["result"]
+        }
+        return data["data"]
     }
 
     private static func streams(_ node: JSON) -> [DashStream] {
