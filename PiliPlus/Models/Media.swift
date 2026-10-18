@@ -133,6 +133,8 @@ struct DynamicItem: Identifiable, Hashable {
     var like: Int
     var comment: Int
     var repost: Int
+    var commentID: Int = 0
+    var commentType: Int = 0
     var mid: Int = 0
     var images: [String] = []
     var pollTitle: String = ""

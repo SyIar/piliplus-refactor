@@ -1431,13 +1431,13 @@ if screen == "dyn-compose":
 elif screen == "dyn-repost":
     ok = data.get("repost") is True and str(data.get("source") or "") != "" and data.get("loginGuide") is True
 elif screen == "dyn-detail":
-    ok = str(data.get("text") or "") != "" and str(data.get("author") or "") != "" and covers_ready(data)
+    ok = str(data.get("text") or "") != "" and str(data.get("author") or "") != "" and covers_ready(data) and int(data.get("comments") or 0) >= 1
 elif screen == "dyn-topic":
     ok = str(data.get("topic") or "") != "" and int(data.get("rows") or 0) >= 1 and covers_ready(data)
 elif screen == "dyn-topics":
     ok = int(data.get("hot") or 0) >= 1 and data.get("followingPrompt") is True
 elif screen == "dyn-poll":
-    ok = data.get("poll") is True and int(data.get("options") or 0) >= 2 and str(data.get("pollTitle") or "") != "" and covers_ready(data)
+    ok = data.get("poll") is True and int(data.get("options") or 0) >= 2 and str(data.get("pollTitle") or "") != "" and int(data.get("maxCount") or 0) >= 1 and covers_ready(data)
 else:
     ok = False
 if not ok:

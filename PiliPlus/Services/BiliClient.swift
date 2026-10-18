@@ -442,11 +442,15 @@ struct BiliClient: Sendable {
     }
 
     func replies(aid: Int, page: Int = 1, sort: Int = 1) async throws -> [CommentItem] {
-        try await replyPage(SocialRequest.replyList(oid: aid, sort: sort, page: page))
+        try await replies(oid: aid, type: 1, page: page, sort: sort)
     }
 
-    func replyThread(oid: Int, root: Int, page: Int) async throws -> [CommentItem] {
-        try await replyPage(SocialRequest.replyThread(oid: oid, root: root, page: page))
+    func replies(oid: Int, type: Int, page: Int = 1, sort: Int = 1) async throws -> [CommentItem] {
+        try await replyPage(SocialRequest.replyList(oid: oid, sort: sort, page: page, type: type))
+    }
+
+    func replyThread(oid: Int, root: Int, page: Int, type: Int = 1) async throws -> [CommentItem] {
+        try await replyPage(SocialRequest.replyThread(oid: oid, root: root, page: page, type: type))
     }
 
     private func replyPage(_ form: SignedForm) async throws -> [CommentItem] {
@@ -2200,10 +2204,17 @@ struct BiliClient: Sendable {
         built.topicID = body["topic"]["id"].int ?? 0
         built.pollVoteID = body["additional"]["vote"]["vote_id"].int ?? 0
         built.liked = stat["like"]["status"].bool ?? false
+        built.commentID = Self.longID(item["basic"]["comment_id_str"])
+        built.commentType = item["basic"]["comment_type"].int ?? 0
         if item["orig"]["id_str"].string != nil, let orig = dynamic(fromPolymer: item["orig"]) {
             built.origText = orig.text
         }
         return built
+    }
+
+    private static func longID(_ json: JSON) -> Int {
+        if let text = json.string, let value = Int(text) { return value }
+        return json.int ?? 0
     }
 
     private static func filled(_ value: String?) -> String? {

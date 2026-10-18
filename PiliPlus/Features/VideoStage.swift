@@ -1791,6 +1791,151 @@ struct VideoActionRow: View {
     }
 }
 
+/// Sort, paging, and reply threads shared by the video page and a dynamic detail page.
+struct CommentThreadList: View {
+    @Environment(AppModel.self) private var model
+    let oid: Int
+    let type: Int
+    var embedded: Bool
+    @State private var comments: [CommentItem]
+    @State private var page: Int
+    @State private var hasMore: Bool
+    @State private var replyPages: [Int: Int] = [:]
+    @State private var draft = ""
+    @State private var replyTarget: CommentItem?
+
+    init(oid: Int, type: Int, initial: [CommentItem] = [], embedded: Bool = false) {
+        self.oid = oid
+        self.type = type
+        self.embedded = embedded
+        _comments = State(initialValue: initial)
+        _page = State(initialValue: initial.count >= 20 ? 2 : 1)
+        _hasMore = State(initialValue: initial.count >= 20)
+    }
+
+    var body: some View {
+        Group {
+            if embedded {
+                VStack(alignment: .leading, spacing: 12) {
+                    stack
+                    composer
+                }
+            } else {
+                ScrollView { stack.padding(16) }
+                    .safeAreaBar(edge: .bottom, spacing: 8) { composer.padding(.horizontal, 16).padding(.vertical, 8) }
+            }
+        }
+        .sheet(item: $replyTarget) { comment in replySheet(comment) }
+    }
+
+    private var stack: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if oid <= 0 || type <= 0 {
+                ContentUnavailableView("还没有评论", systemImage: "text.bubble", description: Text("这条动态没有打开评论区"))
+            } else {
+                HStack {
+                    Text(model.values["评论展示"] ?? "按热度").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(model.values["评论展示"] == "按时间" ? "按热度" : "按时间") {
+                        model.values["评论展示"] = model.values["评论展示"] == "按时间" ? "按热度" : "按时间"
+                        model.save()
+                        Task { await reload() }
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                ForEach(comments) { comment in
+                    CommentRow(
+                        comment: comment,
+                        nested: false,
+                        onReply: { replyTarget = $0 },
+                        mention: { draft = "@\($0.name) " },
+                        onMore: { item in Task { await loadReplies(item) } }
+                    )
+                    .onAppear {
+                        guard comment.id == comments.last?.id else { return }
+                        Task { await loadMore() }
+                    }
+                }
+                if comments.isEmpty {
+                    ContentUnavailableView("还没有评论", systemImage: "text.bubble", description: Text("或者评论区暂时关闭"))
+                }
+            }
+        }
+    }
+
+    private var composer: some View {
+        HStack {
+            TextField(model.flag("记录评论") ? "友善评论…" : "发一条评论", text: $draft)
+                .textFieldStyle(.roundedBorder)
+            Button("发送") { send(nil) }
+                .font(.subheadline.weight(.bold))
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.bili)
+        }
+    }
+
+    private func reload() async {
+        guard oid > 0, type > 0 else { return }
+        let sort = model.values["评论展示"] == "按时间" ? 0 : 1
+        guard let rows = try? await model.client.replies(oid: oid, type: type, page: 1, sort: sort) else { return }
+        comments = rows
+        page = rows.count >= 20 ? 2 : 1
+        hasMore = rows.count >= 20
+    }
+
+    private func loadMore() async {
+        guard hasMore, oid > 0, type > 0 else { return }
+        let sort = model.values["评论展示"] == "按时间" ? 0 : 1
+        let fetching = page
+        guard let rows = try? await model.client.replies(oid: oid, type: type, page: fetching, sort: sort) else { return }
+        let known = Set(comments.map(\.id))
+        comments.append(contentsOf: rows.filter { !known.contains($0.id) })
+        hasMore = rows.count >= 20
+        if hasMore { page = fetching + 1 }
+    }
+
+    private func loadReplies(_ comment: CommentItem) async {
+        guard oid > 0, type > 0 else { return }
+        let next = (replyPages[comment.id] ?? 0) + 1
+        guard let more = try? await model.client.replyThread(oid: oid, root: comment.id, page: next, type: type) else { return }
+        guard let index = comments.firstIndex(where: { $0.id == comment.id }) else { return }
+        if next == 1 {
+            comments[index].replies = more
+        } else {
+            let known = Set(comments[index].replies.map(\.id))
+            comments[index].replies.append(contentsOf: more.filter { !known.contains($0.id) })
+        }
+        replyPages[comment.id] = next
+    }
+
+    private func send(_ parent: CommentItem?) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, oid > 0, type > 0 else { return }
+        let root = parent.map { $0.root == 0 ? $0.id : $0.root } ?? 0
+        let parentID = parent?.id ?? 0
+        draft = ""
+        Task {
+            if await model.sendComment(aid: oid, message: text, root: root, parent: parentID, type: type) {
+                await reload()
+            }
+        }
+    }
+
+    private func replySheet(_ comment: CommentItem) -> some View {
+        GlassMenuSheet(title: comment.name, rows: Menus.replyMenu.map { ("circle", $0) }) { action in
+            switch action {
+            case "复制":
+                UIPasteboard.general.string = comment.message
+                model.show("已复制评论")
+            case "回复":
+                draft = "@\(comment.name) "
+            default:
+                model.show(action)
+            }
+        }
+    }
+}
+
 struct CommentRow: View {
     @Environment(AppModel.self) private var model
     let comment: CommentItem

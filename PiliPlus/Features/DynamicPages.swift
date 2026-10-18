@@ -7,6 +7,9 @@ struct DynamicPollBlock: View {
     let counts: [Int]
     let joined: Int
 
+    /// A row of zeros is what we invent when `vote_info` has no counts. Real tallies include at least one positive number.
+    private var showsCounts: Bool { counts.contains { $0 > 0 } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.isEmpty ? "投票" : title)
@@ -16,9 +19,11 @@ struct DynamicPollBlock: View {
                 HStack(spacing: 8) {
                     Text(option).lineLimit(1)
                     Spacer(minLength: 8)
-                    Text(CountText.format(index < counts.count ? counts[index] : 0))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if showsCounts {
+                        Text(CountText.format(index < counts.count ? counts[index] : 0))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 .font(.caption)
                 .padding(.horizontal, 10)
@@ -144,50 +149,63 @@ struct DynamicDetailPage: View {
     @Environment(AppModel.self) private var model
     let id: String
     @State private var item: DynamicItem?
+    @State private var comments: [CommentItem] = []
     @State private var error = ""
 
     var body: some View {
         Group {
             if let item {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        author(item)
-                        Text(item.text)
-                            .font(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if !item.images.isEmpty {
-                            DynamicImageStrip(images: item.images)
-                        }
-                        if item.hasPoll {
-                            DynamicPollBlock(title: item.pollTitle, options: item.pollOptions, counts: item.pollCounts, joined: item.pollJoined)
-                        }
-                        if !item.origText.isEmpty {
-                            Text(item.origText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(10)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            author(item)
+                            Text(item.text)
+                                .font(.body)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        }
-                        if !item.topicName.isEmpty {
-                            Text("#\(item.topicName)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Palette.bili)
-                        }
-                        if let video = item.video {
-                            VideoCard(video: video)
-                        }
-                        HStack {
-                            ActionChip(system: "arrow.2.squarepath", title: CountText.format(item.repost)) {
-                                model.dynamicFocus = item
-                                model.open(.feature("转发动态"))
+                            if !item.images.isEmpty {
+                                DynamicImageStrip(images: item.images)
                             }
-                            ActionChip(system: item.liked ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(item.like), selected: item.liked) {
-                                Task { await model.likeDynamic(item) }
+                            if item.hasPoll {
+                                DynamicPollBlock(title: item.pollTitle, options: item.pollOptions, counts: item.pollCounts, joined: item.pollJoined)
                             }
+                            if !item.origText.isEmpty {
+                                Text(item.origText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(10)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color(.secondarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            }
+                            if !item.topicName.isEmpty {
+                                Text("#\(item.topicName)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Palette.bili)
+                            }
+                            if let video = item.video {
+                                VideoCard(video: video)
+                            }
+                            HStack {
+                                ActionChip(system: "arrow.2.squarepath", title: CountText.format(item.repost)) {
+                                    model.dynamicFocus = item
+                                    model.open(.feature("转发动态"))
+                                }
+                                ActionChip(system: "text.bubble", title: CountText.format(item.comment)) {
+                                    withAnimation { proxy.scrollTo("dyn-comments", anchor: .top) }
+                                }
+                                ActionChip(system: item.liked ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(item.like), selected: item.liked) {
+                                    Task { await model.likeDynamic(item) }
+                                }
+                            }
+                            CommentThreadList(
+                                oid: item.commentID,
+                                type: item.commentType,
+                                initial: comments,
+                                embedded: true
+                            )
+                            .id("dyn-comments")
                         }
+                        .padding(16)
                     }
-                    .padding(16)
                 }
             } else if !error.isEmpty {
                 ContentUnavailableView("无法打开动态", systemImage: "text.bubble", description: Text(error))
@@ -232,15 +250,22 @@ struct DynamicDetailPage: View {
                     full.pollCounts = seed.pollCounts
                     full.pollJoined = seed.pollJoined
                 }
+                if full.commentID == 0, let seed { full.commentID = seed.commentID }
+                if full.commentType == 0, let seed { full.commentType = seed.commentType }
                 loaded = full
             } else if let seed {
                 loaded = seed
             } else {
                 throw BiliError.message("这条动态没有打开")
             }
+            let sort = model.values["评论展示"] == "按时间" ? 0 : 1
+            let rows = loaded.commentID > 0 && loaded.commentType > 0
+                ? ((try? await model.client.replies(oid: loaded.commentID, type: loaded.commentType, page: 1, sort: sort)) ?? [])
+                : []
             await ImageStore.shared.prepare(urls: loaded.images, maxPixel: 360)
             let covers = ImageStore.preparedCount
             await ImageStore.shared.prepare(urls: loaded.face.isEmpty ? [] : [loaded.face], maxPixel: 120)
+            comments = rows
             item = loaded
             DynamicUIProof.record([
                 "text": loaded.text,
@@ -250,7 +275,10 @@ struct DynamicDetailPage: View {
                 "poll": loaded.hasPoll,
                 "options": loaded.pollOptions.count,
                 "pollTitle": loaded.pollTitle,
+                "maxCount": loaded.pollCounts.max() ?? 0,
                 "topic": loaded.topicName,
+                "comments": rows.count,
+                "commentType": loaded.commentType,
                 "error": ""
             ])
         } catch {

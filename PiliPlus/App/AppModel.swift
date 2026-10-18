@@ -485,15 +485,22 @@ final class AppModel {
         let hot = (try? await client.hotTopics()) ?? []
         let known = Set(topics.map(\.id))
         topics += hot.filter { !known.contains($0.id) }
+        var fallback: DynamicItem?
         for topic in topics.prefix(requirePoll ? 6 : 8) {
             let items = (try? await client.topicDynamics(id: topic.id)) ?? []
-            if requirePoll, let found = items.first(where: \.hasPoll) { return found }
+            if requirePoll, let found = items.first(where: { $0.hasPoll && $0.pollCounts.contains { $0 > 0 } }) { return found }
+            if requirePoll, fallback = fallback ?? items.first(where: \.hasPoll)
             if !requirePoll {
-                if let draw = items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty }) { return draw }
-                if let any = items.first(where: { !$0.text.isEmpty }) { return any }
+                if let draw = items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty && $0.comment > 0 && $0.commentID > 0 }) {
+                    return draw
+                }
+                if fallback == nil {
+                    fallback = items.first(where: { !$0.text.isEmpty && $0.comment > 0 && $0.commentID > 0 })
+                        ?? items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty && $0.commentID > 0 })
+                }
             }
         }
-        return nil
+        return fallback
     }
 
     func publishDynamic(text: String, images: [Data], topicName: String) async -> Bool {
@@ -570,12 +577,12 @@ final class AppModel {
         }
     }
 
-    func sendComment(aid: Int, message: String, root: Int, parent: Int) async -> Bool {
+    func sendComment(aid: Int, message: String, root: Int, parent: Int, type: Int = 1) async -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
         guard let csrf = csrf(for: "评论") else { return false }
         do {
-            try await client.submit(SocialRequest.replyAdd(oid: aid, message: text, root: root, parent: parent, csrf: csrf))
+            try await client.submit(SocialRequest.replyAdd(oid: aid, message: text, root: root, parent: parent, csrf: csrf, type: type))
             show("评论已发送")
             return true
         } catch {
