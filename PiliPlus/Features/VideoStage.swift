@@ -160,116 +160,26 @@ struct VideoStage: View {
 
     private func below(_ video: VideoItem) -> some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                Text("简介").tag("简介")
-                if model.flag("显示视频评论") { Text("评论 \(CountText.format(video.reply))").tag("评论") }
+            VideoDetailTabs(video: video, tab: $tab, showDanmaku: $showDanmaku)
+            if tab == "简介" {
+                VideoDetailIntro(
+                    video: video,
+                    related: related,
+                    expanded: $expandedDesc,
+                    coinPick: $coinPick,
+                    showCoin: $showCoin,
+                    showFav: $showFav,
+                    showShare: $showShare,
+                    pageIndex: currentPage,
+                    onSelectPage: { index, page in
+                        currentPage = index
+                        Task { await reload(video, cid: page.cid) }
+                    }
+                )
+            } else {
+                commentList
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            if tab == "简介" { intro(video) } else { commentList }
         }
-    }
-
-    private func intro(_ video: VideoItem) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(video.title).font(.title3.bold())
-                if !video.streamCodec.isEmpty {
-                    Text("\(model.qualityName) · \(video.streamCodec)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Palette.bili)
-                }
-                HStack(spacing: 12) {
-                    meta("play.fill", video.view)
-                    meta("text.bubble", video.danmaku)
-                    meta("calendar", video.pubdate)
-                    if !video.tname.isEmpty {
-                        Text(video.tname)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .layoutPriority(-1)
-                    }
-                }
-                .lineLimit(1)
-                Button { model.open(.user(video.ownerMid, video.ownerName)) } label: {
-                    HStack {
-                        RemoteImage(url: video.ownerFace, ratio: 1, maxPixel: 120).frame(width: 36, height: 36).clipShape(Circle())
-                        Text(video.ownerName).font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text("关注")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Palette.bili, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                }
-                .buttonStyle(.plain)
-                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
-                    .padding(8)
-                    .contentPlate(radius: 22)
-                if model.flag("显示视频分段信息") && video.pageCount > 1 {
-                    Text("分P · \(video.pageCount)").font(.headline)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            ForEach(Array(video.pages.enumerated()), id: \.element.id) { index, page in
-                                Button {
-                                    currentPage = index
-                                    Task { await reload(video, cid: page.cid) }
-                                } label: {
-                                    VStack(alignment: .leading) {
-                                        Text("P\(page.index)").font(.caption2.weight(.bold))
-                                        Text(page.title).font(.caption).lineLimit(1)
-                                    }
-                                    .padding(10)
-                                    .frame(width: 140, alignment: .leading)
-                                    .contentPlate(radius: 14)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-                if !video.desc.isEmpty {
-                    Text(expandedDesc || model.flag("默认展开视频简介") ? video.desc : String(video.desc.prefix(80)))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Button(expandedDesc ? "收起" : "展开") { expandedDesc.toggle() }
-                        .font(.caption.weight(.semibold))
-                }
-                if model.flag("启用AI总结") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("AI 总结", systemImage: "sparkles")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Palette.bili)
-                        Text("正在根据简介与热门评论生成摘要。登录后可拉取完整总结。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentPlate(radius: 18)
-                }
-                if model.flag("视频页显示相关视频") {
-                    Text("相关视频").font(.headline)
-                    ForEach(related) { item in
-                        VideoCard(video: item)
-                    }
-                }
-            }
-            .padding(16)
-            .padding(.bottom, 24)
-        }
-    }
-
-    private func meta(_ icon: String, _ value: Int) -> some View {
-        Label(value > 1_000_000_000 ? DurationBadge.clock(value) : CountText.format(value), systemImage: icon)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .fixedSize()
     }
 
     private var commentList: some View {

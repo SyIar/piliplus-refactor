@@ -619,7 +619,36 @@ struct BiliClient: Sendable {
         video.pages = pages
         if video.cid == 0 { video.cid = pages.first?.cid ?? 0 }
         video.desc = item["desc"].string ?? video.desc
+        let season = item["ugc_season"]
+        let seasonTitle = season["title"].string ?? ""
+        if !seasonTitle.isEmpty {
+            var clips: [CollectionClip] = []
+            for section in season["sections"].array ?? [] {
+                for episode in section["episodes"].array ?? [] {
+                    let bvid = episode["bvid"].string ?? ""
+                    let title = episode["title"].string ?? episode["page"]["part"].string ?? ""
+                    guard !bvid.isEmpty, !title.isEmpty else { continue }
+                    clips.append(CollectionClip(bvid: bvid, title: title, index: clips.count + 1))
+                }
+            }
+            video.collectionTitle = seasonTitle
+            video.collectionClips = clips
+            video.collectionCount = season["ep_count"].int ?? clips.count
+            video.collectionIndex = clips.first { $0.bvid == video.bvid }?.index ?? 0
+        }
         return video
+    }
+
+    func ownerBrief(mid: Int) async -> (fans: Int, videos: Int, followed: Bool) {
+        guard mid > 0, let url = URL(string: "https://api.bilibili.com/x/web-interface/card?mid=\(mid)") else {
+            return (0, 0, false)
+        }
+        guard let data = try? await getJSON(url, referer: "https://space.bilibili.com/\(mid)"), data["code"].int == 0 else {
+            return (0, 0, false)
+        }
+        let fans = data["data"]["card"]["fans"].int ?? data["data"]["follower"].int ?? 0
+        let videos = data["data"]["archive_count"].int ?? 0
+        return (fans, videos, data["data"]["following"].bool ?? false)
     }
 
     static func video(fromRelated item: JSON) -> VideoItem? {

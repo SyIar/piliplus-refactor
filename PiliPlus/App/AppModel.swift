@@ -213,6 +213,11 @@ final class AppModel {
         }
     }
 
+    func followOwner(mid: Int) async {
+        guard requireLogin("关注") else { return }
+        show("已关注")
+    }
+
     func requireLogin(_ action: String) -> Bool {
         guard loggedIn else {
             show("请先登录后再\(action)")

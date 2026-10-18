@@ -78,7 +78,7 @@ struct ActionChip: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, 2)
             .foregroundStyle(selected ? Palette.bili : .primary)
         }
         .buttonStyle(.plain)

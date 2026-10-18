@@ -35,6 +35,10 @@ struct VideoItem: Identifiable, Hashable, Codable {
     var qualities: [String] = []
     var qualityIDs: [Int] = []
     var streamCodec: String = ""
+    var collectionTitle: String = ""
+    var collectionIndex: Int = 0
+    var collectionCount: Int = 0
+    var collectionClips: [CollectionClip] = []
 
     var pageCount: Int { max(pages.count, 1) }
 
@@ -45,6 +49,13 @@ struct VideoItem: Identifiable, Hashable, Codable {
         qualityIDs = offer.qualityIDs
         streamCodec = offer.codec
     }
+}
+
+struct CollectionClip: Codable, Hashable, Identifiable {
+    var id: String { bvid.isEmpty ? "\(index)" : bvid }
+    var bvid: String
+    var title: String
+    var index: Int
 }
 
 struct CommentItem: Identifiable, Hashable {
