@@ -579,42 +579,18 @@ struct AccountVideoRow: View {
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(video.ownerName)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .layoutPriority(1)
-                        if video.view > 0 {
-                            countIcon("play.fill", CountText.format(video.view))
-                                .layoutPriority(-1)
-                        }
-                        if video.danmaku > 0 {
-                            countIcon("text.bubble.fill", CountText.format(video.danmaku))
-                                .layoutPriority(-1)
-                        }
-                        if let mark = progressText {
-                            Text(mark)
-                                .lineLimit(1)
-                                .layoutPriority(-1)
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    VideoListMeta(
+                        owner: video.ownerName,
+                        viewCount: video.view,
+                        danmaku: video.danmaku,
+                        progress: progressText
+                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
-    }
-
-    private func countIcon(_ symbol: String, _ text: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: symbol)
-            Text(text)
-                .lineLimit(1)
-        }
-        .lineLimit(1)
     }
 
     private var progressText: String? {
