@@ -124,8 +124,35 @@ private struct RemuxError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// One copy of the downloaded file. `Data` subscripts were slow enough to stall the remux.
+private struct MP4File {
+    let raw: [UInt8]
+    init(_ data: Data) { raw = [UInt8](data) }
+    var count: Int { raw.count }
+
+    func u8(_ offset: Int) -> UInt8 { raw[offset] }
+    func u16(_ offset: Int) -> UInt16 { UInt16(raw[offset]) << 8 | UInt16(raw[offset + 1]) }
+    func u32(_ offset: Int) -> UInt32 {
+        UInt32(raw[offset]) << 24 | UInt32(raw[offset + 1]) << 16 | UInt32(raw[offset + 2]) << 8 | UInt32(raw[offset + 3])
+    }
+    func u64(_ offset: Int) -> UInt64 { UInt64(u32(offset)) << 32 | UInt64(u32(offset + 4)) }
+    func i32(_ offset: Int) -> Int32 { Int32(bitPattern: u32(offset)) }
+    func fourcc(_ offset: Int) -> String {
+        String(bytes: raw[offset..<offset + 4], encoding: .isoLatin1) ?? "????"
+    }
+    func copy(_ start: Int, _ end: Int) -> Data { Data(raw[start..<end]) }
+    func hex(_ offset: Int) -> String {
+        guard offset >= 0, offset + 8 <= raw.count else { return "" }
+        return raw[offset..<offset + 8].map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 private extension FragmentRemux {
     static func parse(_ data: Data, role: String) throws -> MediaTrack {
+        try parse(file: MP4File(data), role: role)
+    }
+
+    static func parse(file data: MP4File, role: String) throws -> MediaTrack {
         guard data.count >= 16, data.fourcc(4) == "ftyp" else { throw RemuxError("不是 fMP4") }
         let top = try boxes(in: data, from: 0, to: data.count)
         var tracks: [UInt32: MediaTrack] = [:]
@@ -175,15 +202,12 @@ private extension FragmentRemux {
             track.height = size.height
         }
         let syncs = track.samples.filter { ($0.flags & 0x0001_0000) == 0 }.count
-        let head: String = {
-            guard let first = track.samples.first, first.offset >= 0, first.offset + 8 <= data.count else { return "" }
-            return data[first.offset..<first.offset + 8].map { String(format: "%02x", $0) }.joined()
-        }()
+        let head = track.samples.first.map { data.hex($0.offset) } ?? ""
         print("offline remux \(track.handler) samples \(track.samples.count) timescale \(track.timescale) keyframes \(syncs) stsd \(track.entryType) \(head)")
         return track
     }
 
-    static func readTrak(_ data: Data, _ trak: Box) throws -> (id: UInt32, media: MediaTrack) {
+    static func readTrak(_ data: MP4File, _ trak: Box) throws -> (id: UInt32, media: MediaTrack) {
         var id: UInt32 = 0
         var width: UInt32 = 0
         var height: UInt32 = 0
@@ -216,7 +240,7 @@ private extension FragmentRemux {
         return (id, MediaTrack(handler: handler, timescale: timescale, width: width, height: height, language: language, stsd: stsd, samples: []))
     }
 
-    static func readTrex(_ data: Data, _ box: Box) throws -> (UInt32, SampleDefaults) {
+    static func readTrex(_ data: MP4File, _ box: Box) throws -> (UInt32, SampleDefaults) {
         guard box.payload + 24 <= box.end else { throw RemuxError("trex 太短") }
         let id = data.u32(box.payload + 4)
         return (id, SampleDefaults(
@@ -226,7 +250,7 @@ private extension FragmentRemux {
         ))
     }
 
-    static func readTraf(_ data: Data, _ traf: Box, moof: Int, defaults: [UInt32: SampleDefaults]) throws -> (id: UInt32, samples: [FragSample]) {
+    static func readTraf(_ data: MP4File, _ traf: Box, moof: Int, defaults: [UInt32: SampleDefaults]) throws -> (id: UInt32, samples: [FragSample]) {
         var id: UInt32 = 0
         var base = UInt64(moof)
         var sampleDefault = SampleDefaults()
@@ -251,7 +275,7 @@ private extension FragmentRemux {
         return (id, samples)
     }
 
-    static func readTfhd(_ data: Data, _ box: Box, moof: Int) throws -> (id: UInt32, base: UInt64, defaults: SampleDefaults) {
+    static func readTfhd(_ data: MP4File, _ box: Box, moof: Int) throws -> (id: UInt32, base: UInt64, defaults: SampleDefaults) {
         guard box.payload + 8 <= box.end else { throw RemuxError("tfhd 太短") }
         let flags = data.u32(box.payload) & 0x00ff_ffff
         var cursor = box.payload + 4
@@ -282,7 +306,7 @@ private extension FragmentRemux {
         return (id, base, sample)
     }
 
-    static func readTrun(_ data: Data, _ box: Box, base: UInt64, defaults: SampleDefaults) throws -> [FragSample] {
+    static func readTrun(_ data: MP4File, _ box: Box, base: UInt64, defaults: SampleDefaults) throws -> [FragSample] {
         guard box.payload + 8 <= box.end else { throw RemuxError("trun 太短") }
         let flags = data.u32(box.payload) & 0x00ff_ffff
         var cursor = box.payload + 4
@@ -311,8 +335,7 @@ private extension FragmentRemux {
         let origin = Int64(base) + Int64(dataOffset)
         guard origin >= 0 else { throw RemuxError("样本偏移为负") }
         var sampleCursor = Int(origin)
-        let table = [UInt8](data[cursor..<box.end])
-        var local = 0
+        var local = cursor
         var samples: [FragSample] = []
         samples.reserveCapacity(count)
         for index in 0..<count {
@@ -320,10 +343,10 @@ private extension FragmentRemux {
             var size = defaults.size
             var sampleFlags = index == 0 ? firstFlags : defaults.flags
             var ctts: Int32 = 0
-            if flags & 0x000100 != 0 { duration = try pullU32(table, &local) }
-            if flags & 0x000200 != 0 { size = try pullU32(table, &local) }
-            if flags & 0x000400 != 0 { sampleFlags = try pullU32(table, &local) }
-            if flags & 0x000800 != 0 { ctts = Int32(bitPattern: try pullU32(table, &local)) }
+            if flags & 0x000100 != 0 { duration = try pullU32(data.raw, &local) }
+            if flags & 0x000200 != 0 { size = try pullU32(data.raw, &local) }
+            if flags & 0x000400 != 0 { sampleFlags = try pullU32(data.raw, &local) }
+            if flags & 0x000800 != 0 { ctts = Int32(bitPattern: try pullU32(data.raw, &local)) }
             if duration == 0 { duration = defaults.duration == 0 ? 1 : defaults.duration }
             guard size > 0 else { continue }
             samples.append(FragSample(offset: sampleCursor, size: size, duration: duration, flags: sampleFlags, ctts: ctts))
@@ -332,7 +355,7 @@ private extension FragmentRemux {
         return samples
     }
 
-    static func readTkhd(_ data: Data, _ box: Box) throws -> (id: UInt32, width: UInt32, height: UInt32) {
+    static func readTkhd(_ data: MP4File, _ box: Box) throws -> (id: UInt32, width: UInt32, height: UInt32) {
         guard box.payload + 4 <= box.end else { throw RemuxError("tkhd 太短") }
         let version = data.u8(box.payload)
         let idOffset = version == 1 ? 20 : 12
@@ -341,7 +364,7 @@ private extension FragmentRemux {
         return (data.u32(box.payload + idOffset), data.u32(box.payload + widthOffset), data.u32(box.payload + widthOffset + 4))
     }
 
-    static func readMdhd(_ data: Data, _ box: Box) throws -> (timescale: UInt32, language: UInt16) {
+    static func readMdhd(_ data: MP4File, _ box: Box) throws -> (timescale: UInt32, language: UInt16) {
         guard box.payload + 4 <= box.end else { throw RemuxError("mdhd 太短") }
         let version = data.u8(box.payload)
         let scale = version == 1 ? 20 : 12
@@ -350,7 +373,7 @@ private extension FragmentRemux {
         return (data.u32(box.payload + scale), data.u16(box.payload + language))
     }
 
-    static func readHandler(_ data: Data, _ box: Box) -> String {
+    static func readHandler(_ data: MP4File, _ box: Box) -> String {
         guard box.payload + 12 <= box.end else { return "" }
         return data.fourcc(box.payload + 8)
     }
@@ -364,7 +387,7 @@ private extension FragmentRemux {
         }
     }
 
-    static func findBox(_ data: Data, _ root: Box, name: String) -> Box? {
+    static func findBox(_ data: MP4File, _ root: Box, name: String) -> Box? {
         guard let children = try? boxes(in: data, from: root.payload, to: root.end) else { return nil }
         for child in children {
             if child.type == name { return child }
@@ -646,7 +669,7 @@ private struct Box {
     var payload: Int { start + header }
     var end: Int { start + size }
 
-    func bytes(_ data: Data) -> Data { data[start..<end] }
+    func bytes(_ data: MP4File) -> Data { data.copy(start, end) }
 }
 
 private func pullU32(_ table: [UInt8], _ index: inout Int) throws -> UInt32 {
@@ -656,7 +679,7 @@ private func pullU32(_ table: [UInt8], _ index: inout Int) throws -> UInt32 {
     return value
 }
 
-private func boxes(in data: Data, from: Int, to: Int) throws -> [Box] {
+private func boxes(in data: MP4File, from: Int, to: Int) throws -> [Box] {
     var offset = from
     var result: [Box] = []
     while offset + 8 <= to {
