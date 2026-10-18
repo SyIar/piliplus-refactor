@@ -287,7 +287,6 @@ private extension FragmentRemux {
         var cursor = box.payload + 4
         let count = Int(data.u32(cursor))
         cursor += 4
-        guard count > 0, count < 5_000_000 else { throw RemuxError("样本数量异常") }
         var dataOffset: Int32 = 0
         if flags & 0x000001 != 0 {
             guard cursor + 4 <= box.end else { throw RemuxError("trun 截断") }
@@ -300,6 +299,14 @@ private extension FragmentRemux {
             firstFlags = data.u32(cursor)
             cursor += 4
         }
+        var fieldStride = 0
+        if flags & 0x000100 != 0 { fieldStride += 4 }
+        if flags & 0x000200 != 0 { fieldStride += 4 }
+        if flags & 0x000400 != 0 { fieldStride += 4 }
+        if flags & 0x000800 != 0 { fieldStride += 4 }
+        let fits = fieldStride > 0 ? max(0, box.end - cursor) / fieldStride : count
+        print("offline trun count \(count) flags \(String(flags, radix: 16)) bytes \(box.size) fits \(fits)")
+        guard count > 0, count <= 400_000, count <= fits else { throw RemuxError("样本数量异常 \(count)") }
         let origin = Int64(base) + Int64(dataOffset)
         guard origin >= 0 else { throw RemuxError("样本偏移为负") }
         var sampleCursor = Int(origin)
@@ -659,6 +666,7 @@ private func boxes(in data: Data, from: Int, to: Int) throws -> [Box] {
     var offset = from
     var result: [Box] = []
     while offset + 8 <= to {
+        if result.count > 100_000 { throw RemuxError("盒子过多") }
         let size32 = data.u32(offset)
         let type = data.fourcc(offset + 4)
         var header = 8
