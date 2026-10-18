@@ -770,9 +770,9 @@ final class AppModel {
     func reportHeartbeat(_ video: VideoItem, played: Int) async {
         guard let csrf = session?.csrf, !csrf.isEmpty, video.cid > 0 else { return }
         let form = PlaybackRequest.heartbeat(bvid: video.bvid, cid: video.cid, played: played, csrf: csrf)
-        _ = try? await submit(form)
+        _ = try? await client.submit(form)
         if video.aid > 0 {
-            _ = try? await submit(PlaybackRequest.historyReport(aid: video.aid, csrf: csrf))
+            _ = try? await client.submit(PlaybackRequest.historyReport(aid: video.aid, csrf: csrf))
         }
     }
 
@@ -790,7 +790,7 @@ final class AppModel {
             return
         }
         do {
-            _ = try await submit(form)
+            _ = try await client.submit(form)
             show("弹幕已发送")
         } catch {
             show(error.localizedDescription)
@@ -913,12 +913,12 @@ final class AppModel {
             let cid = detail.pages.first?.cid ?? detail.cid
             guard cid > 0, let page = await client.videoShot(bvid: detail.bvid, cid: cid) else { continue }
             let seconds = Double(detail.duration) * 0.35
-            let cell = PlaybackParser.frameIndex(at: seconds, index: page.index)
+            let cell = PlaybackMarkup.frameIndex(at: seconds, index: page.index)
             let per = max(1, page.columns * page.rows)
             let sheetIndex = cell / per
             guard page.images.indices.contains(sheetIndex),
                   let image = await client.fetchImage(page.images[sheetIndex]),
-                  let piece = PlaybackParser.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else { continue }
+                  let piece = PlaybackMarkup.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else { continue }
             preparedShot = page
             preparedPreview = piece
             chapterMarks = []

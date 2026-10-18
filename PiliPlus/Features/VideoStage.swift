@@ -987,7 +987,7 @@ struct VideoStage: View {
 
     private func updateScrubPreview(at seconds: Double) async {
         guard let page = shot else { return }
-        let cell = PlaybackParser.frameIndex(at: seconds, index: page.index)
+        let cell = PlaybackMarkup.frameIndex(at: seconds, index: page.index)
         let per = max(1, page.columns * page.rows)
         let sheetIndex = cell / per
         guard page.images.indices.contains(sheetIndex) else { return }
@@ -1000,7 +1000,7 @@ struct VideoStage: View {
         } else {
             return
         }
-        scrubPreview = PlaybackParser.crop(sheet: sheetImage, columns: page.columns, rows: page.rows, cell: cell)
+        scrubPreview = PlaybackMarkup.crop(sheet: sheetImage, columns: page.columns, rows: page.rows, cell: cell)
     }
 
     private func finishScrub(duration: Int) async {
@@ -1009,12 +1009,12 @@ struct VideoStage: View {
             return
         }
         let seconds = Double(max(duration, 1)) * 0.35
-        let cell = PlaybackParser.frameIndex(at: seconds, index: page.index)
+        let cell = PlaybackMarkup.frameIndex(at: seconds, index: page.index)
         let per = max(1, page.columns * page.rows)
         let sheetIndex = cell / per
         guard page.images.indices.contains(sheetIndex),
               let image = await model.client.fetchImage(page.images[sheetIndex]),
-              let piece = PlaybackParser.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else {
+              let piece = PlaybackMarkup.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else {
             PlaybackUIProof.record("scrub", [
                 "images": page.images.count,
                 "frames": page.index.count,

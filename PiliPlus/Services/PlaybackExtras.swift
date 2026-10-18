@@ -122,7 +122,7 @@ enum PlaybackRequest {
     }
 }
 
-enum PlaybackParser {
+enum PlaybackMarkup {
     static func chapters(from data: JSON) -> [ChapterMark] {
         let list = data["data"]["view_points"].array ?? data["view_points"].array ?? []
         return list.compactMap { item in

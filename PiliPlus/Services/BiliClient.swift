@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 enum BiliError: LocalizedError {
     case message(String)
@@ -2242,11 +2243,11 @@ struct BiliClient: Sendable {
         let form = PlaybackRequest.playerInfo(bvid: bvid, cid: cid)
         let referer = BiliHTTP.referer(bvid: bvid)
         if let signed = try? await requestQuery(form.path, params: form.fields, signed: true, referer: referer), signed["code"].int == 0 {
-            let marks = PlaybackParser.chapters(from: signed)
+            let marks = PlaybackMarkup.chapters(from: signed)
             if !marks.isEmpty { return marks }
         }
         if let plain = try? await requestQuery("/x/player/v2", params: form.fields, signed: false, referer: referer), plain["code"].int == 0 {
-            return PlaybackParser.chapters(from: plain)
+            return PlaybackMarkup.chapters(from: plain)
         }
         return []
     }
@@ -2260,7 +2261,7 @@ struct BiliClient: Sendable {
         for string in urls {
             guard let url = URL(string: string) else { continue }
             guard let data = try? await getJSON(url, referer: "https://www.bilibili.com/") else { continue }
-            let values = PlaybackParser.energy(from: data)
+            let values = PlaybackMarkup.energy(from: data)
             if values.count >= 4 { return values }
         }
         return []
@@ -2270,7 +2271,7 @@ struct BiliClient: Sendable {
         let form = PlaybackRequest.videoshot(bvid: bvid, cid: cid)
         guard let url = form.endpoint else { return nil }
         guard let data = try? await getJSON(url, referer: BiliHTTP.referer(bvid: bvid)), data["code"].int == 0 else { return nil }
-        return PlaybackParser.shot(from: data)
+        return PlaybackMarkup.shot(from: data)
     }
 
     func fetchImage(_ string: String) async -> UIImage? {
@@ -2285,7 +2286,7 @@ struct BiliClient: Sendable {
             throw BiliError.message("番剧地址无效")
         }
         let data = try await getJSON(url, referer: "https://www.bilibili.com/bangumi/play/ss\(id)")
-        guard data["code"].int == 0, let guide = PlaybackParser.season(from: data, seasonID: id) else {
+        guard data["code"].int == 0, let guide = PlaybackMarkup.season(from: data, seasonID: id) else {
             throw BiliError.message(data["message"].string ?? "番剧不可用")
         }
         return guide
