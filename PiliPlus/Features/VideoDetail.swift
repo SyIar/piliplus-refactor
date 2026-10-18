@@ -78,7 +78,7 @@ struct VideoDetailIntro: View {
                 ownerRow
                 titleBlock
                 metaLine
-                VideoActionRow(video: video, coinPick: coinPick, showCoin: showCoin, showFav: showFav, showShare: showShare)
+                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
                 if video.pageCount > 1 {
                     disclosureRow(title: "分P", detail: "\(min(pageIndex + 1, video.pageCount))/\(video.pageCount)") {
                         pagesOpen.toggle()
