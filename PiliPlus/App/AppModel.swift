@@ -899,8 +899,18 @@ final class AppModel {
                 tname: "番剧"
             )
             item.cid = episode.cid
-            if let offer = await client.seasonPlayback(ep: episode.id, cid: episode.cid, qn: qn, codec: codec)
-                ?? (try? await client.playback(bvid: episode.bvid, cid: episode.cid, qn: qn, tryLook: true, codecPreference: codec, audioPreference: values["默认音质"] ?? "高码率")) {
+            var offer = await client.seasonPlayback(ep: episode.id, cid: episode.cid, qn: qn, codec: codec)
+            if offer == nil {
+                offer = try? await client.playback(
+                    bvid: episode.bvid,
+                    cid: episode.cid,
+                    qn: qn,
+                    tryLook: true,
+                    codecPreference: codec,
+                    audioPreference: values["默认音质"] ?? "高码率"
+                )
+            }
+            if let offer {
                 item.apply(offer)
                 qualityName = offer.selectedName
                 seasonTitle = guide.title
