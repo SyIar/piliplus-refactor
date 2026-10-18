@@ -1117,7 +1117,6 @@ print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
         fi
         if [[ "$state" == "failed" && "$err" != "-" ]]; then
           echo "download failed: $err" >&2
-          break
         fi
       fi
     fi

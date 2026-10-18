@@ -683,6 +683,7 @@ final class AppModel {
             } else {
                 player?.replaceCurrentItem(with: item)
             }
+            player?.automaticallyWaitsToMinimizeStalling = false
             await player?.seek(to: .zero)
             guard generation == playGeneration else { return }
             notePlaybackTime(0)
@@ -738,7 +739,9 @@ final class AppModel {
                 guard generation == playGeneration else { return }
                 if item.status == .readyToPlay { return }
                 if item.status == .failed {
-                    let message = item.error?.localizedDescription ?? "播放失败"
+                    let ns = item.error as NSError?
+                    let message = ns.map { "\($0.localizedDescription) \($0.domain) \($0.code)" } ?? "播放失败"
+                    if LaunchMode.screen == "offline" { print("offline player \(message)") }
                     PlaybackProof.record(seconds: 0, quality: qualityName, codec: codec, error: message)
                     if LaunchMode.screen == "offline", let offline = downloads.item(offlineTarget ?? "") ?? downloads.latestReady {
                         OfflineProof.playback(item: offline, asset: offlineAsset, seconds: 0, danmaku: offlineDanmaku, error: message)

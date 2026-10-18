@@ -481,6 +481,57 @@ final class DownloadCenter {
         DownloadBridge.shared.startInProcess(id: id, kind: kind, url: remote, headers: pair.headers)
     }
 
+    /// AVFoundation cannot open a Bilibili fragmented `.m4s` (-11828). Rebuild a progressive movie and only then mark it ready.
+    private func remux(video: URL, audio: URL?, to movie: URL) async -> Bool {
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try FragmentRemux.writeMovie(video: video, audio: audio, to: movie)
+            }.value
+        } catch {
+            let ns = error as NSError
+            print("offline remux \(ns.domain) \(ns.code) \(ns.localizedDescription)")
+            return false
+        }
+        return await opens(movie)
+    }
+
+    private func opens(_ url: URL) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.inspect(url) }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(12))
+                return false
+            }
+            let opened = await group.next() ?? false
+            group.cancelAll()
+            return opened
+        }
+    }
+
+    private func inspect(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        do {
+            let playable = try await asset.load(.isPlayable)
+            let duration = try await asset.load(.duration)
+            let tracks = try await asset.loadTracks(withMediaType: .video)
+            print("offline open playable=\(playable) seconds=\(duration.seconds) tracks=\(tracks.count)")
+            return duration.seconds > 0.5 && !tracks.isEmpty
+        } catch {
+            let ns = error as NSError
+            print("offline open \(ns.domain) \(ns.code) \(ns.localizedDescription)")
+            return false
+        }
+    }
+
+    private func mergeFailed(id: String, message: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].state = "failed"
+        items[index].error = message
+        save()
+        publish(items[index])
+        print("offline fail \(id) \(message)")
+    }
+
     func failed(id: String, message: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         guard items[index].state == "running" || items[index].state == "queued" || items[index].state == "paused" else { return }
@@ -617,32 +668,15 @@ final class DownloadCenter {
         let movie = OfflineFiles.movie(done)
         let videoFile = OfflineFiles.video(done)
         let audioFile = OfflineFiles.audio(done)
-        var merged = false
-        do {
-            try await OfflineMux.mux(video: videoFile, audio: audioFile, to: movie)
-            merged = FileManager.default.fileExists(atPath: movie.path)
-        } catch {
-            let ns = error as NSError
-            print("offline mux \(ns.domain) \(ns.code) \(ns.localizedDescription)")
-        }
+        var merged = await remux(video: videoFile, audio: audioFile, to: movie)
         if !merged {
-            let exported = await withTaskGroup(of: Bool.self) { group in
-                group.addTask { await OfflineMux.export(video: videoFile, audio: audioFile, to: movie) }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(20))
-                    return false
-                }
-                let first = await group.next() ?? false
-                group.cancelAll()
-                return first
-            }
-            merged = exported && FileManager.default.fileExists(atPath: movie.path)
+            print("offline remux drop audio")
+            merged = await remux(video: videoFile, audio: nil, to: movie)
         }
-        guard merged || FileManager.default.fileExists(atPath: videoFile.path) else {
-            failed(id: id, message: "本地文件没有写出")
+        guard merged else {
+            mergeFailed(id: id, message: "合成文件无法播放")
             return
         }
-        if !merged { print("offline keep separate tracks \(videoFile.lastPathComponent)") }
         done.state = "ready"
         done.fraction = 1
         done.error = ""
@@ -726,114 +760,4 @@ private enum TrackResult {
     case files
     case failed(String)
     case cancelled
-}
-
-enum OfflineMux {
-    static func mux(video: URL, audio: URL, to output: URL) async throws {
-        if FileManager.default.fileExists(atPath: output.path) {
-            try FileManager.default.removeItem(at: output)
-        }
-        let videoAsset = AVURLAsset(url: video)
-        let audioAsset = AVURLAsset(url: audio)
-        guard let videoTrack = try await videoAsset.loadTracks(withMediaType: .video).first else {
-            throw BiliError.message("没有视频轨")
-        }
-        guard let audioTrack = try await audioAsset.loadTracks(withMediaType: .audio).first else {
-            throw BiliError.message("没有音频轨")
-        }
-        let videoFormats = try await videoTrack.load(.formatDescriptions)
-        let audioFormats = try await audioTrack.load(.formatDescriptions)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let readerVideo = try AVAssetReader(asset: videoAsset)
-                    let readerAudio = try AVAssetReader(asset: audioAsset)
-                    let videoOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: nil)
-                    let audioOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-                    videoOutput.alwaysCopiesSampleData = false
-                    audioOutput.alwaysCopiesSampleData = false
-                    guard readerVideo.canAdd(videoOutput), readerAudio.canAdd(audioOutput) else {
-                        throw BiliError.message("无法读取分轨")
-                    }
-                    readerVideo.add(videoOutput)
-                    readerAudio.add(audioOutput)
-                    let writer = try AVAssetWriter(outputURL: output, fileType: .mp4)
-                    let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: videoFormats.first)
-                    let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: audioFormats.first)
-                    videoInput.expectsMediaDataInRealTime = false
-                    audioInput.expectsMediaDataInRealTime = false
-                    guard writer.canAdd(videoInput), writer.canAdd(audioInput) else {
-                        throw BiliError.message("无法写入本地文件")
-                    }
-                    writer.add(videoInput)
-                    writer.add(audioInput)
-                    guard readerVideo.startReading() else { throw readerVideo.error ?? BiliError.message("读取视频失败") }
-                    guard readerAudio.startReading() else { throw readerAudio.error ?? BiliError.message("读取音频失败") }
-                    guard writer.startWriting() else { throw writer.error ?? BiliError.message("写出失败") }
-                    writer.startSession(atSourceTime: .zero)
-                    try pump(output: videoOutput, input: videoInput, writer: writer)
-                    videoInput.markAsFinished()
-                    try pump(output: audioOutput, input: audioInput, writer: writer)
-                    audioInput.markAsFinished()
-                    writer.finishWriting {
-                        if writer.status == .completed {
-                            continuation.resume()
-                        } else {
-                            continuation.resume(throwing: writer.error ?? BiliError.message("合成失败"))
-                        }
-                    }
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    static func export(video: URL, audio: URL, to output: URL) async -> Bool {
-        if FileManager.default.fileExists(atPath: output.path) {
-            try? FileManager.default.removeItem(at: output)
-        }
-        let videoAsset = AVURLAsset(url: video)
-        let audioAsset = AVURLAsset(url: audio)
-        guard let videoTrack = try? await videoAsset.loadTracks(withMediaType: .video).first,
-              let audioTrack = try? await audioAsset.loadTracks(withMediaType: .audio).first,
-              let duration = try? await videoAsset.load(.duration),
-              duration.isValid, duration.seconds > 0.5 else { return false }
-        let composition = AVMutableComposition()
-        guard let composedVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
-              let composedAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { return false }
-        do {
-            try composedVideo.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: videoTrack, at: .zero)
-            let sound = (try? await audioAsset.load(.duration)) ?? duration
-            try composedAudio.insertTimeRange(CMTimeRange(start: .zero, duration: CMTimeMinimum(duration, sound)), of: audioTrack, at: .zero)
-        } catch {
-            return false
-        }
-        let presets = [AVAssetExportPreset1280x720, AVAssetExportPresetMediumQuality, AVAssetExportPreset640x480]
-        for preset in presets {
-            if FileManager.default.fileExists(atPath: output.path) {
-                try? FileManager.default.removeItem(at: output)
-            }
-            guard let session = AVAssetExportSession(asset: composition, presetName: preset) else { continue }
-            session.outputURL = output
-            session.outputFileType = .mp4
-            await session.export()
-            if session.status == .completed, FileManager.default.fileExists(atPath: output.path) { return true }
-            print("offline export \(preset) \(session.error?.localizedDescription ?? "")")
-        }
-        return false
-    }
-
-    private static func pump(output: AVAssetReaderTrackOutput, input: AVAssetWriterInput, writer: AVAssetWriter) throws {
-        while true {
-            if writer.status == .failed { throw writer.error ?? BiliError.message("写出中断") }
-            if !input.isReadyForMoreMediaData {
-                Thread.sleep(forTimeInterval: 0.01)
-                continue
-            }
-            guard let sample = output.copyNextSampleBuffer() else { return }
-            if !input.append(sample) { throw writer.error ?? BiliError.message("写入样本失败") }
-        }
-    }
-
 }
