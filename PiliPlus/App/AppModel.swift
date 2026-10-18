@@ -350,17 +350,17 @@ final class AppModel {
             livePage = rooms.isEmpty ? 0 : 1
             liveHasMore = rooms.count >= 8
         }
-        let deadline = Date().addingTimeInterval(130)
+        let deadline = Date().addingTimeInterval(100)
         var attempts = 0
         var quietest: (room: LiveRoom, offer: LiveOffer, count: Int)?
-        for room in rooms where attempts < 8 {
+        for room in rooms where attempts < 5 {
             if Date() >= deadline { break }
             attempts += 1
             guard let offer = try? await client.livePlay(room: room.id, qn: 10_000),
                   offer.protocolName == "hls",
                   URL(string: offer.url) != nil,
                   let info = try? await client.liveDanmuInfo(room: room.id) else { continue }
-            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 12)
+            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 8)
             print("live probe \(room.id) online \(room.online) danmu \(count)")
             let previous = quietest?.count ?? -1
             if count > previous {
@@ -381,27 +381,26 @@ final class AppModel {
         if let first = rooms.first { open(.live(first.id)) }
     }
 
-    /// Highest `online` across the homepage rail and the online-sorted area lists.
+    /// The busiest room in each area comes first, then the rest by online count.
     private func busiestLiveRooms() async -> [LiveRoom] {
-        var best: [Int: LiveRoom] = [:]
-        func absorb(_ rooms: [LiveRoom]) {
-            for room in rooms {
-                if let existing = best[room.id], existing.online >= room.online { continue }
-                best[room.id] = room
-            }
+        let areas = ["推荐", "网游", "娱乐", "虚拟主播", "电台"]
+        var lists: [[LiveRoom]] = []
+        for area in areas {
+            lists.append((try? await client.liveList(area: area, page: 1)) ?? [])
         }
-        absorb((try? await client.liveList(area: "推荐", page: 1)) ?? [])
-        absorb((try? await client.liveList(area: "网游", page: 1)) ?? [])
-        absorb((try? await client.liveList(area: "娱乐", page: 1)) ?? [])
-        absorb((try? await client.liveList(area: "虚拟主播", page: 1)) ?? [])
-        absorb((try? await client.liveList(area: "电台", page: 1)) ?? [])
-        let ranked = best.values.sorted { lhs, rhs in
-            if lhs.online != rhs.online { return lhs.online > rhs.online }
-            return lhs.id < rhs.id
+        var ordered: [LiveRoom] = []
+        var seen: Set<Int> = []
+        func push(_ room: LiveRoom) {
+            guard seen.insert(room.id).inserted else { return }
+            ordered.append(room)
         }
-        let preview = ranked.prefix(5).map { "\($0.id):\($0.online)" }.joined(separator: " ")
-        print("live candidates \(ranked.count) \(preview)")
-        return ranked
+        for list in lists {
+            if let room = list.max(by: { $0.online < $1.online }) { push(room) }
+        }
+        for room in lists.flatMap({ $0 }).sorted(by: { $0.online > $1.online }) { push(room) }
+        let preview = ordered.prefix(5).map { "\($0.id):\($0.online)" }.joined(separator: " ")
+        print("live candidates \(ordered.count) \(preview)")
+        return ordered
     }
 
     func sendLiveDanmaku(room: Int, message: String) async -> Bool {

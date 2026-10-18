@@ -842,7 +842,7 @@ capture_live_room() {
     --stdout="$OUT/perf/live-room.log" --stderr="$OUT/perf/live-room.err" \
     "$UDID" "$BUNDLE" -screen live-room -perfLabel "$LABEL"
   local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0 deadline
-  deadline=$(( $(date +%s) + 220 ))
+  deadline=$(( $(date +%s) + 160 ))
   while [[ $(date +%s) -lt $deadline ]]; do
     if [[ -f "$proof" ]]; then
       line="$(python3 -c 'import json,sys
