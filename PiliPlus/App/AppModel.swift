@@ -860,9 +860,19 @@ final class AppModel {
 
     func openBangumiPlayback() async {
         if bangumi.isEmpty { await loadSeasons("番剧") }
+        var seasons: [SeasonItem] = []
+        if let domestic = try? await client.seasons(type: 4) {
+            seasons.append(contentsOf: domestic.prefix(2))
+        }
+        let known = Set(seasons.map(\.seasonID))
+        seasons.append(contentsOf: bangumi.filter { !known.contains($0.seasonID) }.prefix(2))
+        if seasons.count < 4, let films = try? await client.seasons(type: 3) {
+            let seen = Set(seasons.map(\.seasonID))
+            seasons.append(contentsOf: films.filter { !seen.contains($0.seasonID) }.prefix(2))
+        }
         let qn = QualityMap.qn(for: values["默认画质"] ?? "高清 1080P")
         let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
-        for season in bangumi.prefix(3) {
+        for season in seasons.prefix(4) {
             let guide: SeasonGuide
             do {
                 guide = try await client.seasonGuide(id: season.seasonID)
@@ -870,57 +880,17 @@ final class AppModel {
                 PlaybackLog.line("bangumi season \(season.seasonID) \(error.localizedDescription)")
                 continue
             }
-            guard guide.episodes.count >= 2,
-                  let episode = guide.episodes.first(where: { !$0.bvid.isEmpty && $0.cid > 0 }) else {
+            let candidates = episodeCandidates(guide.episodes)
+            guard guide.episodes.count >= 2, !candidates.isEmpty else {
                 PlaybackLog.line("bangumi season \(season.seasonID) episodes \(guide.episodes.count) no bvid")
                 continue
             }
-            PlaybackLog.line("bangumi play \(guide.title) \(episode.bvid) ep \(episode.id)")
-            var item = (try? await client.detail(bvid: episode.bvid)) ?? VideoItem(
-                bvid: episode.bvid,
-                aid: episode.aid,
-                cid: episode.cid,
-                title: episode.label,
-                cover: season.cover,
-                duration: episode.duration,
-                ownerName: "番剧",
-                ownerMid: 0,
-                ownerFace: "",
-                desc: "",
-                pubdate: 0,
-                view: 0,
-                danmaku: 0,
-                like: 0,
-                coin: 0,
-                favorite: 0,
-                share: 0,
-                reply: 0,
-                pages: [VideoPage(cid: episode.cid, index: 1, title: episode.label, duration: episode.duration)],
-                tname: "番剧"
-            )
-            item.cid = episode.cid
-            var offer = await client.seasonPlayback(ep: episode.id, cid: episode.cid, qn: qn, codec: codec)
-            if offer == nil {
-                offer = try? await client.playback(
-                    bvid: episode.bvid,
-                    cid: episode.cid,
-                    qn: qn,
-                    tryLook: true,
-                    codecPreference: codec,
-                    audioPreference: values["默认音质"] ?? "高码率"
-                )
+            for episode in candidates {
+                PlaybackLog.line("bangumi play \(guide.title) \(episode.bvid) ep \(episode.id) \(episode.badge)")
+                if await startEpisode(episode, title: guide.title, episodes: guide.episodes, cover: season.cover, qn: qn, codec: codec) {
+                    return
+                }
             }
-            if let offer {
-                item.apply(offer)
-                qualityName = offer.selectedName
-                seasonTitle = guide.title
-                seasonEpisodes = guide.episodes
-                store(item)
-                PlaybackLog.line("bangumi ready \(offer.selectedName) \(offer.codec)")
-                open(.video(item.bvid))
-                return
-            }
-            PlaybackLog.line("bangumi no playurl \(episode.bvid)")
         }
         PlaybackUIProof.record("bangumi-play", [
             "count": 0,
@@ -929,6 +899,90 @@ final class AppModel {
             "title": "",
             "error": "没有可播放的剧集"
         ])
+    }
+
+    func playListedEpisode(_ episode: EpisodeItem) async {
+        let qn = QualityMap.qn(for: values["默认画质"] ?? "高清 1080P")
+        let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
+        let ok = await startEpisode(
+            episode,
+            title: seasonTitle,
+            episodes: seasonEpisodes,
+            cover: "",
+            qn: qn,
+            codec: codec
+        )
+        if !ok { show("这一集还不能播放") }
+    }
+
+    /// Newest free episodes first. Ongoing seasons usually unlock the latest one.
+    private func episodeCandidates(_ episodes: [EpisodeItem]) -> [EpisodeItem] {
+        let ready = episodes.filter { !$0.bvid.isEmpty && $0.cid > 0 }
+        let free = ready.filter { item in
+            let badge = item.badge
+            return !badge.contains("会员") && !badge.contains("付费") && !badge.contains("抢先")
+        }
+        return Array((free.isEmpty ? ready : free).reversed().prefix(2))
+    }
+
+    private func startEpisode(
+        _ episode: EpisodeItem,
+        title: String,
+        episodes: [EpisodeItem],
+        cover: String,
+        qn: Int,
+        codec: String
+    ) async -> Bool {
+        var item = (try? await client.detail(bvid: episode.bvid)) ?? VideoItem(
+            bvid: episode.bvid,
+            aid: episode.aid,
+            cid: episode.cid,
+            title: episode.label,
+            cover: cover,
+            duration: episode.duration,
+            ownerName: "番剧",
+            ownerMid: 0,
+            ownerFace: "",
+            desc: "",
+            pubdate: 0,
+            view: 0,
+            danmaku: 0,
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: 0,
+            pages: [VideoPage(cid: episode.cid, index: 1, title: episode.label, duration: episode.duration)],
+            tname: "番剧"
+        )
+        item.cid = episode.cid
+        var offer = await client.seasonPlayback(ep: episode.id, cid: episode.cid, qn: qn, codec: codec)
+        if offer == nil {
+            do {
+                offer = try await client.playback(
+                    bvid: episode.bvid,
+                    cid: episode.cid,
+                    qn: qn,
+                    tryLook: true,
+                    codecPreference: codec,
+                    audioPreference: values["默认音质"] ?? "高码率"
+                )
+            } catch {
+                PlaybackLog.line("ugc \(episode.bvid) \(error.localizedDescription)")
+            }
+        }
+        guard let offer else {
+            PlaybackLog.line("bangumi no playurl \(episode.bvid)")
+            return false
+        }
+        item.apply(offer)
+        qualityName = offer.selectedName
+        seasonTitle = title
+        seasonEpisodes = episodes
+        store(item)
+        PlaybackLog.line("bangumi ready \(offer.selectedName) \(offer.codec)")
+        open(.video(item.bvid))
+        return true
     }
 
     func openChapterSample() async {
@@ -945,8 +999,16 @@ final class AppModel {
             async let marksTask = client.playerChapters(bvid: detail.bvid, cid: cid)
             async let barsTask = client.energyBars(cid: cid)
             let marks = await marksTask
-            let bars = await barsTask
-            PlaybackLog.line("chapter probe \(detail.bvid) marks=\(marks.count) energy=\(bars.count) \(marks.first?.title ?? "-")")
+            var bars = await barsTask
+            var energySource = "pbp"
+            if bars.count < 8, let cues = try? await client.danmaku(cid: cid), cues.count >= 8 {
+                let density = PlaybackMarkup.danmakuEnergy(cues)
+                if density.count >= 8 {
+                    bars = density
+                    energySource = "danmaku"
+                }
+            }
+            PlaybackLog.line("chapter probe \(detail.bvid) marks=\(marks.count) energy=\(bars.count) \(energySource) \(marks.first?.title ?? "-")")
             guard marks.count >= 1, bars.count >= 8, !marks[0].title.isEmpty else { continue }
             chapterMarks = marks
             energySamples = bars

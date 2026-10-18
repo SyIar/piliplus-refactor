@@ -974,6 +974,10 @@ struct VideoStage: View {
         let page = await model.client.videoShot(bvid: bvid, cid: cid)
         chapters = await marksTask
         energy = await barsTask
+        if energy.count < 8 {
+            let density = PlaybackMarkup.danmakuEnergy(danmaku)
+            if density.count >= 8 { energy = density }
+        }
         shot = page
         model.chapterMarks = chapters
         model.energySamples = energy
@@ -1181,7 +1185,7 @@ struct VideoStage: View {
             await reload(video, cid: episode.cid)
             return
         }
-        model.open(.video(episode.bvid))
+        await model.playListedEpisode(episode)
     }
 
     private func replySheet(_ comment: CommentItem) -> some View {

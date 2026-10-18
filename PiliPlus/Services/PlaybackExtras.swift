@@ -136,10 +136,26 @@ enum PlaybackMarkup {
     static func energy(from data: JSON) -> [Double] {
         let list = data["events"]["default"].array
             ?? data["data"]["events"]["default"].array
+            ?? data["data"]["data"]["events"]["default"].array
+            ?? data["events"].array
             ?? []
         let values = list.compactMap(\.double)
-        guard let peak = values.max(), peak > 0 else { return values }
+        guard let peak = values.max(), peak > 0 else { return [] }
         return values.map { min(1, max(0, $0 / peak)) }
+    }
+
+    /// Danmaku density across the video. This is the same signal the high-energy bar plots.
+    static func danmakuEnergy(_ cues: [DanmakuCue], buckets: Int = 48) -> [Double] {
+        guard buckets > 1 else { return [] }
+        let times = cues.map(\.time).filter { $0.isFinite && $0 >= 0 }
+        guard let end = times.max(), end > 1 else { return [] }
+        var bins = Array(repeating: 0.0, count: buckets)
+        for time in times {
+            let index = min(buckets - 1, Int(time / end * Double(buckets)))
+            bins[index] += 1
+        }
+        guard let peak = bins.max(), peak > 0 else { return [] }
+        return bins.map { min(1, $0 / peak) }
     }
 
     static func shot(from data: JSON) -> VideoShotPage? {
@@ -207,7 +223,7 @@ enum PlaybackMarkup {
             cid: cid,
             aid: item["aid"].int ?? 0,
             duration: item["duration"].int ?? 0,
-            badge: item["badge"].string ?? ""
+            badge: item["badge"].string ?? item["badge_info"]["text"].string ?? ""
         )
     }
 }

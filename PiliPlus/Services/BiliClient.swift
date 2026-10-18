@@ -2260,9 +2260,21 @@ struct BiliClient: Sendable {
         ]
         for string in urls {
             guard let url = URL(string: string) else { continue }
-            guard let data = try? await getJSON(url, referer: "https://www.bilibili.com/") else { continue }
-            let values = PlaybackMarkup.energy(from: data)
-            if values.count >= 4 { return values }
+            do {
+                let body = try await getData(url, includeSession: false)
+                let preview = String(data: body.prefix(160), encoding: .utf8) ?? "binary \(body.count)"
+                let object = (try? JSONSerialization.jsonObject(with: body))
+                    ?? RawInflate.expand(body).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                guard let object else {
+                    PlaybackLog.line("energy \(url.host ?? "") unparsed \(preview)")
+                    continue
+                }
+                let values = PlaybackMarkup.energy(from: JSON(object))
+                PlaybackLog.line("energy \(url.host ?? "") count=\(values.count) \(preview)")
+                if values.count >= 4 { return values }
+            } catch {
+                PlaybackLog.line("energy \(url.host ?? "") \(error.localizedDescription)")
+            }
         }
         return []
     }
@@ -2284,11 +2296,33 @@ struct BiliClient: Sendable {
     func seasonPlayback(ep: Int, cid: Int, qn: Int, codec: String) async -> PlaybackOffer? {
         guard ep > 0, cid > 0 else { return nil }
         let referer = "https://www.bilibili.com/bangumi/play/ep\(ep)"
-        for fnval in [4048, 16, 1] {
-            guard let url = URL(string: "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=\(fnval)&fourk=1") else { continue }
-            guard let data = try? await getJSON(url, referer: referer), data["code"].int == 0 else { continue }
-            if let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codec, audioPreference: "高码率") {
+        let urls = [
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=4048&fourk=1",
+            "https://api.bilibili.com/pgc/player/web/v2/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=4048&fourk=1&from_client=BROWSER",
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=1&fourk=1&platform=html5",
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&qn=16&fnver=0&fnval=1&platform=html5"
+        ]
+        for string in urls {
+            guard let url = URL(string: string) else { continue }
+            do {
+                let data = try await getJSON(url, referer: referer)
+                let code = data["code"].int ?? -1
+                let message = data["message"].string ?? ""
+                let info = data["result"]["video_info"]
+                let dash = data["result"]["dash"]["video"].array?.count
+                    ?? data["data"]["dash"]["video"].array?.count
+                    ?? info["dash"]["video"].array?.count
+                    ?? 0
+                let durl = data["result"]["durl"][0]["url"].string
+                    ?? data["data"]["durl"][0]["url"].string
+                    ?? info["durl"][0]["url"].string
+                    ?? ""
+                PlaybackLog.line("pgc ep \(ep) code=\(code) dash=\(dash) durl=\(durl.isEmpty ? 0 : 1) \(message)")
+                if code == -10403 || message.contains("地区") { return nil }
+                guard code == 0, let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codec, audioPreference: "高码率") else { continue }
                 return offer
+            } catch {
+                PlaybackLog.line("pgc ep \(ep) \(error.localizedDescription)")
             }
         }
         return nil
