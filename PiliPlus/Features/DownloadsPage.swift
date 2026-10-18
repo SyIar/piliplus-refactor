@@ -17,29 +17,41 @@ struct DownloadsPage: View {
                 ScrollViewReader { proxy in
                     List {
                         if !active.isEmpty {
-                            Section("正在下载") {
+                            Section {
                                 ForEach(active) { item in
                                     activeRow(item)
+                                        .id(item.id)
+                                        .listRowInsets(rowInsets)
                                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                             Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
                                         }
                                 }
+                            } header: {
+                                Text("正在下载 \(active.count)")
+                                    .font(.subheadline)
+                                    .textCase(nil)
                             }
                         }
-                        ForEach(groups, id: \.bvid) { group in
-                            Section(group.title) {
-                                ForEach(group.parts) { item in
-                                    Button { model.playOffline(item) } label: {
-                                        completedRow(item)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                        Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
-                                    }
+                        if !groups.isEmpty {
+                            Section {
+                                ForEach(groups, id: \.bvid) { group in
+                                    completedRow(group)
+                                        .listRowInsets(rowInsets)
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                            Button("删除", role: .destructive) {
+                                                for part in group.parts { model.downloads.cancel(part.id) }
+                                            }
+                                        }
                                 }
+                            } header: {
+                                Text("已缓存 \(groups.count)")
+                                    .font(.subheadline)
+                                    .textCase(nil)
                             }
                         }
                     }
+                    .listStyle(.plain)
+                    .environment(\.defaultMinListRowHeight, 44)
                     .onChange(of: model.downloads.mergeOffset) { _, value in
                         let anchor: UnitPoint = value % 2 == 0 ? .top : .bottom
                         if let id = active.first?.id ?? groups.first?.parts.first?.id {
@@ -56,6 +68,7 @@ struct DownloadsPage: View {
                 Text("已用 \(model.downloads.storageLabel)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .task {
@@ -64,62 +77,98 @@ struct DownloadsPage: View {
         }
     }
 
+    private var rowInsets: EdgeInsets {
+        EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 12)
+    }
+
     private func activeRow(_ item: OfflineItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-            Text("\(item.pageTitle) · \(item.quality) · \(item.codec)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if item.state == "merging" {
-                ProgressView()
-            } else {
-                ProgressView(value: item.fraction)
-            }
-            HStack {
-                Text(item.state == "failed" ? item.error : "\(item.label) · \(percent(item.fraction)) · \(bytes(item.bytesWritten))")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 10) {
+            cover(item)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(activeMeta(item))
+                    .font(.caption)
+                    .foregroundStyle(item.state == "failed" ? .red : .secondary)
                     .lineLimit(1)
-                Spacer(minLength: 8)
-                controls(item)
+                ProgressView(value: item.state == "queued" ? 0 : min(1, item.fraction))
+                    .progressViewStyle(.linear)
+                    .tint(Palette.bili)
             }
+            controls(item)
         }
-        .padding(.vertical, 4)
+    }
+
+    private func activeMeta(_ item: OfflineItem) -> String {
+        if item.state == "failed" { return item.error.isEmpty ? item.label : item.error }
+        let page = item.pageTitle.isEmpty ? "P\(item.page)" : item.pageTitle
+        return "\(item.label) · \(page) · \(item.quality) · \(percent(item.fraction)) · \(bytes(item.bytesWritten))"
     }
 
     @ViewBuilder
     private func controls(_ item: OfflineItem) -> some View {
         if item.state == "running" {
-            Button("暂停", systemImage: "pause.fill") { model.downloads.pause(item.id) }
-                .buttonStyle(.borderless)
-            Button("取消", systemImage: "xmark") { model.downloads.cancel(item.id) }
-                .buttonStyle(.borderless)
+            iconButton("pause.fill", "暂停") { model.downloads.pause(item.id) }
+            iconButton("xmark", "取消") { model.downloads.cancel(item.id) }
         } else if item.state == "paused" || item.state == "failed" {
-            Button(item.state == "paused" ? "继续" : "重试", systemImage: "play.fill") { model.downloads.resume(item.id) }
-                .buttonStyle(.borderless)
-            Button("取消", systemImage: "xmark") { model.downloads.cancel(item.id) }
-                .buttonStyle(.borderless)
+            iconButton("play.fill", item.state == "paused" ? "继续" : "重试") { model.downloads.resume(item.id) }
+            iconButton("xmark", "取消") { model.downloads.cancel(item.id) }
         } else if item.state == "queued" || item.state == "merging" {
-            Button("取消", systemImage: "xmark") { model.downloads.cancel(item.id) }
-                .buttonStyle(.borderless)
+            iconButton("xmark", "取消") { model.downloads.cancel(item.id) }
         }
     }
 
-    private func completedRow(_ item: OfflineItem) -> some View {
-        HStack(spacing: 12) {
+    private func iconButton(_ system: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.caption.weight(.semibold))
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private func completedRow(_ group: (bvid: String, title: String, parts: [OfflineItem])) -> some View {
+        if group.parts.count > 1 {
+            NavigationLink {
+                DownloadPartsPage(bvid: group.bvid)
+            } label: {
+                mediaRow(item: group.parts[0], title: group.title, meta: groupMeta(group.parts))
+            }
+        } else if let item = group.parts.first {
+            Button { model.playOffline(item) } label: {
+                mediaRow(item: item, title: item.title, meta: groupMeta(group.parts))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func mediaRow(item: OfflineItem, title: String, meta: String) -> some View {
+        HStack(alignment: .center, spacing: 10) {
             cover(item)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.pageTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text("\(item.quality) · \(item.codec) · \(bytes(item.bytesWritten))")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(meta)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Image(systemName: "play.circle")
-                .foregroundStyle(Palette.bili)
         }
+    }
+
+    private func groupMeta(_ parts: [OfflineItem]) -> String {
+        let quality = parts.first?.quality ?? ""
+        let size = parts.reduce(Int64(0)) { $0 + $1.bytesWritten }
+        return "\(parts.count) P · \(quality) · \(bytes(size))"
     }
 
     @ViewBuilder
@@ -129,12 +178,17 @@ struct DownloadsPage: View {
             Image(uiImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 96, height: 54)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: 112, height: 63)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Palette.bili.opacity(0.2))
-                .frame(width: 96, height: 54)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Palette.bili.opacity(0.16))
+                .frame(width: 112, height: 63)
+                .overlay {
+                    Image(systemName: "play.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Palette.bili)
+                }
         }
     }
 
@@ -144,6 +198,44 @@ struct DownloadsPage: View {
 
     private func bytes(_ value: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+}
+
+struct DownloadPartsPage: View {
+    @Environment(AppModel.self) private var model
+    let bvid: String
+
+    var body: some View {
+        let parts = model.downloads.completedGroups.first { $0.bvid == bvid }?.parts ?? []
+        List {
+            ForEach(parts) { item in
+                Button { model.playOffline(item) } label: {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.pageTitle.isEmpty ? "P\(item.page)" : item.pageTitle)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Text("\(item.quality) · \(ByteCountFormatter.string(fromByteCount: item.bytesWritten, countStyle: .file))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "play.fill")
+                            .font(.caption)
+                            .foregroundStyle(Palette.bili)
+                    }
+                }
+                .buttonStyle(.plain)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button("删除", role: .destructive) { model.downloads.cancel(item.id) }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .navigationTitle(parts.first?.title ?? "分P")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

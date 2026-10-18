@@ -348,6 +348,11 @@ final class DownloadCenter {
     var storageBytes: Int64 = 0
     /// Bumps while a merge is in flight so the downloads list scrolls on the main actor.
     var mergeOffset = 0
+    /// The first merge stays on screen long enough for the progress screenshot. Later parts only need a short hold.
+    private var mergePreviewHold: Duration = .seconds(6)
+    /// Only this part may publish `ready`. Earlier parts would end the simulator pass before the list fills.
+    private var revealProofID: String?
+    private var heldProof: (OfflineItem, MergeProbe)?
 
     var storageLabel: String {
         ByteCountFormatter.string(fromByteCount: storageBytes, countStyle: .file)
@@ -461,13 +466,14 @@ final class DownloadCenter {
 
     func prove(using model: AppModel) async {
         guard LaunchMode.screen == "downloads" else { return }
-        if let ready = items.last(where: { $0.state == "ready" && $0.danmakuCount > 0 }) {
+        let readyCount = items.filter { $0.state == "ready" }.count
+        if readyCount >= 3, let ready = items.last(where: { $0.state == "ready" && $0.danmakuCount > 0 }) {
             OfflineProof.downloads(ready)
             return
         }
         if model.feed.isEmpty { await model.loadRecommend(reset: true) }
         var details: [VideoItem] = []
-        for video in model.feed.prefix(8) where !video.bvid.isEmpty {
+        for video in model.feed.prefix(12) where !video.bvid.isEmpty {
             if let detail = try? await client.detail(bvid: video.bvid) { details.append(detail) }
         }
         let ranked = details.sorted { lhs, rhs in
@@ -478,18 +484,72 @@ final class DownloadCenter {
             if leftScore != rightScore { return leftScore < rightScore }
             return left < right
         }
-        for detail in ranked.prefix(4) {
-            let page = detail.pages.first ?? VideoPage(cid: detail.cid, index: 1, title: "P1", duration: detail.duration)
-            guard page.cid > 0 else { continue }
-            let seconds = page.duration > 0 ? page.duration : detail.duration
-            let quality = seconds > 75 ? "流畅 360P" : "高清 720P"
-            let id = Self.makeID(bvid: detail.bvid, cid: page.cid)
-            await run(DownloadJob(bvid: detail.bvid, pages: [page], quality: quality, codec: "avc1", limit: nil, cover: detail.cover), video: detail)
-            if let item = items.first(where: { $0.id == id }), item.state == "ready", item.danmakuCount > 0 {
-                return
+        var planned: [(video: VideoItem, pages: [VideoPage], quality: String)] = []
+        var partBudget = 4
+        var folded = false
+        for detail in ranked {
+            let pages = detail.pages.filter { $0.cid > 0 }
+            let first = pages.first ?? VideoPage(cid: detail.cid, index: 1, title: "P1", duration: detail.duration)
+            guard first.cid > 0 else { continue }
+            var chosen = [first]
+            if !folded, pages.count > 1, partBudget >= 2 {
+                chosen.append(pages[1])
+                folded = true
             }
+            guard chosen.count <= partBudget else { continue }
+            let seconds = chosen.map(\.duration).max() ?? detail.duration
+            let quality = seconds > 75 ? "流畅 360P" : "高清 720P"
+            planned.append((video: detail, pages: chosen, quality: quality))
+            partBudget -= chosen.count
+            if planned.count >= 3 || partBudget == 0 { break }
+        }
+        for plan in planned {
+            stage(plan.video, pages: plan.pages, quality: plan.quality)
+        }
+        guard let last = planned.last, let lastPage = last.pages.last, lastPage.cid > 0 else {
+            OfflineProof.downloads(items.last, error: items.last?.error ?? "没有下载到可播放的视频")
+            return
+        }
+        revealProofID = Self.makeID(bvid: last.video.bvid, cid: lastPage.cid)
+        for plan in planned {
+            await run(DownloadJob(bvid: plan.video.bvid, pages: plan.pages, quality: plan.quality, codec: "avc1", limit: nil, cover: plan.video.cover), video: plan.video)
+        }
+        if items.contains(where: { $0.id == revealProofID && $0.state == "ready" && $0.danmakuCount > 0 }) {
+            return
+        }
+        if let held = heldProof, held.0.danmakuCount > 0 {
+            OfflineProof.downloads(held.0, merge: held.1)
+            return
         }
         OfflineProof.downloads(items.last, error: items.last?.error ?? "没有下载到可播放的视频")
+    }
+
+    private func stage(_ video: VideoItem, pages: [VideoPage], quality: String) {
+        for page in pages where page.cid > 0 {
+            let id = Self.makeID(bvid: video.bvid, cid: page.cid)
+            if items.contains(where: { $0.id == id }) { continue }
+            items.append(OfflineItem(
+                id: id,
+                bvid: video.bvid,
+                aid: video.aid,
+                cid: page.cid,
+                page: page.index,
+                pageTitle: page.title.isEmpty ? "P\(page.index)" : page.title,
+                title: video.title,
+                owner: video.ownerName,
+                duration: page.duration > 0 ? page.duration : video.duration,
+                quality: quality,
+                qn: QualityMap.qn(for: quality),
+                codec: "avc1",
+                state: "queued",
+                fraction: 0,
+                bytesWritten: 0,
+                bytesExpected: 0,
+                danmakuCount: 0,
+                error: ""
+            ))
+        }
+        save()
     }
 
     func note(id: String, kind: String, written: Int64, expected: Int64) {
@@ -707,7 +767,9 @@ final class DownloadCenter {
         publish(done)
         // Stay on this row long enough for the simulator screenshot to land
         // before the row moves into the completed section.
-        try? await Task.sleep(for: .seconds(6))
+        let hold = mergePreviewHold
+        mergePreviewHold = .seconds(1)
+        try? await Task.sleep(for: hold)
         let movie = OfflineFiles.movie(done)
         let videoFile = OfflineFiles.video(done)
         let audioFile = OfflineFiles.audio(done)
@@ -770,6 +832,10 @@ final class DownloadCenter {
     }
 
     private func publish(_ item: OfflineItem, merge: MergeProbe? = nil) {
+        if item.state == "ready", item.id != revealProofID {
+            if let merge, item.danmakuCount > 0 { heldProof = (item, merge) }
+            return
+        }
         OfflineProof.downloads(item, merge: merge)
     }
 
