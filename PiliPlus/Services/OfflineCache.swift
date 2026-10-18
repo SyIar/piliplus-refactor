@@ -481,46 +481,18 @@ final class DownloadCenter {
         DownloadBridge.shared.startInProcess(id: id, kind: kind, url: remote, headers: pair.headers)
     }
 
-    /// AVFoundation cannot open a Bilibili fragmented `.m4s` (-11828). Rebuild a progressive movie and only then mark it ready.
-    private func remux(video: URL, audio: URL?, to movie: URL) async -> Bool {
+    /// AVFoundation cannot open a Bilibili fragmented `.m4s` (-11828). Rebuild a progressive movie on this actor; a detached task never started on the simulator.
+    private func remux(video: URL, audio: URL?, to movie: URL) -> Bool {
+        print("offline remux begin \(video.lastPathComponent)")
         do {
-            try await Task.detached(priority: .userInitiated) {
-                try FragmentRemux.writeMovie(video: video, audio: audio, to: movie)
-            }.value
+            try FragmentRemux.writeMovie(video: video, audio: audio, to: movie)
         } catch {
-            let ns = error as NSError
-            print("offline remux \(ns.domain) \(ns.code) \(ns.localizedDescription)")
+            print("offline remux \(error.localizedDescription)")
             return false
         }
-        return await opens(movie)
-    }
-
-    private func opens(_ url: URL) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await self.inspect(url) }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(12))
-                return false
-            }
-            let opened = await group.next() ?? false
-            group.cancelAll()
-            return opened
-        }
-    }
-
-    private func inspect(_ url: URL) async -> Bool {
-        let asset = AVURLAsset(url: url)
-        do {
-            let playable = try await asset.load(.isPlayable)
-            let duration = try await asset.load(.duration)
-            let tracks = try await asset.loadTracks(withMediaType: .video)
-            print("offline open playable=\(playable) seconds=\(duration.seconds) tracks=\(tracks.count)")
-            return duration.seconds > 0.5 && !tracks.isEmpty
-        } catch {
-            let ns = error as NSError
-            print("offline open \(ns.domain) \(ns.code) \(ns.localizedDescription)")
-            return false
-        }
+        let size = (try? movie.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        print("offline remux wrote \(size)")
+        return size > 10_000
     }
 
     private func mergeFailed(id: String, message: String) {
@@ -665,13 +637,14 @@ final class DownloadCenter {
         done.fraction = 1
         replace(done)
         publish(done)
+        try? await Task.sleep(for: .seconds(2))
         let movie = OfflineFiles.movie(done)
         let videoFile = OfflineFiles.video(done)
         let audioFile = OfflineFiles.audio(done)
-        var merged = await remux(video: videoFile, audio: audioFile, to: movie)
+        var merged = remux(video: videoFile, audio: audioFile, to: movie)
         if !merged {
             print("offline remux drop audio")
-            merged = await remux(video: videoFile, audio: nil, to: movie)
+            merged = remux(video: videoFile, audio: nil, to: movie)
         }
         guard merged else {
             mergeFailed(id: id, message: "合成文件无法播放")
