@@ -1155,7 +1155,7 @@ sys.exit(0 if ok else 1)
 
 capture_detail() {
   local screen="$1"
-  local dir proof line title="" owner="" collection="" related="" ready=0
+  local dir proof line title="" owner="" collection="" related="" covers="" ready=0
   dir="$(container)"
   proof="$dir/Documents/detail-proof.json"
   rm -f "$proof" "$OUT/screenshots/${screen}.png"
@@ -1171,12 +1171,15 @@ def cell(value):
     text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
     return text or "-"
 d=json.load(open(sys.argv[1]))
-keys=["title","owner","collection","related"]
+keys=["title","owner","collection","related","covers"]
 print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
       if [[ -n "$line" ]]; then
-        IFS=$'\t' read -r title owner collection related <<< "$line"
-        echo "detail screen=$screen title=$title owner=$owner collection=$collection related=$related"
-        if [[ "$title" != "-" && "$owner" != "-" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$related"; then
+        IFS=$'\t' read -r title owner collection related covers <<< "$line"
+        echo "detail screen=$screen title=$title owner=$owner collection=$collection related=$related covers=$covers"
+        if [[ "$title" != "-" && "$owner" != "-" ]] && python3 -c 'import sys
+related = int(float(sys.argv[1])); covers = int(float(sys.argv[2]))
+need = related if related < 4 else 4
+sys.exit(0 if related >= 1 and covers >= need else 1)' "$related" "$covers"; then
           ready=1
           break
         fi

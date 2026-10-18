@@ -426,14 +426,15 @@ struct RelatedVideoRow: View {
 }
 
 enum DetailProof {
-    static func record(title: String, owner: String, collection: String, related: Int) {
+    static func record(title: String, owner: String, collection: String, related: Int, covers: Int) {
         guard LaunchMode.screen == "detail" || LaunchMode.screen == "detail-dark" else { return }
         let body: [String: Any] = [
             "screen": LaunchMode.screen ?? "",
             "title": title,
             "owner": owner,
             "collection": collection,
-            "related": related
+            "related": related,
+            "covers": covers
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
         try? data.write(to: LaunchClock.documents.appendingPathComponent("detail-proof.json"), options: .atomic)

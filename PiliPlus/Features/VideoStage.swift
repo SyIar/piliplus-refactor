@@ -636,6 +636,7 @@ struct VideoStage: View {
         subtitles = await subs
         let nextRelated = (try? await rel) ?? []
         await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
+        let covers = ImageStore.preparedCount
         related = nextRelated
         related.forEach(model.store)
         if let video {
@@ -643,7 +644,8 @@ struct VideoStage: View {
                 title: video.title,
                 owner: video.ownerName,
                 collection: video.collectionTitle.isEmpty ? model.seasonTitle : video.collectionTitle,
-                related: related.count
+                related: related.count,
+                covers: covers
             )
         }
         await loadDecorations(bvid: bvid, cid: cid)
