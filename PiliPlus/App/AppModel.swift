@@ -351,31 +351,38 @@ final class AppModel {
             liveHasMore = rooms.count >= 8
         }
         let deadline = Date().addingTimeInterval(100)
-        var attempts = 0
-        var quietest: (room: LiveRoom, offer: LiveOffer, count: Int)?
-        for room in rooms where attempts < 5 {
-            if Date() >= deadline { break }
-            attempts += 1
+        var best: (room: LiveRoom, offer: LiveOffer, count: Int)?
+        var seen: Set<Int> = []
+        func consider(_ room: LiveRoom) async -> Bool {
+            if Date() >= deadline || seen.contains(room.id) { return false }
             guard let offer = try? await client.livePlay(room: room.id, qn: 10_000),
                   offer.protocolName == "hls",
                   URL(string: offer.url) != nil,
-                  let info = try? await client.liveDanmuInfo(room: room.id) else { continue }
-            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 8)
+                  let info = try? await client.liveDanmuInfo(room: room.id) else { return false }
+            seen.insert(room.id)
+            let count = await LiveSocket.sample(room: room.id, token: info.token, hosts: info.hosts, seconds: 6)
             print("live probe \(room.id) online \(room.online) danmu \(count)")
-            let previous = quietest?.count ?? -1
-            if count > previous {
-                quietest = (room, offer, count)
+            if count > (best?.count ?? -1) {
+                best = (room, offer, count)
             }
-            guard count >= 4 else { continue }
-            liveOffers[room.id] = offer
-            print("live open \(room.id) online \(room.online) probe \(count) \(offer.selectedName)")
-            open(.live(room.id))
-            return
+            return true
         }
-        if let quietest {
-            liveOffers[quietest.room.id] = quietest.offer
-            print("live open \(quietest.room.id) online \(quietest.room.online) probe \(quietest.count) quiet")
-            open(.live(quietest.room.id))
+        var taken = 0
+        for room in rooms {
+            if taken >= 4 || Date() >= deadline { break }
+            if await consider(room) { taken += 1 }
+        }
+        if (best?.count ?? 0) == 0 {
+            var extra = 0
+            for room in rooms where !seen.contains(room.id) {
+                if extra >= 2 || Date() >= deadline { break }
+                if await consider(room) { extra += 1 }
+            }
+        }
+        if let best {
+            liveOffers[best.room.id] = best.offer
+            print("live open \(best.room.id) online \(best.room.online) probe \(best.count) \(best.offer.selectedName)")
+            open(.live(best.room.id))
             return
         }
         if let first = rooms.first { open(.live(first.id)) }
