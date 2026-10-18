@@ -241,7 +241,8 @@ struct RecentVideoPage: View {
                 .listStyle(.plain)
             }
         }
-        .navigationTitle(owner.isEmpty ? kind : owner)
+        .navigationTitle(kind)
+        .navigationSubtitle(owner)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
@@ -259,6 +260,7 @@ struct RecentVideoPage: View {
             AccountManageUIProof.record([
                 "state": ready ? "rows" : "empty",
                 "rows": rows.count,
+                "title": kind,
                 "name": owner,
                 "titles": rows.prefix(6).map(\.title),
                 "bvids": rows.prefix(6).map(\.bvid),

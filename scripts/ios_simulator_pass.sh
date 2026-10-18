@@ -1788,9 +1788,9 @@ fixture = any("液态玻璃" in item or "fixture" in item.lower() for item in ti
 def rows_ok(minimum):
     return state == "rows" and rows >= minimum and not fixture and not err
 if screen == "acct-likes":
-    ok = rows_ok(8) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1
+    ok = rows_ok(8) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1 and data.get("title") == "最近点赞"
 elif screen == "acct-coins":
-    ok = rows_ok(1) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1
+    ok = rows_ok(1) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1 and data.get("title") == "最近投币"
 elif screen == "acct-articles":
     ok = rows_ok(1) and len(titles) >= 1
 elif screen in ("acct-charge", "acct-guards"):
@@ -1799,7 +1799,7 @@ elif screen == "acct-search":
     total = int(data.get("total") or 0)
     ok = rows_ok(1) and str(data.get("query") or "") != "" and rows < total and len(titles) >= 1
 elif screen == "acct-fans":
-    ok = (rows_ok(1) and len(names) >= 1) or (state == "error" and rows == 0 and err != "" and not fixture)
+    ok = rows_ok(1) and len(names) >= 1 and all(name.strip() for name in names)
 elif screen == "acct-shop":
     ok = state == "login" and rows == 0
 elif screen == "acct-comics":

@@ -2757,13 +2757,42 @@ struct BiliClient: Sendable {
         query: [String: String] = [:],
         host: String = "https://api.bilibili.com",
         referer: String = "https://www.bilibili.com",
-        signed: Bool = false
+        signed: Bool = false,
+        suppressCookie: Bool = false
     ) async throws -> JSON {
         try await withGuest {
-            let data = try await requestQuery(path, params: query, signed: signed, referer: referer, host: host)
+            let data = try await requestQuery(
+                path,
+                params: query,
+                signed: signed,
+                referer: referer,
+                host: host,
+                suppressCookie: suppressCookie
+            )
             let code = data["code"].int ?? -1
             if code == -352 || code == 412 { throw BiliError.risk(code) }
             return data
+        }
+    }
+
+    /// Android-signed GET. A -352 stays in the payload so the caller can try another path.
+    func appAccountGET(
+        _ path: String,
+        query: [String: String],
+        host: String = "https://api.bilibili.com",
+        referer: String = "https://www.bilibili.com"
+    ) async throws -> JSON {
+        let signed = AppSign.sign(query)
+        let body = signed.keys.sorted().map { key in
+            let value = signed[key, default: ""]
+            if value.isEmpty { return PercentEncoding.encodeURIComponent(key) }
+            return "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(value))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "\(host)\(path)?\(body)") else {
+            throw BiliError.message("地址无效")
+        }
+        return try await withGuest {
+            try await getJSON(url, referer: referer, userAgent: Self.appLiveAgent)
         }
     }
 }

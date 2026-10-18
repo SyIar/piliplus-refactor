@@ -332,11 +332,63 @@ enum AccountReads {
 extension BiliClient {
     func relationFans(mid: Int) async throws -> [RelationPerson] {
         let form = AccountManageRequest.fans(mid: mid, page: 1)
-        let data = try await accountGET(form.path, query: form.fields, referer: "https://space.bilibili.com/\(mid)", signed: true)
-        guard data["code"].int == 0 else {
-            throw BiliError.message(data["message"].string ?? "粉丝列表不可用")
+        let referer = "https://space.bilibili.com/\(mid)/fans/fans"
+        var web = form.fields
+        web["order"] = "desc"
+        web["order_type"] = "attention"
+        web["gaia_source"] = "main_web"
+        web["web_location"] = "333.999"
+        var last = "粉丝列表不可用"
+        for suppressCookie in [false, true] {
+            do {
+                let data = try await accountGET(
+                    form.path,
+                    query: web,
+                    referer: referer,
+                    signed: true,
+                    suppressCookie: suppressCookie
+                )
+                if let rows = Self.fans(in: data) {
+                    print("fans web cookie=\(!suppressCookie) rows=\(rows.count)")
+                    return rows
+                }
+                last = data["message"].string ?? last
+                print("fans web cookie=\(!suppressCookie) code=\(data["code"].int ?? -1) \(last)")
+            } catch {
+                last = error.localizedDescription
+                print("fans web cookie=\(!suppressCookie) \(last)")
+            }
         }
-        return AccountReads.people(data)
+        let appQuery = [
+            "vmid": "\(mid)",
+            "pn": "1",
+            "ps": "20",
+            "order": "desc",
+            "build": "8430300",
+            "mobi_app": "android",
+            "platform": "android"
+        ]
+        for path in ["/x/relation/fans", "/x/relation/followers"] {
+            do {
+                let data = try await appAccountGET(path, query: appQuery, referer: "https://www.bilibili.com")
+                if let rows = Self.fans(in: data) {
+                    print("fans app \(path) rows=\(rows.count)")
+                    return rows
+                }
+                last = data["message"].string ?? last
+                print("fans app \(path) code=\(data["code"].int ?? -1) \(last)")
+            } catch {
+                last = error.localizedDescription
+                print("fans app \(path) \(last)")
+            }
+        }
+        throw BiliError.message(last)
+    }
+
+    private static func fans(in data: JSON) -> [RelationPerson]? {
+        guard data["code"].int == 0 else { return nil }
+        let rows = AccountReads.people(data)
+        return rows.isEmpty ? nil : rows
     }
 
     func recentLikes(mid: Int) async throws -> [VideoItem] {
