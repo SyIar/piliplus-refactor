@@ -1652,7 +1652,7 @@ capture_library_ui() {
     --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
     "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   local tries=90
-  if [[ "$screen" == "lib-history" ]]; then tries=180; fi
+  if [[ "$screen" == "lib-history" || "$screen" == "lib-later" ]]; then tries=180; fi
   for _ in $(seq 1 "$tries"); do
     if [[ -f "$proof" ]]; then
       found=1

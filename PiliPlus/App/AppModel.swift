@@ -1930,20 +1930,35 @@ final class AppModel {
         return played
     }
 
+    /// Recommended cards often omit `aid`. Load the archive so the local queue has a real title, cover, and uploader.
     private func queueRealVideos(count: Int) async -> [VideoItem] {
         var queued: [VideoItem] = []
         var seen: Set<String> = []
-        for page in 1...3 {
-            if queued.count >= count { break }
+        let deadline = Date().addingTimeInterval(60)
+        for page in 1...4 {
+            if queued.count >= count || Date() >= deadline { break }
             let seeds = (try? await client.recommend(idx: page)) ?? []
+            if seeds.isEmpty { print("library later empty recommend page \(page)") }
             for item in seeds {
-                if queued.count >= count { break }
-                guard item.aid > 0, !item.title.isEmpty, !item.cover.isEmpty, !item.bvid.isEmpty else { continue }
+                if queued.count >= count || Date() >= deadline { break }
+                guard !item.bvid.isEmpty else { continue }
                 guard seen.insert(item.bvid).inserted, !LocalLibrary.isFixture(item) else { continue }
-                store(item)
-                queueLocalLater(item, quiet: true)
-                if let saved = laterVideos.first(where: { $0.bvid == item.bvid }) {
+                guard let detail = try? await client.detail(bvid: item.bvid),
+                      detail.aid > 0,
+                      !detail.title.isEmpty,
+                      !detail.cover.isEmpty,
+                      !LocalLibrary.isFixture(detail) else {
+                    print("library later skip \(item.bvid)")
+                    continue
+                }
+                var copy = detail
+                copy.playURL = nil
+                copy.audioURL = nil
+                store(copy)
+                queueLocalLater(copy, quiet: true)
+                if let saved = laterVideos.first(where: { $0.bvid == copy.bvid }) {
                     queued.append(saved)
+                    print("library later queued \(saved.bvid) \(saved.title)")
                 }
             }
         }
