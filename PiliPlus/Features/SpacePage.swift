@@ -23,14 +23,27 @@ struct SpacePage: View {
     @State private var seasonPage = 1
     @State private var seasonHasMore = true
     @State private var series: [SpaceSeries] = []
+    @State private var videoQuery = ""
+    @State private var articles: [ArticleCard] = []
+    @State private var charge: [RankPerson] = []
+    @State private var guards: [RankPerson] = []
+    @State private var shopNote = ""
+    @State private var comicNote = ""
+    @State private var articleNote = ""
 
-    private static let tabs = ["投稿", "动态", "收藏", "追番", "合集"]
+    private static let tabs = ["投稿", "动态", "收藏", "追番", "合集", "专栏", "小店", "漫画", "充电", "大航海"]
     private static var initialTab: String {
         switch LaunchMode.screen {
         case "space-dynamic": return "动态"
         case "space-fav": return "收藏"
         case "space-bangumi": return "追番"
         case "space-series": return "合集"
+        case "acct-articles": return "专栏"
+        case "acct-shop": return "小店"
+        case "acct-comics": return "漫画"
+        case "acct-charge": return "充电"
+        case "acct-guards": return "大航海"
+        case "acct-search": return "投稿"
         default: return "投稿"
         }
     }
@@ -39,6 +52,8 @@ struct SpacePage: View {
         List {
             if let profile {
                 Section { header(profile) }
+            }
+            if profile != nil || LaunchMode.screen?.hasPrefix("acct-") == true {
                 Section { controls }
                 Section { tabBody }
             } else if !failure.isEmpty {
@@ -112,13 +127,27 @@ struct SpacePage: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var videoQueryBinding: Binding<String> {
+        Binding(get: { videoQuery }, set: { videoQuery = $0 })
+    }
+
     private var controls: some View {
         VStack(spacing: 10) {
-            Picker("栏目", selection: $tab) {
-                ForEach(Self.tabs, id: \.self) { Text($0).tag($0) }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Self.tabs, id: \.self) { name in
+                        Button(name) { tab = name }
+                            .font(.subheadline.weight(tab == name ? .bold : .medium))
+                            .foregroundStyle(tab == name ? Color.white : .primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(tab == name ? Palette.bili : Color(.tertiarySystemFill), in: Capsule())
+                    }
+                }
             }
-            .pickerStyle(.segmented)
             if tab == "投稿" {
+                LibrarySearchField(text: videoQueryBinding, prompt: "搜索投稿")
+                    .onSubmit { Task { await loadVideos(reset: true) } }
                 Picker("排序", selection: $orderTitle) {
                     Text("最新").tag("最新")
                     Text("最热").tag("最热")
@@ -171,6 +200,31 @@ struct SpacePage: View {
             if series.isEmpty { empty("没有合集") }
             ForEach(series) { item in
                 seriesRow(item)
+            }
+        case "专栏":
+            if articles.isEmpty { empty(articleNote.isEmpty ? "没有专栏" : articleNote) }
+            ForEach(articles) { article in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(article.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
+                    if !article.summary.isEmpty {
+                        Text(article.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        case "小店":
+            ShopTabNote(message: shopNote.isEmpty ? "正在加载" : shopNote)
+        case "漫画":
+            ComicTabNote(message: comicNote.isEmpty ? "正在加载" : comicNote)
+        case "充电":
+            if charge.isEmpty { empty("没有充电榜") }
+            ForEach(charge) { person in
+                rankRow(person)
+            }
+        case "大航海":
+            if guards.isEmpty { empty("还没有大航海") }
+            ForEach(guards) { person in
+                rankRow(person)
             }
         default:
             if videos.isEmpty { empty("没有投稿") }
@@ -297,7 +351,26 @@ struct SpacePage: View {
         } catch {
             loading = false
             failure = error.localizedDescription
-            record(count: 0, title: "", error: failure)
+            if LaunchMode.screen?.hasPrefix("acct-") == true {
+                await reload(reset: true)
+            } else {
+                record(count: 0, title: "", error: failure)
+            }
+        }
+    }
+
+    private func rankRow(_ person: RankPerson) -> some View {
+        HStack(spacing: 12) {
+            Text("\(person.rank)")
+                .font(.subheadline.weight(.semibold))
+                .frame(width: 28, alignment: .leading)
+            RemoteImage(url: person.face, ratio: 1, maxPixel: 120)
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+            Text(person.name)
+                .font(.subheadline)
+                .lineLimit(1)
+                .layoutPriority(1)
         }
     }
 
@@ -307,6 +380,11 @@ struct SpacePage: View {
         case "收藏": await loadFolders()
         case "追番": await loadBangumi(reset: reset)
         case "合集": await loadSeries()
+        case "专栏": await loadArticles()
+        case "小店": await loadShop()
+        case "漫画": await loadComics()
+        case "充电": await loadCharge()
+        case "大航海": await loadGuards()
         default: await loadVideos(reset: reset)
         }
     }
@@ -321,7 +399,31 @@ struct SpacePage: View {
         defer { loading = false }
         let fetching = videoPage
         do {
-            let page = try await model.client.spaceVideos(mid: mid, page: fetching, order: SpaceRequest.videoOrder(for: orderTitle))
+            var page = try await model.client.spaceVideos(mid: mid, page: fetching, order: SpaceRequest.videoOrder(for: orderTitle), keyword: videoQuery)
+            if LaunchMode.screen == "acct-search", videoQuery.isEmpty, reset, !page.items.isEmpty {
+                let unfiltered = page.total
+                let token = Self.searchToken(in: page.items)
+                if !token.isEmpty {
+                    videoQuery = token
+                    page = try await model.client.spaceVideos(mid: mid, page: 1, order: SpaceRequest.videoOrder(for: orderTitle), keyword: token)
+                    videos = page.items
+                    videoHasMore = false
+                    await ImageStore.shared.prepare(urls: page.items.prefix(6).map(\.cover), maxPixel: 320)
+                    let shown = page.items.count
+                    let ready = shown >= 1 && shown < unfiltered && page.items.allSatisfy(AccountReads.realVideo)
+                    AccountManageUIProof.record([
+                        "state": ready ? "rows" : "empty",
+                        "query": token,
+                        "rows": shown,
+                        "total": unfiltered,
+                        "titles": page.items.prefix(4).map(\.title),
+                        "bvids": page.items.prefix(4).map(\.bvid),
+                        "covers": ImageStore.preparedCount,
+                        "error": ready ? "" : "投稿搜索没有筛出结果"
+                    ])
+                    return
+                }
+            }
             if reset {
                 videos = page.items
             } else {
@@ -414,6 +516,98 @@ struct SpacePage: View {
         } catch {
             record(count: 0, title: "", error: error.localizedDescription)
         }
+    }
+
+    private func loadArticles() async {
+        do {
+            let rows = try await model.client.spaceArticles(mid: mid)
+            articles = rows
+            articleNote = rows.isEmpty ? "没有专栏" : ""
+            await ImageStore.shared.prepare(urls: rows.prefix(4).map(\.cover), maxPixel: 240)
+            AccountManageUIProof.record([
+                "state": rows.isEmpty ? "empty" : "rows",
+                "rows": rows.count,
+                "titles": rows.prefix(4).map(\.title),
+                "covers": ImageStore.preparedCount,
+                "error": rows.isEmpty ? "没有专栏" : ""
+            ])
+        } catch {
+            articleNote = error.localizedDescription
+            AccountManageUIProof.record(["state": "error", "rows": 0, "error": articleNote])
+        }
+    }
+
+    private func loadShop() async {
+        shopNote = await model.client.spaceShopState(mid: mid)
+        let login = shopNote == "login"
+        AccountManageUIProof.record([
+            "state": login ? "login" : "empty",
+            "rows": 0,
+            "note": shopNote,
+            "error": ""
+        ])
+    }
+
+    private func loadComics() async {
+        comicNote = await model.client.spaceComicNote(mid: mid)
+        AccountManageUIProof.record([
+            "state": "empty",
+            "rows": 0,
+            "note": comicNote,
+            "error": ""
+        ])
+    }
+
+    private func loadCharge() async {
+        do {
+            let rows = try await model.client.chargeRank(mid: mid)
+            charge = rows
+            await ImageStore.shared.prepare(urls: rows.prefix(6).map(\.face), maxPixel: 120)
+            AccountManageUIProof.record([
+                "state": rows.isEmpty ? "empty" : "rows",
+                "rows": rows.count,
+                "names": rows.prefix(6).map(\.name),
+                "covers": ImageStore.preparedCount,
+                "error": rows.isEmpty ? "没有充电榜" : ""
+            ])
+        } catch {
+            AccountManageUIProof.record(["state": "error", "rows": 0, "error": error.localizedDescription])
+        }
+    }
+
+    private func loadGuards() async {
+        let room = await model.client.roomID(mid: mid)
+        guard room > 0 else {
+            AccountManageUIProof.record(["state": "empty", "rows": 0, "error": "没有直播间"])
+            return
+        }
+        do {
+            let rows = try await model.client.guardRank(room: room, uid: mid)
+            guards = rows
+            await ImageStore.shared.prepare(urls: rows.prefix(6).map(\.face), maxPixel: 120)
+            AccountManageUIProof.record([
+                "state": rows.isEmpty ? "empty" : "rows",
+                "rows": rows.count,
+                "names": rows.prefix(6).map(\.name),
+                "name": profile?.name ?? name,
+                "covers": ImageStore.preparedCount,
+                "error": rows.isEmpty ? "还没有大航海" : ""
+            ])
+        } catch {
+            AccountManageUIProof.record(["state": "error", "rows": 0, "error": error.localizedDescription])
+        }
+    }
+
+    private static func searchToken(in videos: [VideoItem]) -> String {
+        for video in videos {
+            let pieces = video.title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            for piece in pieces where piece.count >= 2 {
+                let token = String(piece.prefix(2))
+                let hits = videos.filter { $0.title.localizedCaseInsensitiveContains(token) }
+                if hits.count >= 1, hits.count < videos.count { return token }
+            }
+        }
+        return ""
     }
 
     private func record(count: Int, title: String, error: String, raw: Int? = nil, source: String? = nil, empty: String? = nil) {
