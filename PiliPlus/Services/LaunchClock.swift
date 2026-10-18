@@ -133,7 +133,7 @@ enum LaunchMode {
 
     static var accountPreview: Bool {
         switch screen {
-        case "history", "later", "fav", "favsheet": return true
+        case "history", "later", "fav", "favsheet", "lib-history", "lib-later": return true
         default: return false
         }
     }
@@ -154,6 +154,7 @@ enum LaunchMode {
         if screen == "dynProof" || screen?.hasPrefix("dyn-") == true { return false }
         if screen?.hasPrefix("set-") == true { return false }
         if screen == "hotProof" || screen?.hasPrefix("hot-") == true { return false }
+        if screen == "libProof" || screen?.hasPrefix("lib-") == true { return false }
         if screen == "chapters" || screen == "scrub" || screen == "sleep" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup

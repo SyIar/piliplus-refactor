@@ -121,6 +121,13 @@ final class AppModel {
     var laterVideos: [VideoItem] = []
     var loadingLater = false
     var searchHistory: [String] = []
+    var libraryQuery = ""
+    var libraryOrder = "最近收藏"
+    var libraryEditing = false
+    var libraryPicked: Set<String> = []
+    var followedBangumi: [SeasonItem] = []
+    var followedDrama: [SeasonItem] = []
+    var followedSeries: [SeasonItem] = []
     var favFolders: [FavFolder] = []
     var folderVideos: [Int: [VideoItem]] = [:]
     var folderPage: [Int: Int] = [:]
@@ -1675,12 +1682,18 @@ final class AppModel {
         }
     }
 
-    func loadFolder(_ id: Int, reset: Bool) async {
-        if LaunchMode.accountPreview || !loggedIn { return }
+    func loadFolder(_ id: Int, reset: Bool, keyword: String = "", order: String = "") async {
+        let guestFolder = LaunchMode.screen == "lib-fav"
+        if (LaunchMode.accountPreview || !loggedIn) && !guestFolder { return }
         if !reset, folderHasMore[id] == false { return }
         let next = reset ? 1 : (folderPage[id] ?? 0) + 1
         do {
-            let page = try await client.folderVideos(mediaID: id, page: next)
+            let page: (items: [VideoItem], hasMore: Bool)
+            if keyword.isEmpty && (order.isEmpty || order == "最近收藏") {
+                page = try await client.folderVideos(mediaID: id, page: next)
+            } else {
+                page = try await client.folderVideos(mediaID: id, page: next, keyword: keyword, order: order)
+            }
             if reset || folderVideos[id] == nil {
                 folderVideos[id] = page.items
             } else {
@@ -1694,6 +1707,150 @@ final class AppModel {
         } catch {
             if reset { show(error.localizedDescription) }
         }
+    }
+
+    func deleteFavoriteItems(_ videos: [VideoItem], mediaID: Int) async {
+        let aids = videos.map(\.aid).filter { $0 > 0 }
+        guard !aids.isEmpty else { return }
+        guard loggedIn, let csrf = session?.csrf, !csrf.isEmpty else {
+            show("请先登录后再删除")
+            return
+        }
+        do {
+            try await client.submit(LibraryRequest.batchUnfavorite(mediaID: mediaID, aids: aids, csrf: csrf))
+            let gone = Set(videos.map(\.bvid))
+            folderVideos[mediaID]?.removeAll { gone.contains($0.bvid) }
+            show("已删除")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func filtered(_ videos: [VideoItem]) -> [VideoItem] {
+        let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return videos }
+        return videos.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.ownerName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    func filteredShows(_ items: [SeasonItem]) -> [SeasonItem] {
+        let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return items }
+        return items.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    func prepareLibraryShot(_ screen: String) async {
+        loggedIn = false
+        libraryEditing = false
+        libraryOrder = "最近收藏"
+        libraryQuery = ""
+        switch screen {
+        case "lib-history":
+            applyFixtures()
+            libraryQuery = "玻璃"
+            let shown = history.filter { $0.title.localizedCaseInsensitiveContains("玻璃") || $0.ownerName.localizedCaseInsensitiveContains("玻璃") }
+            LibraryUIProof.record([
+                "query": libraryQuery,
+                "total": history.count,
+                "shown": shown.count,
+                "error": shown.count >= 1 && shown.count < history.count ? "" : "搜索没有筛出观看记录"
+            ])
+            open(.feature("观看记录"))
+        case "lib-later":
+            applyFixtures()
+            libraryQuery = "稍后再看"
+            let shown = laterVideos.filter { $0.title.localizedCaseInsensitiveContains("稍后再看") || $0.ownerName.localizedCaseInsensitiveContains("稍后再看") }
+            LibraryUIProof.record([
+                "query": libraryQuery,
+                "total": laterVideos.count,
+                "shown": shown.count,
+                "error": shown.count >= 1 && shown.count < laterVideos.count ? "" : "搜索没有筛出稍后再看"
+            ])
+            open(.feature("稍后再看"))
+        case "lib-fav":
+            await prepareFavoriteShot()
+        case "lib-sub":
+            await prepareSubscriptionShot()
+        default:
+            LibraryUIProof.record(["error": "未知页面"])
+        }
+    }
+
+    private func prepareFavoriteShot() async {
+        do {
+            let folders = try await client.folders(mid: 8_047_632, rid: nil)
+            guard let folder = folders.max(by: { $0.count < $1.count }) else {
+                LibraryUIProof.record(["query": "", "rows": 0, "error": "没有公开收藏夹"])
+                open(.feature("我的收藏"))
+                return
+            }
+            let seed = try await client.folderVideos(mediaID: folder.id, page: 1)
+            let token = Self.libraryToken(seed.items.first?.title ?? "")
+            guard !token.isEmpty else {
+                LibraryUIProof.record(["query": "", "rows": 0, "error": "收藏夹没有标题"])
+                return
+            }
+            favFolders = [folder]
+            libraryQuery = token
+            libraryOrder = "最多播放"
+            libraryEditing = true
+            let filtered = try await client.folderVideos(mediaID: folder.id, page: 1, keyword: token, order: libraryOrder)
+            folderVideos[folder.id] = filtered.items
+            folderPage[folder.id] = 1
+            folderHasMore[folder.id] = filtered.hasMore
+            libraryPicked = Set(filtered.items.prefix(1).map(\.bvid))
+            await ImageStore.shared.prepare(urls: filtered.items.prefix(6).map(\.cover), maxPixel: 320)
+            LibraryUIProof.record([
+                "query": token,
+                "order": libraryOrder,
+                "folder": folder.title,
+                "rows": filtered.items.count,
+                "selected": libraryPicked.count,
+                "editing": true,
+                "covers": ImageStore.preparedCount,
+                "error": filtered.items.isEmpty ? "关键词没有命中收藏" : ""
+            ])
+            open(.folder(folder.id))
+        } catch {
+            LibraryUIProof.record(["query": libraryQuery, "rows": 0, "error": error.localizedDescription])
+            open(.feature("我的收藏"))
+        }
+    }
+
+    private func prepareSubscriptionShot() async {
+        let mid = 8_047_632
+        do {
+            async let bangumi = client.followedShows(vmid: mid, type: 1, page: 1)
+            async let drama = client.followedShows(vmid: mid, type: 2, page: 1)
+            async let series = client.collections(mid: mid)
+            let shows = try await bangumi
+            let serials = try await drama
+            let seasons = try await series
+            followedBangumi = shows
+            followedDrama = serials
+            followedSeries = seasons
+            let covers = (shows + serials + seasons).prefix(8).map(\.cover)
+            await ImageStore.shared.prepare(urls: covers, maxPixel: 240)
+            let listed = shows.count + serials.count
+            LibraryUIProof.record([
+                "bangumi": shows.count,
+                "drama": serials.count,
+                "series": seasons.count,
+                "covers": ImageStore.preparedCount,
+                "error": listed >= 1 && seasons.count >= 1 ? "" : "订阅列表不完整"
+            ])
+            open(.feature("我的订阅"))
+        } catch {
+            LibraryUIProof.record(["bangumi": 0, "drama": 0, "series": 0, "covers": 0, "error": error.localizedDescription])
+            open(.feature("我的订阅"))
+        }
+    }
+
+    private static func libraryToken(_ title: String) -> String {
+        let pieces = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard let chunk = pieces.first(where: { $0.count >= 2 }) else { return "" }
+        return String(chunk.prefix(2))
     }
 
     private func csrf(for action: String) -> String? {

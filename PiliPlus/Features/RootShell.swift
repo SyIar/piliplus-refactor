@@ -88,6 +88,9 @@ struct RootShell: View {
         if LaunchMode.screen == "hotProof" {
             HotRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "libProof" {
+            LibraryRequestProof.writeAndExit()
+        }
         if LaunchMode.screen == "dyn-compose" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -121,6 +124,11 @@ struct RootShell: View {
         if LaunchMode.screen == "hot-weekly" || LaunchMode.screen == "hot-precious" {
             await LaunchClock.waitForFirstFrame()
             model.open(.feature(LaunchMode.screen == "hot-weekly" ? "每周必看" : "入站必刷"))
+            return
+        }
+        if let screen = LaunchMode.screen, screen.hasPrefix("lib-") {
+            await LaunchClock.waitForFirstFrame()
+            await model.prepareLibraryShot(screen)
             return
         }
         if let screen = LaunchMode.screen, screen.hasPrefix("set-") {
@@ -436,6 +444,7 @@ struct RootShell: View {
             case "话题": TopicHome()
             case "每周必看": WeeklyPage()
             case "入站必刷": PreciousPage()
+            case "我的订阅": SubscriptionsPage()
             default: FeaturePageView(title: title)
             }
         case .dynamic(let id): DynamicDetailPage(id: id)
