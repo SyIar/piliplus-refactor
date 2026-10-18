@@ -141,28 +141,34 @@ enum OfflineProof {
 
 final class DownloadBridge: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     static let shared = DownloadBridge()
-    private let queue = OperationQueue()
     private var session: URLSession?
+    private var foreground: URLSession?
     var backgroundCompletion: (() -> Void)?
-
-    private override init() {
-        queue.maxConcurrentOperationCount = 1
-        queue.name = "offline.downloads"
-        super.init()
-    }
 
     func ensureSession() -> URLSession {
         if let session { return session }
         let config = URLSessionConfiguration.background(withIdentifier: "com.syiar.piliplus.downloads")
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
-        config.allowsExpensiveNetworkAccess = true
-        config.allowsConstrainedNetworkAccess = true
-        config.timeoutIntervalForResource = 600
-        config.httpAdditionalHeaders = ["User-Agent": BiliHTTP.userAgent]
-        let created = URLSession(configuration: config, delegate: self, delegateQueue: queue)
+        let created = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         session = created
         return created
+    }
+
+    /// Simulator background transfers fail with NSURLErrorUnknown. The same delegate then saves the DASH file in-process.
+    func startInProcess(id: String, kind: String, url: URL, headers: [String: String]) {
+        if foreground == nil {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForResource = 300
+            foreground = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        }
+        var request = URLRequest(url: url)
+        for (key, value) in headers where !value.isEmpty {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        let task = foreground!.downloadTask(with: request)
+        task.taskDescription = "\(kind)|\(id)"
+        task.resume()
     }
 
     func start(id: String, kind: String, url: URL, headers: [String: String]) {
@@ -188,11 +194,13 @@ final class DownloadBridge: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     }
 
     private func tasks(id: String, body: @escaping (URLSessionDownloadTask) -> Void) {
-        ensureSession().getAllTasks { tasks in
+        let apply: ([URLSessionTask]) -> Void = { tasks in
             for case let task as URLSessionDownloadTask in tasks where task.taskDescription == "video|\(id)" || task.taskDescription == "audio|\(id)" {
                 body(task)
             }
         }
+        ensureSession().getAllTasks(completionHandler: apply)
+        foreground?.getAllTasks(completionHandler: apply)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
@@ -222,10 +230,18 @@ final class DownloadBridge: NSObject, URLSessionDownloadDelegate, @unchecked Sen
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let error, let parts = parts(of: task) else { return }
-        let code = (error as NSError).code
-        if code == NSURLErrorCancelled { return }
+        let ns = error as NSError
+        if ns.code == NSURLErrorCancelled { return }
+        print("offline task \(ns.domain) \(ns.code) \(parts.kind)")
+        let backgroundGaveUp = session.configuration.identifier != nil && ns.domain == NSURLErrorDomain && (
+            ns.code == URLError.unknown.rawValue || ns.code == URLError.backgroundSessionWasDisconnected.rawValue
+        )
         Task { @MainActor in
-            DownloadCenter.current?.failed(id: parts.id, message: error.localizedDescription)
+            if backgroundGaveUp {
+                DownloadCenter.current?.backgroundFailed(id: parts.id, kind: parts.kind, code: ns.code)
+            } else {
+                DownloadCenter.current?.failed(id: parts.id, message: "\(ns.domain) \(ns.code)")
+            }
         }
     }
 
@@ -287,7 +303,6 @@ final class DownloadCenter {
         items = Self.load()
         storageBytes = OfflineFiles.usage()
         DownloadCenter.current = self
-        _ = DownloadBridge.shared.ensureSession()
     }
 
     func bind(_ client: BiliClient) {
@@ -439,6 +454,24 @@ final class DownloadCenter {
         }
     }
 
+    func backgroundFailed(id: String, kind: String, code: Int) {
+        guard let state = items.first(where: { $0.id == id })?.state, state == "running" || state == "queued" else { return }
+        guard var pair = tracks[id] else {
+            failed(id: id, message: "后台下载 \(code)")
+            return
+        }
+        let recovered = kind == "audio" ? pair.audioRecovered : pair.videoRecovered
+        let remote = kind == "audio" ? pair.audioURL : pair.videoURL
+        guard !recovered, let remote else {
+            failed(id: id, message: "后台下载 \(code)")
+            return
+        }
+        if kind == "audio" { pair.audioRecovered = true } else { pair.videoRecovered = true }
+        tracks[id] = pair
+        print("offline background \(code) \(kind) \(remote.host ?? ""), retry in process")
+        DownloadBridge.shared.startInProcess(id: id, kind: kind, url: remote, headers: pair.headers)
+    }
+
     func failed(id: String, message: String) {
         guard let index = items.firstIndex(where: { $0.id == id }) else { return }
         guard items[index].state == "running" || items[index].state == "queued" || items[index].state == "paused" else { return }
@@ -547,6 +580,9 @@ final class DownloadCenter {
         }
         var pair = TrackPair()
         pair.wantsAudio = true
+        pair.videoURL = videoURL
+        pair.audioURL = audioURL
+        pair.headers = headers
         tracks[id] = pair
         let headers = BiliHTTP.assetHeaders(bvid: video.bvid)
         print("offline start \(video.bvid) \(page.cid) \(offer.selectedName) \(offer.codec)")
@@ -644,6 +680,11 @@ private struct TrackPair {
     var videoDone = false
     var audioDone = false
     var wantsAudio = false
+    var videoURL: URL?
+    var audioURL: URL?
+    var headers: [String: String] = [:]
+    var videoRecovered = false
+    var audioRecovered = false
 
     var fraction: Double {
         let video = portion(written: videoWritten, expected: videoExpected)
