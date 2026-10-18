@@ -219,6 +219,12 @@ struct DynamicDetailPage: View {
             if id.isEmpty {
                 throw BiliError.message(model.dynamicError.isEmpty ? "没有找到动态" : model.dynamicError)
             } else if var full = try? await model.client.dynamicDetail(id: id) {
+                if let seed, !seed.text.isEmpty {
+                    let trimmed = full.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty || trimmed == full.kind || trimmed == "动态" {
+                        full.text = seed.text
+                    }
+                }
                 if full.images.isEmpty, let seed { full.images = seed.images }
                 if !full.hasPoll, let seed, seed.hasPoll {
                     full.pollTitle = seed.pollTitle

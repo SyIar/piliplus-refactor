@@ -126,7 +126,7 @@ struct DynamicItem: Identifiable, Hashable {
     let id: String
     let name: String
     let face: String
-    let text: String
+    var text: String
     let time: String
     let kind: String
     var video: VideoItem?

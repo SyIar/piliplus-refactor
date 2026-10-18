@@ -2163,7 +2163,19 @@ struct BiliClient: Sendable {
         case "DYNAMIC_TYPE_FORWARD": kind = "转发"
         default: kind = "动态"
         }
-        let text = unescape(desc.isEmpty ? (clip?.title ?? author["pub_action"].string ?? kind) : desc)
+        let opus = modules["module_dynamic"]["major"]["opus"]
+        let rich = (modules["module_dynamic"]["desc"]["rich_text_nodes"].array ?? [])
+            .compactMap { Self.filled($0["orig_text"].string ?? $0["text"].string) }
+            .joined()
+        let text = unescape(
+            Self.filled(desc)
+                ?? Self.filled(rich)
+                ?? Self.filled(opus["summary"]["text"].string)
+                ?? Self.filled(opus["title"].string)
+                ?? Self.filled(clip?.title)
+                ?? Self.filled(author["pub_action"].string)
+                ?? kind
+        )
         var built = DynamicItem(
             id: id,
             name: author["name"].string ?? "用户",
@@ -2192,6 +2204,11 @@ struct BiliClient: Sendable {
             built.origText = orig.text
         }
         return built
+    }
+
+    private static func filled(_ value: String?) -> String? {
+        let text = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty ? nil : text
     }
 
     private static func dynamicImages(in dynamic: JSON) -> [String] {
