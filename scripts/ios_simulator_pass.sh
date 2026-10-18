@@ -846,15 +846,18 @@ capture_live_room() {
   while [[ $(date +%s) -lt $deadline ]]; do
     if [[ -f "$proof" ]]; then
       line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
 d=json.load(open(sys.argv[1]))
-vals=[d.get("seconds",0), d.get("error") or "", d.get("danmaku",0), d.get("fresh",0), d.get("protocol") or "", d.get("room",0), str(d.get("title") or "").replace("\t"," ")]
-print("\t".join(str(v) for v in vals))' "$proof" 2>/dev/null || true)"
+vals=[d.get("seconds",0), d.get("error"), d.get("danmaku",0), d.get("fresh",0), d.get("protocol"), d.get("room",0), d.get("title")]
+print("\t".join(cell(v) for v in vals))' "$proof" 2>/dev/null || true)"
       if [[ -z "$line" ]]; then
         sleep 1
         continue
       fi
       IFS=$'\t' read -r cur err dm fresh proto room title <<< "$line"
-      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]]; then
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]]; then
         if [[ "$room" != "$stay_room" ]]; then
           stay_room="$room"
           stay_start=$(date +%s)
@@ -864,13 +867,13 @@ print("\t".join(str(v) for v in vals))' "$proof" 2>/dev/null || true)"
         elapsed=0
       fi
       echo "live room seconds=$cur danmaku=$dm fresh=$fresh stay=${elapsed}s protocol=${proto:-none} title=${title:-none} error=${err:-none}"
-      if [[ ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,fr,el,sec=int(float(sys.argv[1])),int(float(sys.argv[2])),int(sys.argv[3]),float(sys.argv[4]); sys.exit(0 if dm >= 20 and fr >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$fresh" "$elapsed" "$cur"; then
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,fr,el,sec=int(float(sys.argv[1])),int(float(sys.argv[2])),int(sys.argv[3]),float(sys.argv[4]); sys.exit(0 if dm >= 20 and fr >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$fresh" "$elapsed" "$cur"; then
         advanced=1
         break
       fi
       # A quiet room can sit under 20 lines for the whole stay. Keep going once
       # the stream is real, and leave a hard failure for silence or a blank player.
-      if [[ ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,el,sec=int(float(sys.argv[1])),int(sys.argv[2]),float(sys.argv[3]); sys.exit(0 if dm >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$elapsed" "$cur"; then
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,el,sec=int(float(sys.argv[1])),int(sys.argv[2]),float(sys.argv[3]); sys.exit(0 if dm >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$elapsed" "$cur"; then
         echo "warning: live room traffic stayed at $dm danmaku after ${elapsed}s; continuing because the HLS stream is playing" >&2
         advanced=1
         break
@@ -884,7 +887,7 @@ print("\t".join(str(v) for v in vals))' "$proof" 2>/dev/null || true)"
     cat "$OUT/perf/live-room-proof.json"
     echo
   fi
-  if [[ "$advanced" -ne 1 && ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,sec=int(float(sys.argv[1])),float(sys.argv[2]); sys.exit(0 if dm >= 1 and sec >= 5 else 1)' "$dm" "$cur"; then
+  if [[ "$advanced" -ne 1 && "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,sec=int(float(sys.argv[1])),float(sys.argv[2]); sys.exit(0 if dm >= 1 and sec >= 5 else 1)' "$dm" "$cur"; then
     echo "warning: live room traffic stayed at $dm danmaku; continuing because the HLS stream is playing" >&2
     advanced=1
   fi
