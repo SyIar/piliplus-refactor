@@ -31,6 +31,7 @@ enum ThemeChoice: String, CaseIterable, Identifiable {
 @Observable
 final class AppModel {
     let client = BiliClient()
+    let downloads = DownloadCenter()
     /// Each tab owns its stack. A single path outside `TabView` cannot host a search-role tab.
     var homePath = NavigationPath()
     var dynamicsPath = NavigationPath()
@@ -79,6 +80,9 @@ final class AppModel {
     private var playGeneration = 0
     var qualityName = "高清 720P"
     var danmakuOn = true
+    var offlineTarget: String?
+    var offlineAsset = ""
+    var offlineDanmaku = 0
     private let softHaptic = UIImpactFeedbackGenerator(style: .soft)
     private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
     var liked: Set<String> = []
@@ -143,6 +147,7 @@ final class AppModel {
             clearProfile()
             save()
         }
+        downloads.bind(client)
         switch LaunchMode.screen {
         case "dynamics": selectedTab = 1
         case "guest-dynamics":
@@ -151,7 +156,7 @@ final class AppModel {
             dynamics = []
         case "search", "search-video", "search-user", "search-bangumi", "search-live", "search-article":
             selectedTab = 3
-        case "mine", "history", "later", "fav", "guest-history", "guest-later", "guest-fav":
+        case "mine", "history", "later", "fav", "guest-history", "guest-later", "guest-fav", "downloads", "offline":
             selectedTab = 2
         default: break
         }
@@ -641,6 +646,49 @@ final class AppModel {
         cache[bvid] ?? feed.first { $0.bvid == bvid } ?? rank.first { $0.bvid == bvid } ?? hot.first { $0.bvid == bvid }
     }
 
+    func cacheLimitBytes() -> Int64? {
+        switch values["最大缓存大小"] {
+        case "2GB": return 2 * 1_024 * 1_024 * 1_024
+        case "8GB": return 8 * 1_024 * 1_024 * 1_024
+        case "16GB": return 16 * 1_024 * 1_024 * 1_024
+        default: return nil
+        }
+    }
+
+    func playOffline(_ item: OfflineItem) {
+        offlineTarget = item.id
+        offlineDanmaku = item.danmakuCount
+        open(.video(item.bvid))
+    }
+
+    func playLocal(_ video: VideoItem, file: URL) {
+        guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
+        nowPlaying = video
+        store(video)
+        offlineAsset = file.absoluteString
+        configurePlaybackSession()
+        playGeneration += 1
+        let generation = playGeneration
+        let rate = playbackRate
+        Task {
+            let asset = AVURLAsset(url: file)
+            let item = AVPlayerItem(asset: asset)
+            guard generation == playGeneration else { return }
+            if player == nil {
+                player = AVPlayer(playerItem: item)
+            } else {
+                player?.replaceCurrentItem(with: item)
+            }
+            await player?.seek(to: .zero)
+            guard generation == playGeneration else { return }
+            notePlaybackTime(0)
+            attachTimeObserver()
+            player?.playImmediately(atRate: rate)
+            isPlaying = true
+            watchPlayback(item, generation: generation, codec: video.streamCodec)
+        }
+    }
+
     func play(_ video: VideoItem) {
         guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
         nowPlaying = video
@@ -686,12 +734,11 @@ final class AppModel {
                 guard generation == playGeneration else { return }
                 if item.status == .readyToPlay { return }
                 if item.status == .failed {
-                    PlaybackProof.record(
-                        seconds: 0,
-                        quality: qualityName,
-                        codec: codec,
-                        error: item.error?.localizedDescription ?? "播放失败"
-                    )
+                    let message = item.error?.localizedDescription ?? "播放失败"
+                    PlaybackProof.record(seconds: 0, quality: qualityName, codec: codec, error: message)
+                    if LaunchMode.screen == "offline", let offline = downloads.item(offlineTarget ?? "") ?? downloads.latestReady {
+                        OfflineProof.playback(item: offline, asset: offlineAsset, seconds: 0, danmaku: offlineDanmaku, error: message)
+                    }
                     return
                 }
             }
@@ -750,6 +797,15 @@ final class AppModel {
             codec: nowPlaying?.streamCodec ?? "",
             error: ""
         )
+        if LaunchMode.screen == "offline", let item = downloads.item(offlineTarget ?? "") ?? downloads.latestReady {
+            OfflineProof.playback(
+                item: item,
+                asset: offlineAsset,
+                seconds: seconds,
+                danmaku: offlineDanmaku,
+                error: offlineAsset.hasPrefix("file:") ? "" : "播放地址不是本地文件"
+            )
+        }
     }
 
     private func attachTimeObserver() {

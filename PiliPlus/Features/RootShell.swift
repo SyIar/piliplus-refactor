@@ -187,6 +187,22 @@ struct RootShell: View {
             model.open(.setting("空降助手"))
             return
         }
+        if LaunchMode.screen == "downloads" {
+            await LaunchClock.waitForFirstFrame()
+            model.selectedTab = 2
+            model.open(.feature("离线缓存"))
+            return
+        }
+        if LaunchMode.screen == "offline" {
+            await LaunchClock.waitForFirstFrame()
+            OfflineFirewall.install()
+            model.selectedTab = 2
+            if let item = model.downloads.latestReady {
+                model.offlineTarget = item.id
+                model.open(.video(item.bvid))
+            }
+            return
+        }
         if model.feed.isEmpty { await model.refreshHome() }
         await model.refreshProfile()
         switch LaunchMode.screen {
@@ -289,6 +305,7 @@ struct RootShell: View {
             case "观看记录": HistoryListView()
             case "稍后再看": WatchLaterListView()
             case "我的收藏": FavoritesView()
+            case "离线缓存": DownloadsPage()
             default: FeaturePageView(title: title)
             }
         case .folder(let id): FolderContentsView(mediaID: id)

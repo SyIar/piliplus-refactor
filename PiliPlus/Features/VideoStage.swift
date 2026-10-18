@@ -35,6 +35,7 @@ struct VideoStage: View {
     @State private var danmaku: [DanmakuCue] = []
     @State private var subtitles: [SubtitleLine] = []
     @State private var showAudio = false
+    @State private var showDownload = false
     @State private var expandedDesc = false
     @State private var sponsorSegments: [SponsorSegment] = []
     @State private var sponsorServer = ""
@@ -67,7 +68,14 @@ struct VideoStage: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showDownload) {
+            if let video { DownloadSheet(video: video) }
+        }
         .task {
+            if LaunchMode.screen == "offline" || model.downloads.item(model.offlineTarget ?? "")?.bvid == bvid {
+                await presentOffline()
+                return
+            }
             if LaunchMode.usesFixtures, let cached = model.video(bvid) {
                 video = cached
                 related = Array(model.feed.prefix(4))
@@ -425,6 +433,51 @@ struct VideoStage: View {
         ])
     }
 
+    private func presentOffline() async {
+        guard let item = LaunchMode.screen == "offline" ? model.downloads.latestReady : model.downloads.item(model.offlineTarget ?? "") else {
+            error = "没有已完成的缓存"
+            return
+        }
+        model.offlineTarget = item.id
+        let file = OfflineFiles.movie(item)
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            error = "本地文件不存在"
+            return
+        }
+        var local = VideoItem(
+            bvid: item.bvid,
+            aid: item.aid,
+            cid: item.cid,
+            title: item.title,
+            cover: OfflineFiles.cover(item).absoluteString,
+            duration: item.duration,
+            ownerName: item.owner,
+            ownerMid: 0,
+            ownerFace: "",
+            desc: "",
+            pubdate: 0,
+            view: 0,
+            danmaku: item.danmakuCount,
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: 0,
+            pages: [VideoPage(cid: item.cid, index: item.page, title: item.pageTitle, duration: item.duration)],
+            tname: ""
+        )
+        local.playURL = file.absoluteString
+        local.streamCodec = item.codec
+        local.qualities = [item.quality]
+        video = local
+        model.qualityName = item.quality
+        if let data = try? Data(contentsOf: OfflineFiles.danmaku(item)) {
+            danmaku = DanmakuXML.parse(data)
+        }
+        model.offlineDanmaku = danmaku.count
+        model.playLocal(local, file: file)
+    }
+
     private func load() async {
         if let ready = model.video(bvid), ready.playURL != nil {
             video = ready
@@ -623,7 +676,7 @@ struct VideoStage: View {
             case "保存封面": model.show("封面已保存")
             case "重载视频": Task { await load() }
             case "举报": model.show("已打开举报")
-            case "离线缓存": model.open(.feature("离线缓存"))
+            case "离线缓存": showDownload = true
             case "查看笔记": model.open(.feature("笔记"))
             default: model.show(action)
             }
@@ -890,7 +943,9 @@ struct PlayerControls: View {
     }
 
     /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
-    private var pinsChrome: Bool { LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" }
+    private var pinsChrome: Bool {
+        LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" || LaunchMode.screen == "offline"
+    }
 
     var body: some View {
         ZStack {

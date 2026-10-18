@@ -1,7 +1,21 @@
 import SwiftUI
+import UIKit
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == "com.syiar.piliplus.downloads" else { return }
+        DownloadBridge.shared.backgroundCompletion = completionHandler
+        _ = DownloadBridge.shared.ensureSession()
+    }
+}
 
 @main
 struct PiliPlusApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     init() {
