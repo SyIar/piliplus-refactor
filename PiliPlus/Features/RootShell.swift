@@ -164,6 +164,11 @@ struct RootShell: View {
             }
             return
         }
+        if LaunchMode.screen == "detail" || LaunchMode.screen == "detail-dark" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openDetailSample()
+            return
+        }
         if LaunchMode.screen == "playback" {
             if model.feed.isEmpty { await model.loadRecommend(reset: true) }
             await model.openFirstPlayable()

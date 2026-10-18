@@ -64,17 +64,25 @@ struct VideoDetailIntro: View {
     @Binding var showFav: Bool
     @Binding var showShare: Bool
     var pageIndex: Int
+    var autoplayNote: String = ""
     var onSelectPage: (Int, VideoPage) -> Void
+    var onSelectEpisode: (EpisodeItem) -> Void = { _ in }
 
     @State private var fans = 0
     @State private var videos = 0
     @State private var followed = false
     @State private var pagesOpen = false
     @State private var collectionOpen = false
+    @State private var seasonOpen = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                if !autoplayNote.isEmpty {
+                    Text(autoplayNote)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Palette.bili)
+                }
                 ownerRow
                 titleBlock
                 metaLine
@@ -93,6 +101,15 @@ struct VideoDetailIntro: View {
                         collectionOpen.toggle()
                     }
                     if collectionOpen { collectionList }
+                }
+                if model.seasonEpisodes.count >= 2 {
+                    disclosureRow(
+                        title: "合集：\(model.seasonTitle.isEmpty ? "选集" : model.seasonTitle)",
+                        detail: "\(seasonIndex)/\(model.seasonEpisodes.count)"
+                    ) {
+                        seasonOpen.toggle()
+                    }
+                    if seasonOpen { seasonList }
                 }
                 if let summary = aiSummary {
                     aiRow(summary)
@@ -144,8 +161,10 @@ struct VideoDetailIntro: View {
             Spacer(minLength: 8)
             Button {
                 Task {
-                    await model.followOwner(mid: video.ownerMid)
-                    if model.loggedIn { followed = true }
+                    let next = !followed
+                    if await model.followUser(mid: video.ownerMid, follow: next) {
+                        followed = next
+                    }
                 }
             } label: {
                 Text(followed ? "已关注" : "+ 关注")
@@ -261,6 +280,29 @@ struct VideoDetailIntro: View {
         }
     }
 
+    private var seasonIndex: Int {
+        (model.seasonEpisodes.firstIndex { $0.bvid == video.bvid } ?? 0) + 1
+    }
+
+    private var seasonList: some View {
+        VStack(spacing: 0) {
+            ForEach(model.seasonEpisodes.prefix(12)) { episode in
+                Button { onSelectEpisode(episode) } label: {
+                    HStack {
+                        Text(episode.label).lineLimit(1).foregroundStyle(.primary)
+                        Spacer()
+                        if episode.bvid == video.bvid {
+                            Image(systemName: "play.fill").font(.caption2).foregroundStyle(Palette.bili)
+                        }
+                    }
+                    .font(.subheadline)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     private var collectionList: some View {
         VStack(spacing: 0) {
             ForEach(video.collectionClips.prefix(12)) { clip in
@@ -343,7 +385,8 @@ struct RelatedVideoRow: View {
                     Spacer(minLength: 4)
                     Menu {
                         Button("稍后再看", systemImage: "clock") { model.watchLater(video.bvid) }
-                        Button("分享", systemImage: "square.and.arrow.up") { model.show("已打开分享") }
+                        Button("收藏", systemImage: "star") { model.favoriteQuick(video) }
+                        Button("不感兴趣", systemImage: "hand.thumbsdown") { Task { await model.dislike(video) } }
                         if video.ownerMid > 0 {
                             Button("查看 UP", systemImage: "person") { model.open(.user(video.ownerMid, video.ownerName)) }
                         }
@@ -379,6 +422,21 @@ struct RelatedVideoRow: View {
     private func open() {
         model.store(video)
         model.open(.video(video.bvid))
+    }
+}
+
+enum DetailProof {
+    static func record(title: String, owner: String, collection: String, related: Int) {
+        guard LaunchMode.screen == "detail" || LaunchMode.screen == "detail-dark" else { return }
+        let body: [String: Any] = [
+            "screen": LaunchMode.screen ?? "",
+            "title": title,
+            "owner": owner,
+            "collection": collection,
+            "related": related
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return }
+        try? data.write(to: LaunchClock.documents.appendingPathComponent("detail-proof.json"), options: .atomic)
     }
 }
 

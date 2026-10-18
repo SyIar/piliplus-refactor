@@ -247,9 +247,13 @@ struct VideoStage: View {
                     showFav: $showFav,
                     showShare: $showShare,
                     pageIndex: currentPage,
+                    autoplayNote: autoplayCaption,
                     onSelectPage: { index, page in
                         currentPage = index
                         Task { await reload(video, cid: page.cid) }
+                    },
+                    onSelectEpisode: { episode in
+                        Task { await playEpisode(episode) }
                     }
                 )
             } else {
@@ -634,6 +638,14 @@ struct VideoStage: View {
         await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
         related = nextRelated
         related.forEach(model.store)
+        if let video {
+            DetailProof.record(
+                title: video.title,
+                owner: video.ownerName,
+                collection: video.collectionTitle.isEmpty ? model.seasonTitle : video.collectionTitle,
+                related: related.count
+            )
+        }
         await loadDecorations(bvid: bvid, cid: cid)
         let sponsor = await SponsorClient.segments(for: bvid)
         sponsorSegments = sponsor.items
@@ -881,35 +893,9 @@ struct VideoStage: View {
         .presentationBackgroundInteraction(LaunchMode.screen == "sleep" ? .disabled : .enabled(upThrough: .medium))
     }
 
-    private func episodePicker(_ video: VideoItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(model.seasonTitle.isEmpty ? "选集" : model.seasonTitle)
-                .font(.headline)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(model.seasonEpisodes) { episode in
-                        Button {
-                            Task { await playEpisode(episode) }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(episode.title).font(.caption.weight(.bold)).lineLimit(1)
-                                if !episode.longTitle.isEmpty, episode.longTitle != episode.title {
-                                    Text(episode.longTitle).font(.caption2).lineLimit(1)
-                                }
-                            }
-                            .padding(10)
-                            .frame(width: 132, alignment: .leading)
-                            .contentPlate(radius: 14)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .stroke(episode.bvid == video.bvid ? Palette.bili : Color.clear, lineWidth: 2)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
+    private var autoplayCaption: String {
+        guard LaunchMode.screen == "autoplay", !autoplayReason.isEmpty else { return "" }
+        return autoplayReason == "page" ? "已自动播放下一P" : "已自动播放相关视频"
     }
 
     private var autoplayEnabled: Bool {
@@ -1328,7 +1314,7 @@ struct PlayerControls: View {
     /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
     private var pinsChrome: Bool {
         switch LaunchMode.screen {
-        case "playback", "sponsor", "offline", "resume", "autoplay", "bangumi-play", "chapters", "scrub", "sleep":
+        case "playback", "sponsor", "offline", "resume", "autoplay", "bangumi-play", "chapters", "scrub", "sleep", "detail", "detail-dark":
             return true
         default:
             return false

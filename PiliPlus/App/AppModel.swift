@@ -176,6 +176,8 @@ final class AppModel {
             selectedTab = 3
         case "mine", "history", "later", "fav", "guest-history", "guest-later", "guest-fav", "downloads", "offline":
             selectedTab = 2
+        case "detail-dark":
+            theme = .dark
         default: break
         }
         softHaptic.prepare()
@@ -289,11 +291,6 @@ final class AppModel {
             try? await Task.sleep(for: .seconds(1.6))
             if toast == text { toast = nil }
         }
-    }
-
-    func followOwner(mid: Int) async {
-        guard requireLogin("关注") else { return }
-        show("已关注")
     }
 
     func requireLogin(_ action: String) -> Bool {
@@ -1095,6 +1092,24 @@ final class AppModel {
                     return
                 }
             }
+        }
+    }
+
+    func openDetailSample() async {
+        if feed.isEmpty { await loadRecommend(reset: true) }
+        var fallback: VideoItem?
+        for item in feed.prefix(8) where !item.bvid.isEmpty {
+            guard let detail = try? await client.detail(bvid: item.bvid), !detail.title.isEmpty else { continue }
+            if fallback == nil { fallback = detail }
+            if !detail.collectionTitle.isEmpty {
+                store(detail)
+                open(.video(detail.bvid))
+                return
+            }
+        }
+        if let fallback {
+            store(fallback)
+            open(.video(fallback.bvid))
         }
     }
 

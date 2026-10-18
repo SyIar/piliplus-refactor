@@ -150,6 +150,7 @@ enum LaunchMode {
         if screen == "downloads" || screen == "offline" { return false }
         if screen == "messageProof" || screen == "messages" { return false }
         if screen == "playbackExtra" || screen == "resume" || screen == "autoplay" || screen == "bangumi-play" { return false }
+        if screen == "detail" || screen == "detail-dark" { return false }
         if screen == "chapters" || screen == "scrub" || screen == "sleep" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
@@ -164,6 +165,7 @@ enum LaunchMode {
     static func playbackCodec(preferred: String) -> String {
         let forced = screen == "playback" || screen == "sponsor" || screen == "resume" || screen == "autoplay"
             || screen == "bangumi-play" || screen == "chapters" || screen == "scrub" || screen == "sleep"
+            || screen == "detail" || screen == "detail-dark"
         guard forced, ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             return preferred
         }

@@ -1153,6 +1153,50 @@ sys.exit(0 if ok else 1)
   fi
 }
 
+capture_detail() {
+  local screen="$1"
+  local dir proof line title="" owner="" collection="" related="" ready=0
+  dir="$(container)"
+  proof="$dir/Documents/detail-proof.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
+d=json.load(open(sys.argv[1]))
+keys=["title","owner","collection","related"]
+print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
+      if [[ -n "$line" ]]; then
+        IFS=$'\t' read -r title owner collection related <<< "$line"
+        echo "detail screen=$screen title=$title owner=$owner collection=$collection related=$related"
+        if [[ "$title" != "-" && "$owner" != "-" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$related"; then
+          ready=1
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  sleep 1.5
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/${screen}-proof.json"
+  fi
+  if [[ "$ready" -ne 1 ]]; then
+    echo "detail page did not show a title and related rows" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  echo "saved ${screen}.png"
+}
+
 capture_offline() {
   local dir proof line seconds="" scheme="" danmaku="" err="" first="" advanced=0
   dir="$(container)"
@@ -1516,6 +1560,7 @@ sponsor_status=0
 download_status=0
 message_status=0
 extra_status=0
+detail_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
@@ -1523,7 +1568,7 @@ capture_live_proof || live_status=1
 capture_message_proof || message_status=1
 capture_playback_extra || extra_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback resume autoplay bangumi-play chapters scrub sleep history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback resume autoplay bangumi-play chapters scrub sleep history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline detail detail-dark; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1592,6 +1637,13 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     fi
     continue
   fi
+  if [[ "$screen" == "detail" || "$screen" == "detail-dark" ]]; then
+    if ! capture_detail "$screen"; then
+      echo "retrying ${screen}" >&2
+      capture_detail "$screen" || detail_status=1
+    fi
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -1602,8 +1654,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, or warm scroll check failed" >&2
   exit 1
 fi
 
