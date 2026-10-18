@@ -1576,6 +1576,12 @@ struct BiliClient: Sendable {
         video.pages = pages
         if video.cid == 0 { video.cid = pages.first?.cid ?? 0 }
         video.desc = item["desc"].string ?? video.desc
+        let history = item["history"]
+        let historyCID = history["cid"].int ?? 0
+        let historyProgress = history["progress"].int ?? 0
+        if historyProgress != 0, historyCID == 0 || historyCID == video.cid || historyCID == video.pages.first?.cid {
+            video.progress = historyProgress
+        }
         let season = item["ugc_season"]
         let seasonTitle = season["title"].string ?? ""
         if !seasonTitle.isEmpty {
@@ -2230,6 +2236,59 @@ struct BiliClient: Sendable {
         guard code == 0 else {
             throw BiliError.message(data["message"].string ?? data["msg"].string ?? "操作没有成功")
         }
+    }
+
+    func playerChapters(bvid: String, cid: Int) async -> [ChapterMark] {
+        let form = PlaybackRequest.playerInfo(bvid: bvid, cid: cid)
+        let referer = BiliHTTP.referer(bvid: bvid)
+        if let signed = try? await requestQuery(form.path, params: form.fields, signed: true, referer: referer), signed["code"].int == 0 {
+            let marks = PlaybackParser.chapters(from: signed)
+            if !marks.isEmpty { return marks }
+        }
+        if let plain = try? await requestQuery("/x/player/v2", params: form.fields, signed: false, referer: referer), plain["code"].int == 0 {
+            return PlaybackParser.chapters(from: plain)
+        }
+        return []
+    }
+
+    func energyBars(cid: Int) async -> [Double] {
+        guard cid > 0 else { return [] }
+        let urls = [
+            "https://bvc.bilivideo.com/pbp/data?cid=\(cid)",
+            "https://api.bilibili.com/pbp/data?cid=\(cid)"
+        ]
+        for string in urls {
+            guard let url = URL(string: string) else { continue }
+            guard let data = try? await getJSON(url, referer: "https://www.bilibili.com/") else { continue }
+            let values = PlaybackParser.energy(from: data)
+            if values.count >= 4 { return values }
+        }
+        return []
+    }
+
+    func videoShot(bvid: String, cid: Int) async -> VideoShotPage? {
+        let form = PlaybackRequest.videoshot(bvid: bvid, cid: cid)
+        guard let url = form.endpoint else { return nil }
+        guard let data = try? await getJSON(url, referer: BiliHTTP.referer(bvid: bvid)), data["code"].int == 0 else { return nil }
+        return PlaybackParser.shot(from: data)
+    }
+
+    func fetchImage(_ string: String) async -> UIImage? {
+        let clean = Self.https(string)
+        guard let url = URL(string: clean) else { return nil }
+        guard let data = try? await getData(url, includeSession: false) else { return nil }
+        return UIImage(data: data)
+    }
+
+    func seasonGuide(id: Int) async throws -> SeasonGuide {
+        guard let url = URL(string: "https://api.bilibili.com/pgc/view/web/season?season_id=\(id)") else {
+            throw BiliError.message("番剧地址无效")
+        }
+        let data = try await getJSON(url, referer: "https://www.bilibili.com/bangumi/play/ss\(id)")
+        guard data["code"].int == 0, let guide = PlaybackParser.season(from: data, seasonID: id) else {
+            throw BiliError.message(data["message"].string ?? "番剧不可用")
+        }
+        return guide
     }
 }
 

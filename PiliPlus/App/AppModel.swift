@@ -81,6 +81,9 @@ final class AppModel {
     var playbackAnchorWall: TimeInterval = 0
     var playbackRate: Float = 1
     private var timeObserver: Any?
+    private var endObserver: NSObjectProtocol?
+    private var lastMemoryStamp = -1.0
+    private var lastHeartbeatStamp = -20.0
     private var playGeneration = 0
     var qualityName = "高清 720P"
     var danmakuOn = true
@@ -130,6 +133,16 @@ final class AppModel {
     var unreadAt = 0
     var unreadLike = 0
     var unreadSystem = 0
+    var playbackEndedToken = 0
+    var sleepChoice = "不开启"
+    var sleepDeadline: Date?
+    var seasonTitle = ""
+    var seasonEpisodes: [EpisodeItem] = []
+    var chapterMarks: [ChapterMark] = []
+    var energySamples: [Double] = []
+    var preparedShot: VideoShotPage?
+    var preparedPreview: UIImage?
+    var extrasKey = ""
 
     var colorScheme: ColorScheme? {
         switch theme {
@@ -692,15 +705,19 @@ final class AppModel {
             await player?.seek(to: .zero)
             guard generation == playGeneration else { return }
             notePlaybackTime(0)
-            attachTimeObserver()
+            attachTimeObserver(item)
             player?.playImmediately(atRate: rate)
             isPlaying = true
             watchPlayback(item, generation: generation, codec: video.streamCodec)
         }
     }
 
-    func play(_ video: VideoItem) {
+    /// `start` nil keeps the current time when the same clip is reloaded (a quality change).
+    /// A different clip starts at `start`, or at the beginning when that is also nil.
+    func play(_ video: VideoItem, at start: Double? = nil) {
         guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
+        let sameClip = start == nil && nowPlaying?.bvid == video.bvid && nowPlaying?.cid == video.cid
+        let held = player?.currentTime().seconds ?? 0
         nowPlaying = video
         store(video)
         guard let urlString = video.playURL, let url = URL(string: urlString) else { return }
@@ -709,7 +726,11 @@ final class AppModel {
         configurePlaybackSession()
         playGeneration += 1
         let generation = playGeneration
-        let resume = player?.currentTime() ?? .zero
+        let resumeSeconds = start ?? (sameClip && held.isFinite ? held : 0)
+        if !sameClip {
+            lastMemoryStamp = -1
+            lastHeartbeatStamp = 0
+        }
         let shouldPlay = isPlaying || (player == nil && flag("自动播放"))
         let rate = playbackRate
         Task {
@@ -721,12 +742,12 @@ final class AppModel {
                 player?.replaceCurrentItem(with: item)
             }
             applyBackgroundPolicy()
-            if let player, resume.isValid, resume.seconds > 0.5 {
-                await player.seek(to: resume, toleranceBefore: .zero, toleranceAfter: .zero)
+            if let player, resumeSeconds > 0.4 {
+                await player.seek(to: CMTime(seconds: resumeSeconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             }
             guard generation == playGeneration else { return }
-            notePlaybackTime(resume.isValid ? resume.seconds : 0)
-            attachTimeObserver()
+            notePlaybackTime(max(0, resumeSeconds))
+            attachTimeObserver(item)
             if shouldPlay {
                 player?.playImmediately(atRate: rate)
                 isPlaying = true
@@ -734,6 +755,205 @@ final class AppModel {
                 isPlaying = false
             }
             watchPlayback(item, generation: generation, codec: video.streamCodec)
+        }
+    }
+
+    func resumePosition(cid: Int, duration: Int, server: Int) -> Double {
+        let local = PlaybackMemory.position(cid: cid)
+        let remote = server > 0 ? Double(server) : 0
+        var start = max(local, remote)
+        if duration > 0, start > Double(duration) - 8 { start = 0 }
+        if LaunchMode.screen == "resume", start < 12, duration == 0 || duration > 40 { start = 30 }
+        return start
+    }
+
+    func reportHeartbeat(_ video: VideoItem, played: Int) async {
+        guard let csrf = session?.csrf, !csrf.isEmpty, video.cid > 0 else { return }
+        let form = PlaybackRequest.heartbeat(bvid: video.bvid, cid: video.cid, played: played, csrf: csrf)
+        _ = try? await submit(form)
+        if video.aid > 0 {
+            _ = try? await submit(PlaybackRequest.historyReport(aid: video.aid, csrf: csrf))
+        }
+    }
+
+    func sendDanmaku(_ video: VideoItem, message: String) async {
+        guard loggedIn, let csrf = csrf(for: "发送弹幕") else { return }
+        guard let form = PlaybackRequest.danmaku(
+            bvid: video.bvid,
+            cid: video.cid,
+            message: message,
+            progress: Int(playbackSeconds * 1000),
+            rnd: Int(Date().timeIntervalSince1970 * 1_000_000),
+            csrf: csrf
+        ) else {
+            show("弹幕是空的")
+            return
+        }
+        do {
+            _ = try await submit(form)
+            show("弹幕已发送")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func chooseSleep(_ choice: String) {
+        sleepChoice = choice
+        sleepDeadline = PlaybackSleep.deadline(for: choice)
+        if choice == "不开启" {
+            show("已关闭定时")
+        } else if choice == "播完当前" {
+            show("将在当前视频结束后停止")
+        } else {
+            show("将在\(choice)后停止播放")
+        }
+    }
+
+    func playSeason(_ seasonID: Int) async {
+        do {
+            let guide = try await client.seasonGuide(id: seasonID)
+            guard let episode = guide.episodes.first(where: { !$0.bvid.isEmpty && $0.cid > 0 }) else {
+                show("这一季还不能播放")
+                return
+            }
+            seasonTitle = guide.title
+            seasonEpisodes = guide.episodes
+            open(.video(episode.bvid))
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func openResumeSample() async {
+        if feed.isEmpty { await loadRecommend(reset: true) }
+        if let last = PlaybackMemory.last() {
+            open(.video(last.bvid))
+            return
+        }
+        await openFirstPlayable()
+    }
+
+    func openAutoplaySample() async {
+        let pool = await playbackPool(leadingSearch: nil)
+        var fallback: VideoItem?
+        for item in pool.prefix(8) {
+            guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
+            if fallback == nil { fallback = detail }
+            if detail.pages.count > 1 {
+                store(detail)
+                open(.video(detail.bvid))
+                return
+            }
+            if let related = try? await client.related(bvid: detail.bvid),
+               related.contains(where: { $0.bvid != detail.bvid }) {
+                related.forEach(store)
+                store(detail)
+                open(.video(detail.bvid))
+                return
+            }
+        }
+        if let fallback {
+            store(fallback)
+            open(.video(fallback.bvid))
+        }
+    }
+
+    func openBangumiPlayback() async {
+        if bangumi.isEmpty { await loadSeasons("番剧") }
+        for season in bangumi.prefix(4) {
+            guard let guide = try? await client.seasonGuide(id: season.seasonID) else { continue }
+            guard guide.episodes.count >= 2,
+                  let episode = guide.episodes.first(where: { !$0.bvid.isEmpty && $0.cid > 0 }) else { continue }
+            seasonTitle = guide.title
+            seasonEpisodes = guide.episodes
+            open(.video(episode.bvid))
+            return
+        }
+        PlaybackUIProof.record("bangumi-play", [
+            "count": 0,
+            "episode": "",
+            "seconds": 0,
+            "title": "",
+            "error": "没有可播放的剧集"
+        ])
+    }
+
+    func openChapterSample() async {
+        let pool = await playbackPool(leadingSearch: "章节")
+        for item in pool.prefix(8) {
+            guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
+            let cid = detail.pages.first?.cid ?? detail.cid
+            guard cid > 0 else { continue }
+            async let marksTask = client.playerChapters(bvid: detail.bvid, cid: cid)
+            async let barsTask = client.energyBars(cid: cid)
+            let marks = await marksTask
+            let bars = await barsTask
+            guard marks.count >= 1, bars.count >= 8, !marks[0].title.isEmpty else { continue }
+            chapterMarks = marks
+            energySamples = bars
+            preparedShot = nil
+            preparedPreview = nil
+            extrasKey = "\(detail.bvid)#\(cid)"
+            store(detail)
+            open(.video(detail.bvid))
+            return
+        }
+        PlaybackUIProof.record("chapters", [
+            "chapters": 0,
+            "energy": 0,
+            "title": "",
+            "error": "没有找到章节和高能进度"
+        ])
+    }
+
+    func openScrubSample() async {
+        let pool = await playbackPool(leadingSearch: nil)
+        for item in pool.prefix(8) {
+            guard let detail = try? await client.detail(bvid: item.bvid), detail.duration > 20 else { continue }
+            let cid = detail.pages.first?.cid ?? detail.cid
+            guard cid > 0, let page = await client.videoShot(bvid: detail.bvid, cid: cid) else { continue }
+            let seconds = Double(detail.duration) * 0.35
+            let cell = PlaybackParser.frameIndex(at: seconds, index: page.index)
+            let per = max(1, page.columns * page.rows)
+            let sheetIndex = cell / per
+            guard page.images.indices.contains(sheetIndex),
+                  let image = await client.fetchImage(page.images[sheetIndex]),
+                  let piece = PlaybackParser.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else { continue }
+            preparedShot = page
+            preparedPreview = piece
+            chapterMarks = []
+            energySamples = []
+            extrasKey = "\(detail.bvid)#\(cid)"
+            store(detail)
+            open(.video(detail.bvid))
+            return
+        }
+        PlaybackUIProof.record("scrub", [
+            "images": 0,
+            "frames": 0,
+            "showing": false,
+            "error": "没有找到预览图"
+        ])
+    }
+
+    private func playbackPool(leadingSearch: String?) async -> [VideoItem] {
+        if feed.isEmpty { await loadRecommend(reset: true) }
+        var pool: [VideoItem] = []
+        if let leadingSearch, let page = try? await client.search(type: "video", keyword: leadingSearch, page: 1) {
+            pool.append(contentsOf: page.videos)
+        }
+        if let ranked = try? await client.ranking(rid: 0) {
+            pool.append(contentsOf: ranked.prefix(12))
+        }
+        pool.append(contentsOf: feed)
+        var seen = Set<String>()
+        return pool.filter { !$0.bvid.isEmpty && seen.insert($0.bvid).inserted }
+    }
+
+    func openSleepSample() async {
+        if feed.isEmpty { await loadRecommend(reset: true) }
+        if let first = (feed + rank).first(where: { !$0.bvid.isEmpty }) {
+            open(.video(first.bvid))
         }
     }
 
@@ -818,15 +1038,46 @@ final class AppModel {
                 error: offlineAsset.hasPrefix("file:") ? "" : "播放地址不是本地文件"
             )
         }
+        guard seconds.isFinite, let video = nowPlaying, video.cid > 0 else { return }
+        if lastMemoryStamp < 0 || abs(seconds - lastMemoryStamp) >= 2 {
+            lastMemoryStamp = seconds
+            PlaybackMemory.remember(bvid: video.bvid, cid: video.cid, seconds: seconds)
+        }
+        if let deadline = sleepDeadline, Date() >= deadline {
+            sleepDeadline = nil
+            sleepChoice = "不开启"
+            isPlaying = false
+            player?.pause()
+            show("已定时关闭")
+        }
+        if seconds >= 1, seconds - lastHeartbeatStamp >= 15 {
+            lastHeartbeatStamp = seconds
+            let played = Int(seconds)
+            let clip = video
+            Task { await reportHeartbeat(clip, played: played) }
+        }
     }
 
-    private func attachTimeObserver() {
+    private func attachTimeObserver(_ item: AVPlayerItem) {
         guard let player else { return }
         if let timeObserver { player.removeTimeObserver(timeObserver) }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+            self.endObserver = nil
+        }
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 self?.notePlaybackTime(time.seconds)
+            }
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.playbackEndedToken += 1
             }
         }
     }

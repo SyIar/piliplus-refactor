@@ -355,7 +355,7 @@ private struct SeasonCard: View {
 
     var body: some View {
         Button {
-            model.open(.feature(season.title))
+            Task { await model.playSeason(season.seasonID) }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 RemoteImage(url: season.cover, ratio: 3 / 4, maxPixel: 360)
