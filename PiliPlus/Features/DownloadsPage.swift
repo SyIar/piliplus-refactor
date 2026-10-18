@@ -16,11 +16,6 @@ struct DownloadsPage: View {
             } else {
                 ScrollViewReader { proxy in
                     List {
-                        Color.clear
-                            .frame(height: 1)
-                            .id("downloads-top")
-                            .listRowSeparator(.hidden)
-                            .accessibilityHidden(true)
                         if !active.isEmpty {
                             Section("正在下载") {
                                 ForEach(active) { item in
@@ -44,17 +39,12 @@ struct DownloadsPage: View {
                                 }
                             }
                         }
-                        if LaunchMode.screen == "downloads" {
-                            Color.clear
-                                .frame(height: 1400)
-                                .id("downloads-bottom")
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                                .accessibilityHidden(true)
-                        }
                     }
                     .onChange(of: model.downloads.mergeOffset) { _, value in
-                        proxy.scrollTo(value % 2 == 0 ? "downloads-top" : "downloads-bottom", anchor: .top)
+                        let anchor: UnitPoint = value % 2 == 0 ? .top : .bottom
+                        if let id = active.first?.id ?? groups.first?.parts.first?.id {
+                            proxy.scrollTo(id, anchor: anchor)
+                        }
                     }
                 }
             }

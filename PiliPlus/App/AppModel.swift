@@ -70,6 +70,8 @@ final class AppModel {
     var selectedTab = 0
     var homeTab = "推荐"
     var nowPlaying: VideoItem?
+    /// True while a video page is the visible screen, so the mini player stays hidden.
+    var videoPageVisible = false
     var player: AVPlayer?
     var isPlaying = false
     var playbackSeconds: Double = 0

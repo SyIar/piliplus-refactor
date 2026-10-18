@@ -45,7 +45,7 @@ struct RootShell: View {
             }
         }
         .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
-        .tabViewBottomAccessory(isEnabled: model.nowPlaying != nil) {
+        .tabViewBottomAccessory(isEnabled: model.nowPlaying != nil && !model.videoPageVisible) {
             if let video = model.nowPlaying {
                 NowPlayingPill(video: video)
             }

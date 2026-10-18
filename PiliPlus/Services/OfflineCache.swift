@@ -20,6 +20,13 @@ struct OfflineItem: Codable, Identifiable, Hashable {
     var bytesExpected: Int64
     var danmakuCount: Int
     var error: String
+    var viewCount: Int? = nil
+    var likeCount: Int? = nil
+    var coinCount: Int? = nil
+    var favoriteCount: Int? = nil
+    var shareCount: Int? = nil
+    var replyCount: Int? = nil
+    var pubdate: Int? = nil
 
     var label: String {
         switch state {
@@ -654,6 +661,13 @@ final class DownloadCenter {
         current.quality = offer.selectedName
         current.qn = offer.selectedQN
         current.codec = offer.codec
+        current.viewCount = video.view
+        current.likeCount = video.like
+        current.coinCount = video.coin
+        current.favoriteCount = video.favorite
+        current.shareCount = video.share
+        current.replyCount = video.reply
+        current.pubdate = video.pubdate
         replace(current)
         let xml = try? await client.danmakuDocument(cid: page.cid)
         if let xml {
