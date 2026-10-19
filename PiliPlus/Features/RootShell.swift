@@ -361,6 +361,28 @@ struct RootShell: View {
             }
             return
         }
+        if let screen = LaunchMode.screen, screen.hasPrefix("content-") {
+            await LaunchClock.waitForFirstFrame()
+            switch screen {
+            case "content-article":
+                model.articleFocusID = 0
+                model.open(.feature("专栏阅读"))
+            case "content-audio": model.open(.feature("音频"))
+            case "content-music": model.open(.feature("音乐详情"))
+            case "content-course": model.open(.feature("课堂"))
+            case "content-stein": model.open(.feature("互动视频"))
+            case "content-notes": model.open(.feature("笔记"))
+            case "content-ai": model.open(.feature("AI总结"))
+            case "content-pgc": model.open(.feature("番剧索引"))
+            case "content-review":
+                model.reviewMediaID = 0
+                model.open(.feature("番剧短评"))
+            case "content-esports": model.open(.feature("赛事"))
+            case "content-bubble": model.open(.feature("装扮气泡"))
+            default: model.open(.feature("离线缓存搜索"))
+            }
+            return
+        }
         if LaunchMode.screen == "sponsor" {
             await LaunchClock.waitForFirstFrame()
             await openSponsorVideo()
@@ -519,6 +541,19 @@ struct RootShell: View {
             case "醒目留言": LiveSuperChatPage()
             case "直播表情": LiveEmotePage()
             case "大航海": RankListPage(title: "大航海")
+            case "专栏阅读": ArticleReaderPage()
+            case "音频": AudioShelfPage()
+            case "音乐详情": MusicDetailPage()
+            case "课堂": CoursePage()
+            case "互动视频": InteractiveVideoPage()
+            case "笔记": NotesPage()
+            case "AI总结": AISummaryPage()
+            case "番剧索引": SeasonIndexPage(seasonType: 1)
+            case "影视索引": SeasonIndexPage(seasonType: 2)
+            case "番剧短评": ShortReviewPage()
+            case "赛事": EsportsPage()
+            case "装扮气泡": BubblePage()
+            case "离线缓存搜索": CacheSearchPage()
             default: FeaturePageView(title: title)
             }
         case .dynamic(let id): DynamicDetailPage(id: id)

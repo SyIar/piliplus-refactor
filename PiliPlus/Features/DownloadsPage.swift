@@ -64,6 +64,9 @@ struct DownloadsPage: View {
         .navigationTitle("离线缓存")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("搜索") { model.open(.feature("离线缓存搜索")) }
+            }
             ToolbarItem(placement: .bottomBar) {
                 Text("已用 \(model.downloads.storageLabel)")
                     .font(.footnote)

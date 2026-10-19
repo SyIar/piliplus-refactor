@@ -909,6 +909,97 @@ PY
   fi
 }
 
+capture_content_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/content-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  local tries=70
+  if [[ "$screen" == "content-stein" || "$screen" == "content-notes" || "$screen" == "content-ai" || "$screen" == "content-bubble" || "$screen" == "content-article" ]]; then tries=110; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing content proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  if ! python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("state", "rows", "title", "query", "bvid", "id", "note", "body", "extra", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+state = data.get("state")
+rows = int(data.get("rows") or 0)
+err = str(data.get("error") or "")
+note = str(data.get("note") or "")
+title = str(data.get("title") or "")
+titles = [str(item) for item in (data.get("titles") or [])]
+names = [str(item) for item in (data.get("names") or [])]
+blob = titles + names + [title, note]
+fixture = any("液态玻璃" in item or "玻璃试验" in item or "fixture" in item.lower() for item in blob)
+def rows_ok(minimum):
+    return state == "rows" and rows >= minimum and not fixture and not err
+if screen == "content-article":
+    ok = rows_ok(1) and title != "" and any(name.strip() for name in names) and int(data.get("body") or 0) >= 40
+elif screen == "content-audio":
+    ok = rows_ok(1) and len(titles) >= 1 and int(data.get("id") or 0) > 0
+elif screen == "content-music":
+    ok = rows_ok(1) and title != "" and any(name.strip() for name in names) and int(data.get("id") or 0) > 0
+elif screen == "content-course":
+    ok = rows_ok(1) and title != "" and len(titles) >= 1 and int(data.get("extra") or 0) >= 1
+elif screen == "content-stein":
+    ok = rows_ok(1) and title != "" and str(data.get("bvid") or "").startswith("BV") and len(titles) >= 1 and int(data.get("id") or 0) > 0
+elif screen == "content-notes":
+    ok = rows_ok(1) and len(titles) >= 1 and any(name.strip() for name in names)
+elif screen == "content-ai":
+    filled = rows_ok(1) and title != "" and len(note) >= 12 and str(data.get("bvid") or "").startswith("BV")
+    login = state == "login" and rows == 0 and title != "" and note != "" and str(data.get("bvid") or "").startswith("BV") and not fixture
+    ok = filled or login
+elif screen == "content-pgc":
+    ok = rows_ok(1) and title != "" and len(titles) >= 1 and int(data.get("id") or 0) > 0
+elif screen == "content-review":
+    ok = rows_ok(1) and len(titles) >= 1 and any(name.strip() for name in names) and int(data.get("id") or 0) > 0
+elif screen == "content-esports":
+    ok = rows_ok(1) and len(titles) >= 1 and len(names) >= 2
+elif screen == "content-bubble":
+    ok = rows_ok(1) and len(names) >= 1 and any(item.startswith("https") for item in titles)
+elif screen == "content-cache":
+    query = str(data.get("query") or "")
+    bvid = str(data.get("bvid") or "")
+    filled = rows_ok(1) and query != "" and bvid.startswith("BV") and titles and all(query in item for item in titles)
+    quiet = state == "empty" and rows == 0 and note == "没有可搜索的缓存" and not fixture
+    ok = filled or quiet
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} content rejected")
+print(f"{screen} content ok")
+PY
+  then
+    echo "content log ${screen}:" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+}
+
 capture_live_room() {
   local dir proof advanced=0 first="" cur="" err="" dm=0 proto="" title=""
   dir="$(container)"
@@ -2257,8 +2348,16 @@ for screen in live-area-detail live-follow live-search live-block live-rank live
     capture_live_extra_ui "$screen" || live_extra_status=1
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 || "$live_extra_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, live extras, or warm scroll check failed" >&2
+content_status=0
+for screen in content-article content-audio content-music content-course content-stein content-notes content-ai content-pgc content-review content-esports content-bubble content-cache; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_content_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_content_ui "$screen" || content_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 || "$live_extra_status" -ne 0 || "$content_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, live extras, other content, or warm scroll check failed" >&2
   exit 1
 fi
 
