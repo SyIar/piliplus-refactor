@@ -303,11 +303,9 @@ struct UpdatePage: View {
                         LabeledContent("状态", value: ReleaseCheck.headline(current: ReleaseCheck.current, tag: release.tag))
                     }
                     Section("更新说明") {
-                        ForEach(Array(paragraphs(release.notes).prefix(6).enumerated()), id: \.offset) { _, paragraph in
-                            Text(paragraph)
-                                .font(.body)
-                                .lineSpacing(6)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        let blocks = ReleaseNotes.blocks(from: release.notes)
+                        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                            ReleaseNotesRow(block: block)
                         }
                     }
                 }
@@ -320,14 +318,6 @@ struct UpdatePage: View {
         .navigationTitle("检查更新")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
-    }
-
-    private func paragraphs(_ body: String) -> [String] {
-        let parts = body
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return parts.isEmpty ? [body] : parts
     }
 
     private func load() async {
@@ -360,5 +350,127 @@ struct UpdatePage: View {
                 "error": failure
             ])
         }
+    }
+}
+
+private struct ReleaseNotes {
+    struct Block {
+        var text: AttributedString
+        var headerLevel: Int?
+        var listMarker: String?
+        var code: Bool
+    }
+
+    static func blocks(from source: String) -> [Block] {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        guard let parsed = try? AttributedString(markdown: source, options: options) else {
+            let plain = AttributedString(source.trimmingCharacters(in: .whitespacesAndNewlines))
+            return plain.characters.isEmpty ? [] : [Block(text: plain, headerLevel: nil, listMarker: nil, code: false)]
+        }
+        var grouped: [(PresentationIntent, AttributedString)] = []
+        for run in parsed.runs {
+            let intent = run.presentationIntent ?? PresentationIntent()
+            let piece = AttributedString(parsed[run.range])
+            if let index = grouped.indices.last, grouped[index].0 == intent {
+                var text = grouped[index].1
+                text.append(piece)
+                grouped[index].1 = text
+            } else {
+                grouped.append((intent, piece))
+            }
+        }
+        return grouped.compactMap { intent, text in
+            let trimmed = text.trimmingWhitespace()
+            guard !trimmed.characters.isEmpty else { return nil }
+            return Block(
+                text: trimmed,
+                headerLevel: headerLevel(intent),
+                listMarker: listMarker(intent),
+                code: isCodeBlock(intent)
+            )
+        }
+    }
+
+    private static func headerLevel(_ intent: PresentationIntent) -> Int? {
+        for component in intent.components {
+            if case .header(let level) = component.kind { return level }
+        }
+        return nil
+    }
+
+    private static func listMarker(_ intent: PresentationIntent) -> String? {
+        var ordered = false
+        var ordinal = 0
+        var item = false
+        for component in intent.components {
+            switch component.kind {
+            case .orderedList:
+                ordered = true
+            case .unorderedList:
+                ordered = false
+            case .listItem(let value):
+                item = true
+                ordinal = value
+            default:
+                break
+            }
+        }
+        guard item else { return nil }
+        if ordered, ordinal > 0 { return "\(ordinal)." }
+        return "•"
+    }
+
+    private static func isCodeBlock(_ intent: PresentationIntent) -> Bool {
+        intent.components.contains { component in
+            if case .codeBlock = component.kind { return true }
+            return false
+        }
+    }
+}
+
+private struct ReleaseNotesRow: View {
+    let block: ReleaseNotes.Block
+
+    var body: some View {
+        if let level = block.headerLevel {
+            Text(block.text)
+                .font(level <= 2 ? .title3.bold() : .headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let marker = block.listMarker {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(marker)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(width: marker == "•" ? 12 : nil, alignment: .trailing)
+                Text(block.text)
+                    .lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else if block.code {
+            Text(block.text)
+                .font(.callout.monospaced())
+                .lineSpacing(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(block.text)
+                .lineSpacing(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private extension AttributedString {
+    func trimmingWhitespace() -> AttributedString {
+        var copy = self
+        while let first = copy.characters.first, first.isWhitespace {
+            copy.characters.removeFirst()
+        }
+        while let last = copy.characters.last, last.isWhitespace {
+            copy.characters.removeLast()
+        }
+        return copy
     }
 }
