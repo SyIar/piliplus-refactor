@@ -331,7 +331,13 @@ struct PGCPage: View {
                 }
                 HStack {
                     ForEach(kind == "番剧" ? ["追番", "索引", "点评"] : ["追剧", "索引", "电影"], id: \.self) { item in
-                        Button(item) { model.open(.feature(item == "索引" ? "索引" : kind)) }
+                        Button(item) {
+                            switch item {
+                            case "索引": model.open(.feature(kind == "影视" ? "影视索引" : "番剧索引"))
+                            case "点评": model.open(.feature("番剧短评"))
+                            default: model.open(.feature(kind))
+                            }
+                        }
                             .font(.caption.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 10)

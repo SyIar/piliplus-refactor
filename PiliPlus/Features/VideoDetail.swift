@@ -74,6 +74,8 @@ struct VideoDetailIntro: View {
     @State private var pagesOpen = false
     @State private var collectionOpen = false
     @State private var seasonOpen = false
+    @State private var aiText = ""
+    @State private var aiNote = ""
 
     var body: some View {
         ScrollView {
@@ -111,8 +113,10 @@ struct VideoDetailIntro: View {
                     }
                     if seasonOpen { seasonList }
                 }
-                if let summary = aiSummary {
-                    aiRow(summary)
+                if !aiText.isEmpty {
+                    aiRow(aiText)
+                } else if !aiNote.isEmpty {
+                    aiRow(aiNote)
                 }
                 if model.flag("视频页显示相关视频"), !offline, !shownRelated.isEmpty {
                     VStack(spacing: 2) {
@@ -127,6 +131,7 @@ struct VideoDetailIntro: View {
             .padding(.bottom, 20)
         }
         .task(id: video.ownerMid) { await loadOwner() }
+        .task(id: video.bvid) { await loadAI() }
         .onAppear {
             if model.flag("默认展开视频简介") { expanded = true }
         }
@@ -136,7 +141,16 @@ struct VideoDetailIntro: View {
 
     private var shownRelated: [VideoItem] { related.filter { !model.hidesRelated($0) } }
 
-    private var aiSummary: String? { nil }
+    private func loadAI() async {
+        aiText = ""
+        aiNote = ""
+        guard model.flag("启用AI总结"), !offline else { return }
+        let page = await model.client.videoSummary(bvid: video.bvid, cid: video.cid, upMid: video.ownerMid)
+        aiText = page.summary
+        if page.summary.isEmpty {
+            aiNote = page.login ? "登录后查看 AI 总结" : page.note
+        }
+    }
 
     private var ownerRow: some View {
         HStack(spacing: 8) {

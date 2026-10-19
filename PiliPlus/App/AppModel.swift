@@ -66,6 +66,8 @@ final class AppModel {
     var liveOffers: [Int: LiveOffer] = [:]
     var liveFocusArea = "网游"
     var liveFocusRoom = 0
+    var articleFocusID = 0
+    var reviewMediaID = 0
     var liveFocusUID = 0
     var liveFocusTitle = ""
     private var liveGeneration = 0

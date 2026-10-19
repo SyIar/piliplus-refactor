@@ -182,15 +182,21 @@ struct SearchStudio: View {
             case "专栏":
                 if articles.isEmpty && !searching { emptyResult }
                 ForEach(articles) { article in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(article.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                        if !article.summary.isEmpty {
-                            Text(article.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Button {
+                        model.articleFocusID = article.id
+                        model.open(.feature("专栏阅读"))
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(article.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                            if !article.summary.isEmpty {
+                                Text(article.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            VideoListMeta(owner: article.author, viewCount: article.view, danmaku: 0, viewSymbol: "eye.fill")
                         }
-                        VideoListMeta(owner: article.author, viewCount: article.view, danmaku: 0, viewSymbol: "eye.fill")
+                        .padding(12)
+                        .contentPlate(radius: 18)
                     }
-                    .padding(12)
-                    .contentPlate(radius: 18)
+                    .buttonStyle(.plain)
                 }
             default:
                 if results.isEmpty && !searching { emptyResult }
