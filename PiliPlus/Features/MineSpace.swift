@@ -106,6 +106,11 @@ struct MineSpace: View {
             shortcut("rectangle.stack", "我的订阅") { model.open(.feature("我的订阅")) }
             shortcut("clock", "稍后再看") { model.open(.feature("稍后再看")) }
             shortcut("square.grid.2x2", "全部功能") { model.open(.feature("全部页面")) }
+            shortcut("person.2", "关注") { model.open(.feature("关注")) }
+            shortcut("hand.raised", "黑名单") { model.open(.feature("黑名单")) }
+            shortcut("person.crop.circle", "编辑资料") { model.open(.feature("编辑资料")) }
+            shortcut("desktopcomputer", "登录设备") { model.open(.feature("登录设备")) }
+            shortcut("person.crop.circle.badge.plus", "切换账号") { model.open(.feature("切换账号")) }
         }
     }
 

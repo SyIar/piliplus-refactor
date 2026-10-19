@@ -1712,6 +1712,113 @@ print(f"{screen} library ui ok")
 PY
 }
 
+capture_account_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/account-manage-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen acctProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing account manage request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/account-manage-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+print(f"account manage proof checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("account manage request proof failed")
+print("account manage request proof ok")
+PY
+}
+
+capture_account_manage_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/account-manage-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  local tries=90
+  if [[ "$screen" == "acct-guards" ]]; then tries=150; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing account ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("state","rows","query","total","name","title","note","error","covers")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+state = data.get("state")
+rows = int(data.get("rows") or 0)
+err = str(data.get("error") or "")
+note = str(data.get("note") or "")
+titles = [str(item) for item in (data.get("titles") or [])]
+names = [str(item) for item in (data.get("names") or [])]
+bvids = [str(item) for item in (data.get("bvids") or [])]
+fixture = any("液态玻璃" in item or "fixture" in item.lower() for item in titles + names + bvids + [note])
+def rows_ok(minimum):
+    return state == "rows" and rows >= minimum and not fixture and not err
+if screen == "acct-likes":
+    ok = rows_ok(8) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1 and data.get("title") == "最近点赞"
+elif screen == "acct-coins":
+    ok = rows_ok(1) and int(data.get("covers") or 0) >= 1 and len(titles) >= 1 and data.get("title") == "最近投币"
+elif screen == "acct-articles":
+    ok = rows_ok(1) and len(titles) >= 1
+elif screen in ("acct-charge", "acct-guards"):
+    ok = rows_ok(1) and len(names) >= 1
+elif screen == "acct-search":
+    total = int(data.get("total") or 0)
+    ok = rows_ok(1) and str(data.get("query") or "") != "" and rows < total and len(titles) >= 1
+elif screen == "acct-fans":
+    ok = (rows_ok(1) and len(names) >= 1 and all(name.strip() for name in names)) or (state == "login" and rows == 0 and note != "" and int(data.get("followers") or 0) > 0 and not fixture)
+elif screen == "acct-shop":
+    ok = state == "login" and rows == 0
+elif screen == "acct-comics":
+    ok = state == "empty" and rows == 0 and str(data.get("note") or "") != ""
+elif screen == "acct-accounts":
+    ok = state == "empty" and rows == 0 and data.get("title") == "当前未登录"
+elif screen == "acct-profile":
+    ok = state == "login" and data.get("editor") is True and data.get("name") == "" and rows == 0
+elif screen in ("acct-follows", "acct-black", "acct-coinlog", "acct-explog", "acct-devices"):
+    ok = state == "login" and rows == 0
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} account ui rejected")
+print(f"{screen} account ui ok")
+PY
+}
+
 capture_message_proof() {
   local dir proof found=0
   dir="$(container)"
@@ -2054,8 +2161,17 @@ for screen in lib-history lib-later lib-fav lib-sub; do
     capture_library_ui "$screen" || library_status=1
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, or warm scroll check failed" >&2
+account_manage_status=0
+capture_account_proof || account_manage_status=1
+for screen in acct-likes acct-coins acct-articles acct-charge acct-guards acct-search acct-fans acct-shop acct-comics acct-follows acct-black acct-profile acct-coinlog acct-explog acct-devices acct-accounts; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_account_manage_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_account_manage_ui "$screen" || account_manage_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, or warm scroll check failed" >&2
   exit 1
 fi
 

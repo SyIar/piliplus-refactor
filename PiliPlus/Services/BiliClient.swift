@@ -1268,13 +1268,13 @@ struct BiliClient: Sendable {
         )
     }
 
-    func spaceVideos(mid: Int, page: Int, order: String) async throws -> (items: [VideoItem], total: Int, source: String) {
+    func spaceVideos(mid: Int, page: Int, order: String, keyword: String = "") async throws -> (items: [VideoItem], total: Int, source: String) {
         let referer = "https://space.bilibili.com/\(mid)/video"
         let origin = "https://space.bilibili.com"
         do {
             var params = SpaceRequest.videos(mid: mid, page: page, order: order).fields
             params["tid"] = "0"
-            params["keyword"] = ""
+            params["keyword"] = keyword
             params["index"] = "0"
             params["platform"] = "web"
             params["web_location"] = "1550101"
@@ -1300,7 +1300,7 @@ struct BiliClient: Sendable {
             if !page.items.isEmpty { return (page.items, page.total, "wbi") }
             throw BiliError.message("投稿是空的")
         } catch {
-            let minimal = [
+            var minimal = [
                 "mid": "\(mid)",
                 "pn": "\(max(1, page))",
                 "ps": "30",
@@ -1310,6 +1310,7 @@ struct BiliClient: Sendable {
                 "web_location": "1550101",
                 "order_avoided": "true"
             ]
+            if !keyword.isEmpty { minimal["keyword"] = keyword }
             if let signed = try? await wbiJSON("/x/space/wbi/arc/search", params: minimal, referer: referer, origin: origin) {
                 let parsed = Self.spaceVideoPage(signed)
                 if (signed["code"].int ?? -1) == 0, !parsed.items.isEmpty {
@@ -2748,6 +2749,51 @@ struct BiliClient: Sendable {
             throw BiliError.message(data["message"].string ?? "番剧不可用")
         }
         return guide
+    }
+
+    /// Guest-signed GET. Callers read `code` themselves so a privacy or login response stays visible.
+    func accountGET(
+        _ path: String,
+        query: [String: String] = [:],
+        host: String = "https://api.bilibili.com",
+        referer: String = "https://www.bilibili.com",
+        signed: Bool = false,
+        suppressCookie: Bool = false
+    ) async throws -> JSON {
+        try await withGuest {
+            let data = try await requestQuery(
+                path,
+                params: query,
+                signed: signed,
+                referer: referer,
+                host: host,
+                suppressCookie: suppressCookie
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+    }
+
+    /// Android-signed GET. A -352 stays in the payload so the caller can try another path.
+    func appAccountGET(
+        _ path: String,
+        query: [String: String],
+        host: String = "https://api.bilibili.com",
+        referer: String = "https://www.bilibili.com"
+    ) async throws -> JSON {
+        let signed = AppSign.sign(query)
+        let body = signed.keys.sorted().map { key in
+            let value = signed[key, default: ""]
+            if value.isEmpty { return PercentEncoding.encodeURIComponent(key) }
+            return "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(value))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "\(host)\(path)?\(body)") else {
+            throw BiliError.message("地址无效")
+        }
+        return try await withGuest {
+            try await getJSON(url, referer: referer, userAgent: Self.appLiveAgent)
+        }
     }
 }
 

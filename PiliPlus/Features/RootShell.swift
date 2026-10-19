@@ -91,6 +91,9 @@ struct RootShell: View {
         if LaunchMode.screen == "libProof" {
             LibraryRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "acctProof" {
+            AccountManageProof.writeAndExit()
+        }
         if LaunchMode.screen == "dyn-compose" {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -129,6 +132,32 @@ struct RootShell: View {
         if let screen = LaunchMode.screen, screen.hasPrefix("lib-") {
             await LaunchClock.waitForFirstFrame()
             await model.prepareLibraryShot(screen)
+            return
+        }
+        if let screen = LaunchMode.screen, screen.hasPrefix("acct-") {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            switch screen {
+            case "acct-likes": model.open(.feature("最近点赞"))
+            case "acct-coins": model.open(.feature("最近投币"))
+            case "acct-follows": model.open(.feature("关注"))
+            case "acct-black": model.open(.feature("黑名单"))
+            case "acct-profile": model.open(.feature("编辑资料"))
+            case "acct-coinlog": model.open(.feature("硬币记录"))
+            case "acct-explog": model.open(.feature("经验记录"))
+            case "acct-devices": model.open(.feature("登录设备"))
+            case "acct-accounts": model.open(.feature("切换账号"))
+            case "acct-fans": model.open(.feature("粉丝"))
+            case "acct-guards":
+                if let found = await model.client.busiestGuards() {
+                    model.open(.user(found.room.mid, found.room.uname))
+                } else {
+                    AccountManageUIProof.record(["state": "empty", "rows": 0, "error": "没有开着的大航海榜"])
+                    model.open(.feature("大航海"))
+                }
+            default:
+                model.open(.user(8_047_632, ""))
+            }
             return
         }
         if let screen = LaunchMode.screen, screen.hasPrefix("set-") {
@@ -445,6 +474,17 @@ struct RootShell: View {
             case "每周必看": WeeklyPage()
             case "入站必刷": PreciousPage()
             case "我的订阅": SubscriptionsPage()
+            case "关注": FollowManagePage()
+            case "粉丝": FanListPage()
+            case "黑名单": BlacklistPage()
+            case "硬币记录": LedgerPage(title: "硬币记录", symbol: "bitcoinsign.circle")
+            case "经验记录": LedgerPage(title: "经验记录", symbol: "chart.bar")
+            case "登录设备", "登录记录": DevicePage()
+            case "编辑资料": ProfileEditorPage()
+            case "切换账号": AccountSwitchPage()
+            case "最近点赞": RecentVideoPage(kind: "最近点赞")
+            case "最近投币": RecentVideoPage(kind: "最近投币")
+            case "大航海": RankListPage(title: "大航海")
             default: FeaturePageView(title: title)
             }
         case .dynamic(let id): DynamicDetailPage(id: id)
