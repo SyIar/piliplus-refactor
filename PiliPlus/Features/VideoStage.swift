@@ -14,7 +14,6 @@ struct VideoStage: View {
     @State private var showFav = false
     @State private var showShare = false
     @State private var showQuality = false
-    @State private var showSpeed = false
     @State private var showDanmaku = false
     @State private var fullscreen = false
     @State private var locked = false
@@ -32,6 +31,8 @@ struct VideoStage: View {
     }
     @State private var localProgress: Double = 0
     @State private var danmaku: [DanmakuCue] = []
+    @State private var subtitles: [SubtitleLine] = []
+    @State private var showAudio = false
     @State private var expandedDesc = false
 
     var body: some View {
@@ -40,14 +41,22 @@ struct VideoStage: View {
             if let video {
                 stage(video)
             } else if !error.isEmpty {
-                ContentUnavailableView("无法打开", systemImage: "exclamationmark.triangle", description: Text(error))
+                ContentUnavailableView {
+                    Label("无法打开", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("重试") {
+                        Task { await retry() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else {
                 ProgressView("正在加载").tint(.white)
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             if LaunchMode.usesFixtures, let cached = model.video(bvid) {
                 video = cached
@@ -61,7 +70,7 @@ struct VideoStage: View {
         .sheet(isPresented: $showCoin) { coinSheet }
         .sheet(isPresented: $showFav) { favSheet }
         .sheet(isPresented: $showQuality) { qualitySheet }
-        .sheet(isPresented: $showSpeed) { speedSheet }
+        .sheet(isPresented: $showAudio) { audioSheet }
         .sheet(isPresented: $showDanmaku) { danmakuSheet }
         .sheet(item: $replyTarget) { comment in replySheet(comment) }
         .statusBarHidden(fullscreen)
@@ -83,20 +92,32 @@ struct VideoStage: View {
         ZStack {
             Color.black
             if let player = model.player {
-                PlayerSurface(player: player)
+                PlayerSurface(player: player, pipEnabled: model.flag("后台画中画"))
             } else {
                 RemoteImage(url: video.cover).opacity(0.45)
             }
             if model.danmakuOn && model.flag("弹幕开关") {
                 DanmakuLayer(cues: danmaku)
-                    .allowsHitTesting(model.flag("启用点击弹幕"))
+                    .allowsHitTesting(false)
+            }
+            if model.flag("自动启用字幕"), let line = currentSubtitle {
+                Text(line)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 58)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .allowsHitTesting(false)
             }
             if !hint.isEmpty {
                 Text(hint)
                     .font(.headline.monospacedDigit())
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(.regular, in: Capsule())
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.65), radius: 3, y: 1)
             }
             PlayerControls(
                 video: video,
@@ -104,14 +125,20 @@ struct VideoStage: View {
                 seeking: $seeking,
                 localProgress: $localProgress,
                 showMore: $showMore,
-                showSpeed: $showSpeed,
-                showQuality: $showQuality,
                 showDanmaku: $showDanmaku,
                 locked: $locked,
                 coinPick: $coinPick,
                 showCoin: $showCoin,
                 showFav: $showFav,
-                showShare: $showShare
+                showShare: $showShare,
+                onQuality: { name in Task { await switchQuality(name) } },
+                onStepPage: { delta in
+                    let next = currentPage + delta
+                    guard video.pages.indices.contains(next) else { return }
+                    currentPage = next
+                    let cid = video.pages[next].cid
+                    Task { await reload(video, cid: cid) }
+                }
             )
         }
         .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 0, style: .continuous))
@@ -133,102 +160,26 @@ struct VideoStage: View {
 
     private func below(_ video: VideoItem) -> some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                Text("简介").tag("简介")
-                if model.flag("显示视频评论") { Text("评论 \(CountText.format(video.reply))").tag("评论") }
+            VideoDetailTabs(video: video, tab: $tab, showDanmaku: $showDanmaku)
+            if tab == "简介" {
+                VideoDetailIntro(
+                    video: video,
+                    related: related,
+                    expanded: $expandedDesc,
+                    coinPick: $coinPick,
+                    showCoin: $showCoin,
+                    showFav: $showFav,
+                    showShare: $showShare,
+                    pageIndex: currentPage,
+                    onSelectPage: { index, page in
+                        currentPage = index
+                        Task { await reload(video, cid: page.cid) }
+                    }
+                )
+            } else {
+                commentList
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            if tab == "简介" { intro(video) } else { commentList }
         }
-    }
-
-    private func intro(_ video: VideoItem) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text(video.title).font(.title3.bold())
-                HStack(spacing: 12) {
-                    meta("play.fill", video.view)
-                    meta("text.bubble", video.danmaku)
-                    meta("calendar", video.pubdate)
-                    if !video.tname.isEmpty { Text(video.tname).font(.caption).foregroundStyle(.secondary) }
-                }
-                Button { model.open(.user(video.ownerMid, video.ownerName)) } label: {
-                    HStack {
-                        RemoteImage(url: video.ownerFace, ratio: 1, maxPixel: 120).frame(width: 36, height: 36).clipShape(Circle())
-                        Text(video.ownerName).font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text("关注")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Palette.bili, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                }
-                .buttonStyle(.plain)
-                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
-                    .padding(8)
-                    .contentPlate(radius: 22)
-                if model.flag("显示视频分段信息") && video.pageCount > 1 {
-                    Text("分P · \(video.pageCount)").font(.headline)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            ForEach(Array(video.pages.enumerated()), id: \.element.id) { index, page in
-                                Button {
-                                    currentPage = index
-                                    Task { await reload(video, cid: page.cid) }
-                                } label: {
-                                    VStack(alignment: .leading) {
-                                        Text("P\(page.index)").font(.caption2.weight(.bold))
-                                        Text(page.title).font(.caption).lineLimit(1)
-                                    }
-                                    .padding(10)
-                                    .frame(width: 140, alignment: .leading)
-                                    .contentPlate(radius: 14)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-                if !video.desc.isEmpty {
-                    Text(expandedDesc || model.flag("默认展开视频简介") ? video.desc : String(video.desc.prefix(80)))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Button(expandedDesc ? "收起" : "展开") { expandedDesc.toggle() }
-                        .font(.caption.weight(.semibold))
-                }
-                if model.flag("启用AI总结") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("AI 总结", systemImage: "sparkles")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Palette.bili)
-                        Text("正在根据简介与热门评论生成摘要。登录后可拉取完整总结。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentPlate(radius: 18)
-                }
-                if model.flag("视频页显示相关视频") {
-                    Text("相关视频").font(.headline)
-                    ForEach(related) { item in
-                        VideoCard(video: item)
-                    }
-                }
-            }
-            .padding(16)
-            .padding(.bottom, 24)
-        }
-    }
-
-    private func meta(_ icon: String, _ value: Int) -> some View {
-        Label(value > 1_000_000_000 ? DurationBadge.clock(value) : CountText.format(value), systemImage: icon)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
     }
 
     private var commentList: some View {
@@ -319,48 +270,89 @@ struct VideoStage: View {
         if model.isPlaying { model.player?.play() } else { model.player?.pause() }
     }
 
+    private var currentSubtitle: String? {
+        let time = model.playbackSeconds
+        return subtitles.first { $0.from <= time && time <= $0.to }?.text
+    }
+
     private func load() async {
         do {
             var item = try await model.client.detail(bvid: bvid)
             let cid = item.pages.first?.cid ?? item.cid
-            let qn = (model.values["默认画质"] ?? "").contains("1080") && model.flag("免登录1080P") ? 80 : 64
-            if let play = try? await model.client.playURL(bvid: bvid, cid: cid, qn: qn) {
-                item.playURL = play.url
-                item.qualities = play.qualities
-                model.qualityName = play.qualities.first ?? model.qualityName
-            }
+            let qn = QualityMap.qn(for: model.values["默认画质"] ?? "高清 1080P")
+            let offer = try await requestPlayback(bvid: item.bvid, cid: cid, qn: qn)
+            item.apply(offer)
+            model.qualityName = offer.selectedName
             video = item
             model.store(item)
             model.play(item)
-            danmaku = sampleDanmaku(for: item)
+            await loadTracks(bvid: item.bvid, cid: cid, aid: item.aid)
             if model.flag("自动全屏") { fullscreen = true }
             if model.flag("默认展示评论区") { tab = "评论" }
-            async let rel = model.client.related(bvid: bvid)
-            async let rep = model.client.replies(aid: item.aid)
-            related = (try? await rel) ?? []
-            comments = (try? await rep) ?? []
-            related.forEach(model.store)
         } catch {
-            self.error = error.localizedDescription
+            let text = error.localizedDescription
+            self.error = text
+            PlaybackProof.record(seconds: 0, quality: "", codec: "", error: text)
         }
+    }
+
+    private func retry() async {
+        error = ""
+        await model.client.refreshGuest()
+        await load()
     }
 
     private func reload(_ video: VideoItem, cid: Int) async {
-        var copy = video
-        if let play = try? await model.client.playURL(bvid: video.bvid, cid: cid, qn: 64) {
-            copy.playURL = play.url
+        await switchStream(video, cid: cid, qn: QualityMap.qn(for: model.qualityName), announce: "已切换分P")
+    }
+
+    private func switchQuality(_ name: String) async {
+        guard let video else { return }
+        let cid = video.pages.indices.contains(currentPage) ? video.pages[currentPage].cid : video.cid
+        await switchStream(video, cid: cid, qn: QualityMap.qn(for: name), announce: nil)
+    }
+
+    private func switchStream(_ video: VideoItem, cid: Int, qn: Int, announce: String?) async {
+        do {
+            let offer = try await requestPlayback(bvid: video.bvid, cid: cid, qn: qn)
+            var copy = video
             copy.cid = cid
-            model.play(copy)
+            copy.apply(offer)
             self.video = copy
-            model.show("已切换分P")
+            model.qualityName = offer.selectedName
+            model.store(copy)
+            model.play(copy)
+            danmaku = (try? await model.client.danmaku(cid: cid)) ?? danmaku
+            subtitles = await model.client.subtitleLines(bvid: video.bvid, cid: cid, preference: model.values["字幕选择偏好"] ?? "自动")
+            model.show(announce ?? "画质 \(offer.selectedName)")
+        } catch {
+            model.show(error.localizedDescription)
         }
     }
 
-    private func sampleDanmaku(for video: VideoItem) -> [DanmakuCue] {
-        let lines = ["前方高能", "来了来了", "这期质量好高", "三连了", "空降成功", "UP 好强", video.ownerName, "弹幕护体", "iOS 27 液态玻璃", "PiliPlus"]
-        return lines.enumerated().map { index, text in
-            DanmakuCue(time: Double(index) * 1.4, text: text, color: index % 4 == 0 ? 0xFB7299 : 0xFFFFFF, mode: 1)
-        }
+    private func requestPlayback(bvid: String, cid: Int, qn: Int) async throws -> PlaybackOffer {
+        try await model.client.playback(
+            bvid: bvid,
+            cid: cid,
+            qn: qn,
+            tryLook: model.flag("免登录1080P") || qn >= 80,
+            codecPreference: LaunchMode.playbackCodec(preferred: model.values["首选解码格式"] ?? "av1"),
+            audioPreference: model.values["默认音质"] ?? "高码率"
+        )
+    }
+
+    private func loadTracks(bvid: String, cid: Int, aid: Int) async {
+        async let dm = model.client.danmaku(cid: cid)
+        async let subs = model.client.subtitleLines(bvid: bvid, cid: cid, preference: model.values["字幕选择偏好"] ?? "自动")
+        async let rel = model.client.related(bvid: bvid)
+        async let rep = model.client.replies(aid: aid)
+        danmaku = (try? await dm) ?? []
+        subtitles = await subs
+        let nextRelated = (try? await rel) ?? []
+        await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
+        related = nextRelated
+        comments = (try? await rep) ?? []
+        related.forEach(model.store)
     }
 
     private func sendReply(_ parent: CommentItem?) {
@@ -376,10 +368,11 @@ struct VideoStage: View {
             switch action {
             case "添加至「稍后再看」": if let video { model.watchLater(video.bvid) }
             case "选择画质": showQuality = true
-            case "选择音质": model.show("音质：\(model.values["默认音质"] ?? "高码率")")
+            case "选择音质": showAudio = true
             case "播放顺序": model.show("播放顺序：\(model.values["播放顺序"] ?? "自动连播")")
             case "弹幕设置", "弹幕列表": showDanmaku = true
-            case "字幕设置": model.show("字幕偏好：\(model.values["字幕选择偏好"] ?? "自动")")
+            case "字幕设置":
+                model.show(subtitles.isEmpty ? "这条视频没有字幕" : "字幕偏好：\(model.values["字幕选择偏好"] ?? "自动")")
             case "定时关闭": model.show("将在 30 分钟后停止播放")
             case "播放地址":
                 UIPasteboard.general.string = video?.playURL
@@ -459,17 +452,22 @@ struct VideoStage: View {
     }
 
     private var qualitySheet: some View {
-        let options = video?.qualities.isEmpty == false ? video!.qualities : ["自动", "流畅 360P", "高清 720P", "高清 1080P", "超清 4K"]
-        return OptionSheet(title: "选择画质", options: options, selection: Binding(get: { model.qualityName }, set: { model.qualityName = $0; model.show("画质 \($0)") }))
+        let options = video?.qualities.isEmpty == false ? video!.qualities : ["流畅 360P", "高清 720P", "高清 1080P", "高清 1080P60", "超清 4K"]
+        return OptionSheet(title: "选择画质", options: options, selection: Binding(
+            get: { model.qualityName },
+            set: { name in Task { await switchQuality(name) } }
+        ))
     }
 
-    private var speedSheet: some View {
-        OptionSheet(title: "倍速", options: ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"], selection: Binding(
-            get: { String(format: "%.2gx", model.playbackRate) },
-            set: { label in
-                let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
-                model.playbackRate = value
-                model.player?.rate = value
+    private var audioSheet: some View {
+        OptionSheet(title: "选择音质", options: ["64K", "132K", "192K", "杜比全景声", "Hi-Res"], selection: Binding(
+            get: { model.values["默认音质"] ?? "192K" },
+            set: { name in
+                model.values["默认音质"] = name
+                model.save()
+                guard let video else { return }
+                let cid = video.pages.indices.contains(currentPage) ? video.pages[currentPage].cid : video.cid
+                Task { await switchStream(video, cid: cid, qn: QualityMap.qn(for: model.qualityName), announce: "音质 \(name)") }
             }
         ))
     }
@@ -486,9 +484,25 @@ struct VideoStage: View {
                         Text(cue.text)
                     }
                 }
+                Section("倍速") {
+                    ForEach(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"], id: \.self) { label in
+                        Button(label) {
+                            let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
+                            model.playbackRate = value
+                            model.player?.rate = model.isPlaying ? value : 0
+                        }
+                    }
+                }
                 Button("屏蔽词管理") { model.open(.feature("弹幕")) }
+                Button("更多") {
+                    showDanmaku = false
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(250))
+                        showMore = true
+                    }
+                }
             }
-            .navigationTitle("弹幕设置")
+            .navigationTitle("播放设置")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
@@ -514,25 +528,46 @@ struct VideoStage: View {
 
 struct PlayerSurface: UIViewRepresentable {
     let player: AVPlayer
+    var pipEnabled: Bool
     func makeUIView(context: Context) -> PlayerUIView {
         let view = PlayerUIView()
         view.player = player
+        view.pipEnabled = pipEnabled
         return view
     }
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         uiView.player = player
+        uiView.pipEnabled = pipEnabled
     }
 }
 
 final class PlayerUIView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    private var pip: AVPictureInPictureController?
+    var pipEnabled = false {
+        didSet { pip?.canStartPictureInPictureAutomaticallyFromInline = pipEnabled }
+    }
     var player: AVPlayer? {
         get { playerLayer.player }
         set {
             playerLayer.player = newValue
             playerLayer.videoGravity = .resizeAspect
+            installPiPIfNeeded()
         }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        installPiPIfNeeded()
+    }
+
+    private func installPiPIfNeeded() {
+        guard pip == nil, playerLayer.player != nil, AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        let controller = AVPictureInPictureController(playerLayer: playerLayer)
+        controller?.canStartPictureInPictureAutomaticallyFromInline = pipEnabled
+        pip = controller
+        PictureInPictureBridge.shared.controller = controller
     }
 }
 
@@ -567,25 +602,35 @@ struct DanmakuLayer: View {
         Group {
             if model.isPlaying {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
-                    track(at: timeline.date)
+                    track(at: mediaTime(timeline.date))
                 }
             } else {
-                track(at: .now)
+                track(at: model.playbackSeconds)
             }
         }
         .allowsHitTesting(false)
     }
 
-    private func track(at date: Date) -> some View {
-        GeometryReader { geo in
-            let t = date.timeIntervalSinceReferenceDate
-            ForEach(Array(cues.enumerated()), id: \.element.id) { index, cue in
-                let travel = 7.0
-                let phase = (t + cue.time).truncatingRemainder(dividingBy: travel) / travel
+    private func mediaTime(_ date: Date) -> Double {
+        let wall = model.playbackAnchorWall
+        guard wall > 0 else { return model.playbackSeconds }
+        let delta = date.timeIntervalSinceReferenceDate - wall
+        return max(0, model.playbackAnchorSeconds + delta * Double(max(model.playbackRate, 0)))
+    }
+
+    private func track(at time: Double) -> some View {
+        let window = cues.filter { $0.time <= time && $0.time >= time - 8 }.prefix(28)
+        return GeometryReader { geo in
+            ForEach(Array(window.enumerated()), id: \.element.id) { _, cue in
+                let age = time - cue.time
+                let lane = abs(cue.text.hashValue) % 5
+                let scrolling = cue.mode != 4 && cue.mode != 5
+                let x = scrolling ? geo.size.width * (1.05 - min(age, 8) / 8 * 1.25) : geo.size.width / 2
+                let y = cue.mode == 4 ? geo.size.height - 36 : CGFloat(18 + lane * 24)
                 Text(cue.text)
                     .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color(hex: cue.color))
-                    .position(x: geo.size.width * (1.15 - phase * 1.4), y: 24 + CGFloat(index % 5) * 26)
+                    .foregroundStyle(Color(hex: model.flag("显示会员彩色弹幕") ? cue.color : 0xFFFFFF))
+                    .position(x: x, y: y)
             }
         }
     }
@@ -593,125 +638,357 @@ struct DanmakuLayer: View {
 
 struct PlayerControls: View {
     @Environment(AppModel.self) private var model
-    @Namespace private var transportGlass
     let video: VideoItem
     @Binding var fullscreen: Bool
     @Binding var seeking: Bool
     @Binding var localProgress: Double
     @Binding var showMore: Bool
-    @Binding var showSpeed: Bool
-    @Binding var showQuality: Bool
     @Binding var showDanmaku: Bool
     @Binding var locked: Bool
     @Binding var coinPick: Int
     @Binding var showCoin: Bool
     @Binding var showFav: Bool
     @Binding var showShare: Bool
+    var onQuality: (String) -> Void
+    var onStepPage: (Int) -> Void
+    private let speeds = ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"]
+    @State private var chrome = true
+    @State private var chromeToken = 0
 
     private var progress: Double {
         seeking ? localProgress : model.playbackSeconds
     }
 
+    private var duration: Double { Double(max(video.duration, 1)) }
+
+    private var qualityChoices: [String] {
+        video.qualities.isEmpty ? ["流畅 360P", "清晰 480P", "高清 720P", "高清 1080P", "高清 1080P60", "超清 4K"] : video.qualities
+    }
+
+    /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
+    private var pinsChrome: Bool { LaunchMode.screen == "playback" }
+
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
+        ZStack {
+            Color.black.opacity(chrome && !locked ? 0.18 : 0)
+                .allowsHitTesting(false)
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { toggleChrome() }
             if locked {
-                Button { locked = false } label: {
-                    Image(systemName: "lock.fill")
-                        .padding(12)
+                iconButton("lock.fill") {
+                    locked = false
+                    reveal()
                 }
-                .buttonStyle(.glass)
-                .glassEffectID("transport", in: transportGlass)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .padding()
-            } else {
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 4)
+                .padding(.top, 2)
+            } else if chrome {
                 controls
             }
+            progressBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.smooth(duration: 0.32), value: locked)
+        .animation(.easeOut(duration: 0.22), value: chrome)
+        .onAppear { armHide() }
+        .onChange(of: seeking) { _, active in
+            if active {
+                chrome = true
+            } else {
+                armHide()
+            }
+        }
     }
 
     private var controls: some View {
-        VStack {
-            HStack {
-                if model.flag("观看人数") {
-                    Label(CountText.format(max(video.view / 80, 1)), systemImage: "person.2.fill")
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.black.opacity(0.35), in: Capsule())
-                }
-                Spacer()
-                Button { showMore = true } label: { Image(systemName: "ellipsis").padding(8) }
+        ZStack {
+            VStack(spacing: 0) {
+                topBar
+                Spacer(minLength: 0).allowsHitTesting(false)
+                bottomRow
             }
-            .foregroundStyle(.white)
-            .padding(8)
-            Spacer()
-            if model.flag("显示高能进度条") {
-                EnergyBar(progress: progress, duration: Double(max(video.duration, 1)))
-                    .frame(height: 18)
-                    .padding(.horizontal, 12)
+            centerTransport
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 0) {
+            iconButton("chevron.backward") { goBack() }
+                .accessibilityLabel("返回")
+            Text(video.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+            Spacer(minLength: 8).allowsHitTesting(false)
+            iconButton("pip.enter") {
+                if PictureInPictureBridge.shared.supported {
+                    PictureInPictureBridge.shared.toggle()
+                } else {
+                    model.show("当前设备不支持画中画")
+                }
+                reveal()
             }
-            HStack(spacing: 12) {
-                Button { togglePlay() } label: { Image(systemName: model.isPlaying ? "pause.fill" : "play.fill") }
-                Text(DurationBadge.clock(Int(progress))).font(.caption2.monospacedDigit())
-                Slider(
-                    value: Binding(
-                        get: { progress },
-                        set: { localProgress = $0; seeking = true }
-                    ),
-                    in: 0...Double(max(video.duration, 1)),
-                    onEditingChanged: { editing in
-                        if !editing {
-                            model.playbackSeconds = localProgress
-                            model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
-                            seeking = false
-                        }
-                    }
-                )
-                .tint(.white)
-                Text(DurationBadge.clock(video.duration)).font(.caption2.monospacedDigit())
-                Button { showSpeed = true } label: { Text(String(format: "%.2gx", model.playbackRate)).font(.caption.weight(.bold)) }
-                Button { showQuality = true } label: { Text(shortQuality).font(.caption.weight(.bold)) }
-                Button { model.danmakuOn.toggle(); model.setFlag("弹幕开关", model.danmakuOn) } label: {
-                    Image(systemName: model.danmakuOn ? "text.bubble.fill" : "text.bubble")
-                }
-                Button { showDanmaku = true } label: { Image(systemName: "slider.horizontal.3") }
-                if model.flag("全屏显示截图按钮") {
-                    Button { model.show("已保存截图到相册预览") } label: { Image(systemName: "camera") }
-                }
-                if model.flag("全屏显示锁定按钮") {
-                    Button { locked = true } label: { Image(systemName: "lock.open") }
-                }
-                Button { withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() } } label: {
-                    Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                }
+            .accessibilityLabel("画中画")
+            iconButton("camera") {
+                model.show("已保存截图到相册预览")
+                reveal()
             }
-            .font(.subheadline)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .glassEffect(.clear, in: ConcentricRectangle())
-            .glassEffectID("transport", in: transportGlass)
-            .padding(8)
-            if fullscreen && model.flag("全屏展示点赞/投币/收藏等操作按钮") {
-                VideoActionRow(video: video, coinPick: $coinPick, showCoin: $showCoin, showFav: $showFav, showShare: $showShare)
-                    .padding(.horizontal, 8)
+            .accessibilityLabel("截图")
+            iconButton("gearshape") {
+                showDanmaku = true
+                reveal()
+            }
+            .accessibilityLabel("播放设置")
+            if fullscreen {
+                iconButton("lock.open") {
+                    locked = true
+                    reveal()
+                }
+                .accessibilityLabel("锁定")
+            }
+        }
+        .padding(.horizontal, 2)
+        .background(alignment: .top) {
+            LinearGradient(
+                colors: [.black.opacity(0.6), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 88)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var centerTransport: some View {
+        HStack(spacing: 36) {
+            if video.pages.count > 1 {
+                iconButton("backward.end.fill") {
+                    onStepPage(-1)
+                    reveal()
+                }
+                .accessibilityLabel("上一P")
+            }
+            Button {
+                togglePlay()
+                reveal()
+            } label: {
+                Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 36, weight: .bold))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
+                    .frame(width: 64, height: 64)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(model.isPlaying ? "暂停" : "播放")
+            if video.pages.count > 1 {
+                iconButton("forward.end.fill") {
+                    onStepPage(1)
+                    reveal()
+                }
+                .accessibilityLabel("下一P")
             }
         }
     }
 
+    private var bottomRow: some View {
+        HStack(spacing: 0) {
+            Text("\(DurationBadge.clock(Int(progress))) / \(DurationBadge.clock(video.duration))")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                .padding(.leading, 12)
+            Spacer(minLength: 4)
+            iconButton(model.danmakuOn ? "text.bubble.fill" : "text.bubble") {
+                model.danmakuOn.toggle()
+                model.setFlag("弹幕开关", model.danmakuOn)
+                reveal()
+            }
+            .accessibilityLabel(model.danmakuOn ? "关闭弹幕" : "打开弹幕")
+            plainMenu(shortQuality, label: "画质") {
+                ForEach(qualityChoices, id: \.self) { name in
+                    Button {
+                        onQuality(name)
+                        reveal()
+                    } label: {
+                        if model.qualityName == name {
+                            Label(name, systemImage: "checkmark")
+                        } else {
+                            Text(name)
+                        }
+                    }
+                }
+            }
+            plainMenu(speedLabel, label: "倍速") {
+                ForEach(speeds, id: \.self) { label in
+                    Button(label) {
+                        applySpeed(label)
+                        reveal()
+                    }
+                }
+            }
+            iconButton(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                withAnimation(.easeOut(duration: 0.25)) { fullscreen.toggle() }
+                reveal()
+            }
+            .accessibilityLabel(fullscreen ? "退出全屏" : "全屏")
+        }
+        .padding(.bottom, 10)
+        .background(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.6)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 96)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geo in
+            let fraction = min(1, max(0, progress / duration))
+            let thick = seeking
+            let bar = thick ? 5.0 : 2.0
+            ZStack(alignment: .bottomLeading) {
+                Rectangle()
+                    .fill(.white.opacity(0.35))
+                    .frame(height: bar)
+                Rectangle()
+                    .fill(Palette.bili)
+                    .frame(width: max(bar, geo.size.width * fraction), height: bar)
+                if thick {
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 14, height: 14)
+                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                        .offset(x: max(0, geo.size.width * fraction - 7), y: -4)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let span = max(geo.size.width, 1)
+                        let x = min(max(0, value.location.x), span)
+                        localProgress = duration * Double(x / span)
+                        seeking = true
+                        chrome = true
+                    }
+                    .onEnded { value in
+                        let span = max(geo.size.width, 1)
+                        let x = min(max(0, value.location.x), span)
+                        localProgress = duration * Double(x / span)
+                        model.playbackSeconds = localProgress
+                        model.player?.seek(to: CMTime(seconds: localProgress, preferredTimescale: 600))
+                        seeking = false
+                        armHide()
+                    }
+            )
+        }
+        .frame(height: 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .accessibilityLabel("进度")
+    }
+
+    private func iconButton(_ system: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func plainMenu<MenuContent: View>(_ title: String, label: String, @ViewBuilder content: () -> MenuContent) -> some View {
+        Menu(content: content) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var speedLabel: String {
+        let rate = model.playbackRate
+        if abs(rate - 1) < 0.05 { return "1x" }
+        if abs(rate.truncatingRemainder(dividingBy: 1)) < 0.05 { return String(format: "%.0fx", rate) }
+        return String(format: "%.2gx", rate)
+    }
+
     private var shortQuality: String {
+        if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { return "1080P60" }
         if model.qualityName.contains("1080") { return "1080P" }
         if model.qualityName.contains("720") { return "720P" }
         if model.qualityName.contains("4K") { return "4K" }
+        if model.qualityName.contains("480") { return "480P" }
         if model.qualityName.contains("360") { return "360P" }
         return "自动"
+    }
+
+    private func applySpeed(_ label: String) {
+        let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
+        model.playbackRate = value
+        model.player?.rate = model.isPlaying ? value : 0
     }
 
     private func togglePlay() {
         model.isPlaying.toggle()
         if model.isPlaying { model.player?.play() } else { model.player?.pause() }
+    }
+
+    private func goBack() {
+        if fullscreen {
+            withAnimation(.easeOut(duration: 0.25)) { fullscreen = false }
+        } else {
+            model.pop()
+        }
+    }
+
+    private func toggleChrome() {
+        if pinsChrome {
+            chrome = true
+            return
+        }
+        if chrome {
+            chrome = false
+            chromeToken += 1
+        } else {
+            chrome = true
+            armHide()
+        }
+    }
+
+    private func reveal() {
+        chrome = true
+        armHide()
+    }
+
+    private func armHide() {
+        guard !pinsChrome else {
+            chrome = true
+            return
+        }
+        chromeToken += 1
+        let token = chromeToken
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard token == chromeToken, !seeking else { return }
+            chrome = false
+        }
     }
 }
 

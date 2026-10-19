@@ -44,9 +44,23 @@ struct CountText: View {
     }
 
     static func format(_ value: Int) -> String {
-        let abs = Swift.abs(value)
-        if abs >= 100_000_000 { return String(format: "%.1f亿", Double(value) / 100_000_000).replacingOccurrences(of: ".0", with: "") }
-        if abs >= 10_000 { return String(format: "%.1f万", Double(value) / 10_000).replacingOccurrences(of: ".0", with: "") }
+        let sign = value < 0 ? "-" : ""
+        let magnitude = Swift.abs(value)
+        if magnitude >= 100_000_000 {
+            let yi = Double(magnitude) / 100_000_000
+            if yi < 10 {
+                let tenths = (yi * 10).rounded() / 10
+                if tenths >= 10 { return sign + "\(Int(tenths.rounded()))亿" }
+                if Swift.abs(tenths - tenths.rounded()) < 0.001 { return sign + "\(Int(tenths.rounded()))亿" }
+                return sign + String(format: "%.1f亿", tenths)
+            }
+            return sign + "\(Int(yi.rounded()))亿"
+        }
+        if magnitude >= 10_000 {
+            let wan = (Double(magnitude) / 10_000).rounded()
+            if wan >= 10_000 { return sign + "\(Int((wan / 10_000).rounded()))亿" }
+            return sign + "\(Int(wan))万"
+        }
         return "\(value)"
     }
 }

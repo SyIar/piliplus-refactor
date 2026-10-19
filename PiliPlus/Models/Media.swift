@@ -31,9 +31,31 @@ struct VideoItem: Identifiable, Hashable, Codable {
     var pages: [VideoPage]
     var tname: String
     var playURL: String? = nil
+    var audioURL: String? = nil
     var qualities: [String] = []
+    var qualityIDs: [Int] = []
+    var streamCodec: String = ""
+    var collectionTitle: String = ""
+    var collectionIndex: Int = 0
+    var collectionCount: Int = 0
+    var collectionClips: [CollectionClip] = []
 
     var pageCount: Int { max(pages.count, 1) }
+
+    mutating func apply(_ offer: PlaybackOffer) {
+        playURL = offer.videoURL
+        audioURL = offer.audioURL
+        qualities = offer.qualities
+        qualityIDs = offer.qualityIDs
+        streamCodec = offer.codec
+    }
+}
+
+struct CollectionClip: Codable, Hashable, Identifiable {
+    var id: String { bvid.isEmpty ? "\(index)" : bvid }
+    var bvid: String
+    var title: String
+    var index: Int
 }
 
 struct CommentItem: Identifiable, Hashable {

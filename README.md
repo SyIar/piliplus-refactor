@@ -25,8 +25,9 @@ https://github.com/SyIar/piliplus-refactor/releases/latest
 
 - 首页推荐、热门、排行、直播广场（哔哩哔哩公开接口）
 - 搜索（综合 / 视频筛选：排序、时长、分区、发布时间）与热搜
-- 视频详情、分 P、相关视频、评论、画质取流与 `AVPlayer` 播放
-- 弹幕层、高能进度条、双击快进、长按二倍速、亮度 / 音量手势
+- 视频详情、分 P、相关视频、评论。播放走 DASH（`fnval=4048`，分开的音视频再合成），切换画质会重新取流
+- 弹幕按播放进度出现（`/x/v1/dm/list.so`），有字幕时显示 `/x/player/v2` 的字幕。后台播放和系统画中画已接上
+- 高能进度条、双击快进、长按二倍速、亮度 / 音量手势
 - 设置里的全部开关与选项，写入本机
 - 登录：扫码（与上游相同的电视端二维码轮询）和 Cookie。会话写入钥匙串，请求带上 `SESSDATA` 和 `bili_jct`。密码和短信仍要极验，这一项没有接通
 
@@ -34,4 +35,4 @@ https://github.com/SyIar/piliplus-refactor/releases/latest
 
 ## 说明
 
-这是独立的 Swift 重写，不是把 Flutter 工程嵌进 iOS。上游的 gRPC 弹幕、离线下载引擎和 WebDAV 同步在对应页面留了与原版一致的操作项，播放和浏览已使用公开 HTTP 接口。
+这是独立的 Swift 重写，不是把 Flutter 工程嵌进 iOS。弹幕使用公开的 HTTP `list.so`，不是上游的 gRPC 分段弹幕。离线下载和 WebDAV 仍只保留操作项。密码和短信登录仍要极验。
