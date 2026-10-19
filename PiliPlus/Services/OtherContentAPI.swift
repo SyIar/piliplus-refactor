@@ -109,6 +109,23 @@ enum OtherContentProof {
 
 extension BiliClient {
     func articleDocument(id requested: Int) async throws -> ArticleDoc {
+        var last = "专栏打不开"
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try await Task.sleep(for: .seconds(attempt == 1 ? 5 : 12))
+            }
+            do {
+                return try await loadArticleDocument(id: requested)
+            } catch {
+                last = error.localizedDescription
+                let limited = last.contains("频繁") || last.contains("稍后再试") || last.contains("412")
+                if !limited { throw error }
+            }
+        }
+        throw BiliError.message(last)
+    }
+
+    private func loadArticleDocument(id requested: Int) async throws -> ArticleDoc {
         let id: Int
         var listedAuthor = ""
         if requested > 0 {

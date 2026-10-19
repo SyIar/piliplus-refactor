@@ -162,6 +162,12 @@ enum LaunchMode {
         if perfScroll { return false }
         return screen != nil || perfStartup
     }
+    /// Set by the simulator script from the Actions token. Never written into proofs.
+    static var githubToken: String {
+        let raw = ProcessInfo.processInfo.environment["GITHUB_TOKEN"] ?? ""
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static var webdav: String? {
         guard let index = args.firstIndex(of: "-webdav"), args.indices.contains(index + 1) else { return nil }
         return args[index + 1]

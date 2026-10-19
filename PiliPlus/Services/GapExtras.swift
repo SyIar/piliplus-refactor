@@ -37,10 +37,16 @@ enum ReleaseCheck {
         var request = URLRequest(url: url)
         request.setValue("PiliPlus/\(current)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        if !LaunchMode.githubToken.isEmpty {
+            request.setValue("Bearer \(LaunchMode.githubToken)", forHTTPHeaderField: "Authorization")
+        }
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw BiliError.message("更新检查失败 \(code)")
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String ?? ""
+            let detail = message.replacingOccurrences(of: "\n", with: " ")
+            throw BiliError.message("更新检查失败 \(code) \(detail.prefix(80))")
         }
         let tag = object["tag_name"] as? String ?? ""
         let name = (object["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1013,7 +1013,15 @@ capture_gap_ui() {
     xcrun simctl launch --terminate-running-process \
       --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
       "$UDID" "$BUNDLE" -screen "$screen" -webdav "http://127.0.0.1:8765" -perfLabel "$LABEL"
+  elif [[ "$screen" == "gap-update" && -n "${GITHUB_TOKEN:-}" ]]; then
+    echo "gap-update sends the GitHub token"
+    SIMCTL_CHILD_GITHUB_TOKEN="$GITHUB_TOKEN" xcrun simctl launch --terminate-running-process \
+      --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+      "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   else
+    if [[ "$screen" == "gap-update" ]]; then
+      echo "gap-update has no GitHub token" >&2
+    fi
     xcrun simctl launch --terminate-running-process \
       --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
       "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
@@ -2431,7 +2439,16 @@ for screen in content-article content-audio content-music content-course content
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if ! capture_content_ui "$screen"; then
     echo "retrying ${screen}" >&2
-    capture_content_ui "$screen" || content_status=1
+    if [[ "$screen" == "content-article" ]]; then sleep 15; fi
+    if ! capture_content_ui "$screen"; then
+      if [[ "$screen" == "content-article" ]]; then
+        echo "retrying ${screen} once more" >&2
+        sleep 20
+        capture_content_ui "$screen" || content_status=1
+      else
+        content_status=1
+      fi
+    fi
   fi
 done
 gap_status=0
