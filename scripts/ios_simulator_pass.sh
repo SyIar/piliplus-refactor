@@ -155,7 +155,7 @@ capture_playback() {
   proof="$dir/Documents/playback-proof.json"
   rm -f "$proof" "$OUT/screenshots/playback.png" "$OUT/screenshots/playback-failed.png"
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen playback -perfLabel "$LABEL"
-  for _ in $(seq 1 75); do
+  for _ in $(seq 1 100); do
     if [[ -f "$proof" ]]; then
       cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
       err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
@@ -298,12 +298,97 @@ PY
   echo "saved playback.png"
 }
 
+capture_catalog() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/home-proof.json"
+  rm -f "$proof"
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 45); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -eq 1 ]]; then
+    cp "$proof" "$OUT/perf/${screen}-proof.json"
+    echo "proof ${screen}:"
+    cat "$OUT/perf/${screen}-proof.json"
+    echo
+  fi
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing home proof for ${screen}" >&2
+    return 1
+  fi
+  python3 - "$screen" "$OUT/perf/${screen}-proof.json" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+title = str(data.get("title", ""))
+bvid = str(data.get("bvid", ""))
+if screen == "home":
+    ok = (
+        data.get("source") == "rcmd"
+        and int(data.get("page", 0)) >= 2
+        and int(data.get("count", 0)) > int(data.get("firstCount", 0))
+        and bvid.startswith("BV")
+        and "液态玻璃" not in title
+        and "fixture" not in bvid
+        and 1 <= len(str(data.get("short") or "")) <= 12
+        and len(str(data.get("long") or "")) >= 16
+        and str(data.get("short") or "") != str(data.get("long") or "")
+        and "液态玻璃" not in str(data.get("short") or "")
+        and "fixture" not in str(data.get("short") or "").lower()
+        and "fixture" not in str(data.get("long") or "").lower()
+    )
+elif screen == "rank":
+    ok = int(data.get("rid", 0)) == 1 and int(data.get("count", 0)) >= 5 and bvid.startswith("BV") and "fixture" not in bvid
+elif screen in ("bangumi", "cinema"):
+    ok = int(data.get("count", 0)) >= 5 and int(data.get("seasonID", 0)) > 0 and title != ""
+else:
+    ok = False
+print(f"{screen} proof {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} proof rejected")
+PY
+}
+
+verify_scroll() {
+  python3 - "$OUT/perf/scroll.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+if data.get("error"):
+    raise SystemExit(f"scroll load failed: {data['error']}")
+warm = data["warm"]
+print(
+    f"warm p95={warm['p95Ms']} p99={warm['p99Ms']} max={warm['maxMs']} "
+    f"hits={data.get('imageHits')} misses={data.get('imageMisses')} prepared={data.get('preparedCovers')}"
+)
+if float(warm["p95Ms"]) > 20:
+    raise SystemExit("warm p95 above 20 ms")
+# Cards already on screen are created before the counter resets. Zero misses
+# means every cover looked up during the sweep was cached; preparedCovers is
+# how many of those bitmaps were decoded before the sweep started.
+if int(data.get("imageMisses", 1)) != 0 or int(data.get("preparedCovers", 0)) < 8:
+    raise SystemExit("cover cache did not hit")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
-for screen in home dynamics mine search settings video login playback; do
+catalog_status=0
+for screen in home rank bangumi cinema dynamics mine search settings video login playback; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     capture_playback
+    continue
+  fi
+  if [[ "$screen" == "home" || "$screen" == "rank" || "$screen" == "bangumi" || "$screen" == "cinema" ]]; then
+    capture_catalog "$screen" || catalog_status=1
     continue
   fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
@@ -313,6 +398,13 @@ for screen in home dynamics mine search settings video login playback; do
   xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
   echo "saved ${screen}.png"
 done
+
+scroll_status=0
+verify_scroll || scroll_status=1
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 ]]; then
+  echo "home data or warm scroll check failed" >&2
+  exit 1
+fi
 
 echo "Done. Output in $OUT"
 ls -la "$OUT/screenshots" "$OUT/perf"

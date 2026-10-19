@@ -3,10 +3,13 @@ import Foundation
 enum BiliError: LocalizedError {
     case message(String)
     case status(Int)
+    case risk(Int)
 
     var isRiskControl: Bool {
-        if case .status(412) = self { return true }
-        return false
+        switch self {
+        case .status(412), .risk: return true
+        default: return false
+        }
     }
 
     var errorDescription: String? {
@@ -14,6 +17,7 @@ enum BiliError: LocalizedError {
         case .message(let text): return text
         case .status(412): return "播放被风控拦住了（412）"
         case .status(let code): return "网络 \(code)"
+        case .risk(let code): return "请求被风控拦住了（\(code)）"
         }
     }
 }
@@ -48,9 +52,112 @@ struct BiliClient: Sendable {
     }
 
     func ranking(rid: Int = 0) async throws -> [VideoItem] {
-        let data = try await getJSON("https://api.bilibili.com/x/web-interface/ranking/v2?rid=\(rid)&type=all")
-        let list = data["data"]["list"].array ?? []
-        return list.compactMap(Self.video(fromPopular:))
+        let data = try await withGuest {
+            let data = try await getJSON("https://api.bilibili.com/x/web-interface/ranking/v2?rid=\(rid)&type=all")
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            guard code == 0 else { throw BiliError.message(data["message"].string ?? "排行不可用") }
+            return data
+        }
+        return (data["data"]["list"].array ?? []).compactMap(Self.video(fromPopular:))
+    }
+
+    /// Web 推荐流。`idx` 从 1 开始，对应上游 `fresh_idx`。
+    func recommend(idx: Int) async throws -> [VideoItem] {
+        let cursor = max(1, idx)
+        let params = [
+            "fresh_type": "3",
+            "feed_version": "V8",
+            "fresh_idx": "\(cursor)",
+            "fresh_idx_1h": "\(cursor)",
+            "brush": "\(max(0, cursor - 1))",
+            "fetch_row": "1",
+            "web_location": "1430650",
+            "ps": "12"
+        ]
+        let data = try await withGuest {
+            if let signed = try? await requestQuery("/x/web-interface/wbi/index/top/feed/rcmd", params: params, signed: true) {
+                let code = signed["code"].int ?? -1
+                if code == 0 { return signed }
+                if code == -352 || code == 412 { throw BiliError.risk(code) }
+            }
+            let plain = try await requestQuery("/x/web-interface/index/top/feed/rcmd", params: params, signed: false)
+            let code = plain["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return plain
+        }
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "推荐不可用")
+        }
+        let items = (data["data"]["item"].array ?? []).compactMap(Self.video(fromRecommend:))
+        guard !items.isEmpty else { throw BiliError.message("推荐是空的") }
+        return items
+    }
+
+    /// 分区最新投稿。`rid` 与排行分区一致。
+    func region(rid: Int, page: Int) async throws -> [VideoItem] {
+        let data = try await withGuest {
+            try await getJSON("https://api.bilibili.com/x/web-interface/newlist?rid=\(rid)&pn=\(page)&ps=20")
+        }
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "分区不可用")
+        }
+        return (data["data"]["archives"].array ?? []).compactMap(Self.video(fromPopular:))
+    }
+
+    /// 番剧 `season_type` 1，电影 2，电视剧 5。
+    func seasons(type: Int) async throws -> [SeasonItem] {
+        let data = try await withGuest {
+            try await getJSON("https://api.bilibili.com/pgc/web/rank/list?day=3&season_type=\(type)")
+        }
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "番剧榜不可用")
+        }
+        let list = data["data"]["list"].array ?? data["result"]["list"].array ?? []
+        return list.compactMap { Self.season(from: $0) }
+    }
+
+    func bangumiSchedule() async throws -> [String: Int] {
+        let data = try await withGuest {
+            try await getJSON("https://api.bilibili.com/pgc/web/timeline?types=1&before=6&after=6")
+        }
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "时间表不可用")
+        }
+        let days = data["result"].array ?? data["data"].array ?? []
+        let names = ["", "一", "二", "三", "四", "五", "六", "日"]
+        var counts: [String: Int] = [:]
+        for day in days {
+            var index = day["day_of_week"].int ?? 0
+            if index == 0 { index = 7 }
+            guard names.indices.contains(index), counts[names[index]] == nil else { continue }
+            counts[names[index]] = day["episodes"].array?.count ?? 0
+        }
+        return counts
+    }
+
+    func dislike(aid: Int, csrf: String) async throws {
+        guard aid > 0, !csrf.isEmpty else { throw BiliError.message("还不能提交不感兴趣") }
+        guard let url = URL(string: "https://api.bilibili.com/x/feed/dislike") else { return }
+        let data = try await postForm(url, fields: [
+            "goto": "av",
+            "id": "\(aid)",
+            "reason_id": "0",
+            "csrf": csrf
+        ])
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "不感兴趣没有提交成功")
+        }
+    }
+
+    private func withGuest<T>(_ work: () async throws -> T) async throws -> T {
+        await GuestIdentity.prepare(session: session)
+        do {
+            return try await work()
+        } catch let error as BiliError where error.isRiskControl {
+            await GuestIdentity.refresh(session: session)
+            return try await work()
+        }
     }
 
     func searchVideos(keyword: String, order: String = "totalrank", duration: Int = 0, tid: Int = 0, page: Int = 1) async throws -> [VideoItem] {
@@ -578,6 +685,25 @@ struct BiliClient: Sendable {
         var value = raw.replacingOccurrences(of: "http://", with: "https://")
         if value.hasPrefix("//") { value = "https:" + value }
         return value
+    }
+
+    static func video(fromRecommend item: JSON) -> VideoItem? {
+        guard item["goto"].string == "av" || item["bvid"].string?.isEmpty == false else { return nil }
+        return video(fromPopular: item)
+    }
+
+    static func season(from item: JSON) -> SeasonItem? {
+        let id = item["season_id"].int ?? 0
+        let title = item["title"].string ?? ""
+        guard id > 0, !title.isEmpty else { return nil }
+        return SeasonItem(
+            seasonID: id,
+            title: unescape(title),
+            cover: https(item["cover"].string ?? ""),
+            badge: item["badge"].string ?? "",
+            subtitle: item["new_ep"]["index_show"].string ?? item["pub_index"].string ?? "",
+            view: item["stat"]["view"].int ?? item["stat"]["follow"].int ?? 0
+        )
     }
 
     static func video(fromPopular item: JSON) -> VideoItem? {

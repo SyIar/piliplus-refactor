@@ -10,6 +10,7 @@ actor ImageStore {
     nonisolated(unsafe) static let storage = NSCache<NSString, UIImage>()
     nonisolated(unsafe) static var prepareHits = 0
     nonisolated(unsafe) static var prepareMisses = 0
+    nonisolated(unsafe) static var preparedCount = 0
 
     private var inflight: [String: Task<UIImage?, Never>] = [:]
 
@@ -19,7 +20,7 @@ actor ImageStore {
         config.requestCachePolicy = .returnCacheDataElseLoad
         config.httpAdditionalHeaders = [
             "Referer": "https://www.bilibili.com",
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 27_0 like Mac OS X) AppleWebKit/605.1.15"
+            "User-Agent": BiliHTTP.userAgent
         ]
         config.timeoutIntervalForRequest = 20
         return URLSession(configuration: config)
@@ -66,13 +67,17 @@ actor ImageStore {
 
     /// Decode a window of covers concurrently. The decode gate still caps parallelism.
     func prepare(urls: [String], maxPixel: CGFloat) async {
-        let unique = Array(Set(urls))
-        await withTaskGroup(of: Void.self) { group in
+        let unique = Array(Set(urls.filter { !$0.isEmpty }))
+        let ready = await withTaskGroup(of: Int.self) { group in
             for raw in unique {
                 guard let url = URL(string: raw) else { continue }
-                group.addTask { _ = await self.image(url: url, maxPixel: maxPixel) }
+                group.addTask { await self.image(url: url, maxPixel: maxPixel) == nil ? 0 : 1 }
             }
+            var count = 0
+            for await item in group { count += item }
+            return count
         }
+        Self.preparedCount = ready
     }
 
     func prefetch(urls: [String], maxPixel: CGFloat) async {

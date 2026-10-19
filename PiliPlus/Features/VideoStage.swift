@@ -276,6 +276,15 @@ struct VideoStage: View {
     }
 
     private func load() async {
+        if let ready = model.video(bvid), ready.playURL != nil {
+            video = ready
+            model.play(ready)
+            let cid = ready.pages.first?.cid ?? ready.cid
+            await loadTracks(bvid: ready.bvid, cid: cid, aid: ready.aid)
+            if model.flag("自动全屏") { fullscreen = true }
+            if model.flag("默认展示评论区") { tab = "评论" }
+            return
+        }
         do {
             var item = try await model.client.detail(bvid: bvid)
             let cid = item.pages.first?.cid ?? item.cid

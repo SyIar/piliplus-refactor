@@ -328,14 +328,15 @@ struct RelatedVideoRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.primary)
                         .multilineTextAlignment(.leading)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(2, reservesSpace: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
                 .buttonStyle(.plain)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                Spacer(minLength: 0)
                 HStack(spacing: 8) {
                     Text(counts)
                         .lineLimit(1)
@@ -356,6 +357,7 @@ struct RelatedVideoRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .padding(.vertical, 4)
     }
