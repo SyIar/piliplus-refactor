@@ -1,5 +1,12 @@
 import Foundation
 
+struct FansLoad: Sendable {
+    var people: [RelationPerson]
+    var login: Bool
+    var followers: Int
+    var note: String
+}
+
 struct RelationPerson: Identifiable, Hashable {
     var id: Int { mid }
     var mid: Int
@@ -330,7 +337,7 @@ enum AccountReads {
 }
 
 extension BiliClient {
-    func relationFans(mid: Int) async throws -> [RelationPerson] {
+    func relationFans(mid: Int) async -> FansLoad {
         let form = AccountManageRequest.fans(mid: mid, page: 1)
         let referer = "https://space.bilibili.com/\(mid)/fans/fans"
         var web = form.fields
@@ -339,6 +346,7 @@ extension BiliClient {
         web["gaia_source"] = "main_web"
         web["web_location"] = "333.999"
         var last = "粉丝列表不可用"
+        var sawLogin = false
         for suppressCookie in [false, true] {
             do {
                 let data = try await accountGET(
@@ -350,10 +358,12 @@ extension BiliClient {
                 )
                 if let rows = Self.fans(in: data) {
                     print("fans web cookie=\(!suppressCookie) rows=\(rows.count)")
-                    return rows
+                    return FansLoad(people: rows, login: false, followers: await followerCount(mid), note: "")
                 }
+                let code = data["code"].int ?? -1
+                if code == -101 { sawLogin = true }
                 last = data["message"].string ?? last
-                print("fans web cookie=\(!suppressCookie) code=\(data["code"].int ?? -1) \(last)")
+                print("fans web cookie=\(!suppressCookie) code=\(code) \(last)")
             } catch {
                 last = error.localizedDescription
                 print("fans web cookie=\(!suppressCookie) \(last)")
@@ -373,16 +383,32 @@ extension BiliClient {
                 let data = try await appAccountGET(path, query: appQuery, referer: "https://www.bilibili.com")
                 if let rows = Self.fans(in: data) {
                     print("fans app \(path) rows=\(rows.count)")
-                    return rows
+                    return FansLoad(people: rows, login: false, followers: await followerCount(mid), note: "")
                 }
+                let code = data["code"].int ?? -1
+                if code == -101 { sawLogin = true }
                 last = data["message"].string ?? last
-                print("fans app \(path) code=\(data["code"].int ?? -1) \(last)")
+                print("fans app \(path) code=\(code) \(last)")
             } catch {
                 last = error.localizedDescription
                 print("fans app \(path) \(last)")
             }
         }
-        throw BiliError.message(last)
+        let count = await followerCount(mid)
+        if sawLogin || last.contains("未登录") {
+            let note = count > 0 ? "公开粉丝数 \(count)。登录后查看名单" : "登录后查看粉丝名单"
+            return FansLoad(people: [], login: true, followers: count, note: note)
+        }
+        return FansLoad(people: [], login: false, followers: count, note: last)
+    }
+
+    private func followerCount(mid: Int) async -> Int {
+        let data = try? await accountGET(
+            "/x/relation/stat",
+            query: ["vmid": "\(mid)"],
+            referer: "https://space.bilibili.com/\(mid)"
+        )
+        return data?["data"]["follower"].int ?? 0
     }
 
     private static func fans(in data: JSON) -> [RelationPerson]? {

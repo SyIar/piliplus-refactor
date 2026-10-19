@@ -1799,7 +1799,7 @@ elif screen == "acct-search":
     total = int(data.get("total") or 0)
     ok = rows_ok(1) and str(data.get("query") or "") != "" and rows < total and len(titles) >= 1
 elif screen == "acct-fans":
-    ok = rows_ok(1) and len(names) >= 1 and all(name.strip() for name in names)
+    ok = (rows_ok(1) and len(names) >= 1 and all(name.strip() for name in names)) or (state == "login" and rows == 0 and note != "" and int(data.get("followers") or 0) > 0 and not fixture)
 elif screen == "acct-shop":
     ok = state == "login" and rows == 0
 elif screen == "acct-comics":

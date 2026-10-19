@@ -162,13 +162,31 @@ struct FanListPage: View {
     @Environment(AppModel.self) private var model
     @State private var people: [RelationPerson] = []
     @State private var failure = ""
+    @State private var login = false
+    @State private var note = ""
+    @State private var followers = 0
+    @State private var loading = true
 
     var body: some View {
         Group {
-            if !failure.isEmpty {
-                ContentUnavailableView("粉丝列表打不开", systemImage: "person.2.slash", description: Text(failure))
-            } else if people.isEmpty {
+            if loading {
                 ProgressView("正在加载粉丝")
+            } else if login {
+                VStack(spacing: 12) {
+                    if followers > 0 {
+                        Text(CountText.format(followers))
+                            .font(.largeTitle.weight(.bold))
+                        Text("公开粉丝")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    ContentUnavailableView("登录后查看粉丝名单", systemImage: "person.2", description: Text(note))
+                    Button("去登录") { model.open(.login) }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Palette.bili)
+                }
+            } else if !failure.isEmpty {
+                ContentUnavailableView("粉丝列表打不开", systemImage: "person.2.slash", description: Text(failure))
             } else {
                 List(people) { person in
                     HStack(spacing: 12) {
@@ -198,24 +216,42 @@ struct FanListPage: View {
     }
 
     private func load() async {
-        do {
-            let rows = try await model.client.relationFans(mid: AccountMids.likes)
-            people = rows
-            await ImageStore.shared.prepare(urls: rows.prefix(8).map(\.face), maxPixel: 120)
+        let result = await model.client.relationFans(mid: AccountMids.likes)
+        people = result.people
+        login = result.login
+        note = result.note
+        followers = result.followers
+        loading = false
+        if !result.people.isEmpty {
+            await ImageStore.shared.prepare(urls: result.people.prefix(8).map(\.face), maxPixel: 120)
+        }
+        if result.login {
             AccountManageUIProof.record([
-                "state": rows.isEmpty ? "empty" : "rows",
-                "rows": rows.count,
-                "names": rows.prefix(8).map(\.name),
-                "covers": ImageStore.preparedCount,
+                "state": "login",
+                "rows": 0,
+                "names": [String](),
+                "followers": result.followers,
+                "note": result.note,
                 "error": ""
             ])
-        } catch {
-            failure = error.localizedDescription
+        } else if result.people.isEmpty {
+            failure = result.note
             AccountManageUIProof.record([
                 "state": "error",
                 "rows": 0,
                 "names": [String](),
-                "error": failure
+                "note": result.note,
+                "error": result.note
+            ])
+        } else {
+            AccountManageUIProof.record([
+                "state": "rows",
+                "rows": result.people.count,
+                "names": result.people.prefix(8).map(\.name),
+                "covers": ImageStore.preparedCount,
+                "followers": result.followers,
+                "note": "",
+                "error": ""
             ])
         }
     }
