@@ -35,6 +35,7 @@ struct VideoStage: View {
     @State private var danmaku: [DanmakuCue] = []
     @State private var subtitles: [SubtitleLine] = []
     @State private var showAudio = false
+    @State private var showDownload = false
     @State private var expandedDesc = false
     @State private var sponsorSegments: [SponsorSegment] = []
     @State private var sponsorServer = ""
@@ -67,7 +68,16 @@ struct VideoStage: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        .onAppear { model.videoPageVisible = true }
+        .onDisappear { model.videoPageVisible = false }
+        .sheet(isPresented: $showDownload) {
+            if let video { DownloadSheet(video: video) }
+        }
         .task {
+            if LaunchMode.screen == "offline" || model.downloads.item(model.offlineTarget ?? "")?.bvid == bvid {
+                await presentOffline()
+                return
+            }
             if LaunchMode.usesFixtures, let cached = model.video(bvid) {
                 video = cached
                 related = Array(model.feed.prefix(4))
@@ -209,6 +219,10 @@ struct VideoStage: View {
                 commentList
             }
         }
+    }
+
+    private func offlineFile(_ video: VideoItem) -> Bool {
+        video.playURL?.hasPrefix("file:") == true
     }
 
     private var commentList: some View {
@@ -425,6 +439,56 @@ struct VideoStage: View {
         ])
     }
 
+    private func presentOffline() async {
+        guard let item = LaunchMode.screen == "offline" ? model.downloads.latestReady : model.downloads.item(model.offlineTarget ?? "") else {
+            error = "没有已完成的缓存"
+            return
+        }
+        model.offlineTarget = item.id
+        let movie = OfflineFiles.movie(item)
+        let videoFile = OfflineFiles.video(item)
+        let audioFile = OfflineFiles.audio(item)
+        let file = FileManager.default.fileExists(atPath: movie.path) ? movie : videoFile
+        let audio = file == movie ? nil : (FileManager.default.fileExists(atPath: audioFile.path) ? audioFile : nil)
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            error = "本地文件不存在"
+            return
+        }
+        var local = VideoItem(
+            bvid: item.bvid,
+            aid: item.aid,
+            cid: item.cid,
+            title: item.title,
+            cover: OfflineFiles.cover(item).absoluteString,
+            duration: item.duration,
+            ownerName: item.owner,
+            ownerMid: 0,
+            ownerFace: "",
+            desc: "",
+            pubdate: item.pubdate ?? 0,
+            view: item.viewCount ?? 0,
+            danmaku: item.danmakuCount,
+            like: item.likeCount ?? 0,
+            coin: item.coinCount ?? 0,
+            favorite: item.favoriteCount ?? 0,
+            share: item.shareCount ?? 0,
+            reply: item.replyCount ?? 0,
+            pages: [VideoPage(cid: item.cid, index: item.page, title: item.pageTitle, duration: item.duration)],
+            tname: ""
+        )
+        local.playURL = file.absoluteString
+        local.audioURL = audio?.absoluteString
+        local.streamCodec = item.codec
+        local.qualities = [item.quality]
+        video = local
+        model.qualityName = item.quality
+        if let data = try? Data(contentsOf: OfflineFiles.danmaku(item)) {
+            danmaku = DanmakuXML.parse(data)
+        }
+        model.offlineDanmaku = danmaku.count
+        model.playLocal(local, file: file, audio: audio)
+    }
+
     private func load() async {
         if let ready = model.video(bvid), ready.playURL != nil {
             video = ready
@@ -482,7 +546,7 @@ struct VideoStage: View {
     }
 
     private func switchQuality(_ name: String) async {
-        guard let video else { return }
+        guard let video, !offlineFile(video) else { return }
         let cid = video.pages.indices.contains(currentPage) ? video.pages[currentPage].cid : video.cid
         await switchStream(video, cid: cid, qn: QualityMap.qn(for: name), announce: nil)
     }
@@ -610,7 +674,12 @@ struct VideoStage: View {
         GlassMenuSheet(title: "更多", rows: Menus.videoMore) { action in
             switch action {
             case "添加至「稍后再看」": if let video { model.watchLater(video.bvid) }
-            case "选择画质": showQuality = true
+            case "选择画质":
+                if let video, offlineFile(video) {
+                    model.show("离线画质 \(model.qualityName)")
+                } else {
+                    showQuality = true
+                }
             case "选择音质": showAudio = true
             case "播放顺序": model.show("播放顺序：\(model.values["播放顺序"] ?? "自动连播")")
             case "弹幕设置", "弹幕列表": showDanmaku = true
@@ -623,7 +692,7 @@ struct VideoStage: View {
             case "保存封面": model.show("封面已保存")
             case "重载视频": Task { await load() }
             case "举报": model.show("已打开举报")
-            case "离线缓存": model.open(.feature("离线缓存"))
+            case "离线缓存": showDownload = true
             case "查看笔记": model.open(.feature("笔记"))
             default: model.show(action)
             }
@@ -890,7 +959,9 @@ struct PlayerControls: View {
     }
 
     /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
-    private var pinsChrome: Bool { LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" }
+    private var pinsChrome: Bool {
+        LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" || LaunchMode.screen == "offline"
+    }
 
     var body: some View {
         ZStack {
@@ -1032,16 +1103,26 @@ struct PlayerControls: View {
                 reveal()
             }
             .accessibilityLabel(model.danmakuOn ? "关闭弹幕" : "打开弹幕")
-            plainMenu(shortQuality, label: "画质") {
-                ForEach(qualityChoices, id: \.self) { name in
-                    Button {
-                        onQuality(name)
-                        reveal()
-                    } label: {
-                        if model.qualityName == name {
-                            Label(name, systemImage: "checkmark")
-                        } else {
-                            Text(name)
+            if offlineFile {
+                Text(shortQuality)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.7), radius: 3, y: 1)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("画质 \(model.qualityName)")
+            } else {
+                plainMenu(shortQuality, label: "画质") {
+                    ForEach(qualityChoices, id: \.self) { name in
+                        Button {
+                            onQuality(name)
+                            reveal()
+                        } label: {
+                            if model.qualityName == name {
+                                Label(name, systemImage: "checkmark")
+                            } else {
+                                Text(name)
+                            }
                         }
                     }
                 }
@@ -1162,14 +1243,17 @@ struct PlayerControls: View {
     }
 
     private var shortQuality: String {
-        if model.qualityName.contains("1080P60") || model.qualityName.contains("60") { return "1080P60" }
-        if model.qualityName.contains("1080") { return "1080P" }
-        if model.qualityName.contains("720") { return "720P" }
-        if model.qualityName.contains("4K") { return "4K" }
-        if model.qualityName.contains("480") { return "480P" }
-        if model.qualityName.contains("360") { return "360P" }
+        let name = model.qualityName
+        if name.contains("360") { return "360P" }
+        if name.contains("480") { return "480P" }
+        if name.contains("720") { return "720P" }
+        if name.contains("1080") && name.contains("60") { return "1080P60" }
+        if name.contains("1080") { return "1080P" }
+        if name.contains("4K") || name.contains("2160") { return "4K" }
         return "自动"
     }
+
+    private var offlineFile: Bool { video.playURL?.hasPrefix("file:") == true }
 
     private func applySpeed(_ label: String) {
         let value = Float(label.replacingOccurrences(of: "x", with: "")) ?? 1
@@ -1234,18 +1318,18 @@ struct VideoActionRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ActionChip(system: model.liked.contains(video.bvid) ? "hand.thumbsup.fill" : "hand.thumbsup", title: CountText.format(video.like + (model.liked.contains(video.bvid) ? 1 : 0)), selected: model.liked.contains(video.bvid)) {
+            ActionChip(system: model.liked.contains(video.bvid) ? "hand.thumbsup.fill" : "hand.thumbsup", title: actionCount(video.like + (model.liked.contains(video.bvid) ? 1 : 0), word: "赞"), selected: model.liked.contains(video.bvid)) {
                 model.toggleLike(video.bvid)
             }
             .simultaneousGesture(LongPressGesture().onEnded { _ in model.triple(video.bvid) })
             ActionChip(system: model.disliked.contains(video.bvid) ? "hand.thumbsdown.fill" : "hand.thumbsdown", title: "点踩", selected: model.disliked.contains(video.bvid)) {
                 model.toggleDislike(video.bvid)
             }
-            ActionChip(system: "bitcoinsign.circle", title: CountText.format(video.coin), selected: model.coined.contains(video.bvid)) {
+            ActionChip(system: "bitcoinsign.circle", title: actionCount(video.coin, word: "投币"), selected: model.coined.contains(video.bvid)) {
                 coinPick = 2
                 showCoin = true
             }
-            ActionChip(system: model.favored.contains(video.bvid) ? "star.fill" : "star", title: CountText.format(video.favorite), selected: model.favored.contains(video.bvid)) {
+            ActionChip(system: model.favored.contains(video.bvid) ? "star.fill" : "star", title: actionCount(video.favorite, word: "收藏"), selected: model.favored.contains(video.bvid)) {
                 if LaunchMode.accountPreview {
                     showFav = true
                     return
@@ -1261,8 +1345,13 @@ struct VideoActionRow: View {
             ActionChip(system: model.later.contains(video.bvid) ? "clock.fill" : "clock", title: "再看", selected: model.later.contains(video.bvid)) {
                 model.watchLater(video.bvid)
             }
-            ActionChip(system: "arrowshape.turn.up.right", title: CountText.format(video.share)) { showShare = true }
+            ActionChip(system: "arrowshape.turn.up.right", title: actionCount(video.share, word: "分享")) { showShare = true }
         }
+    }
+
+    private func actionCount(_ value: Int, word: String) -> String {
+        if video.playURL?.hasPrefix("file:") == true, value <= 0 { return word }
+        return CountText.format(value)
     }
 }
 

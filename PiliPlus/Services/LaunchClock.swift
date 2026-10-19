@@ -147,6 +147,7 @@ enum LaunchMode {
         if screen == "space" || screen?.hasPrefix("space-") == true { return false }
         if screen == "live" || screen == "live-area" || screen == "live-room" || screen == "liveProof" { return false }
         if screen == "sponsor" || screen == "sponsor-settings" { return false }
+        if screen == "downloads" || screen == "offline" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }

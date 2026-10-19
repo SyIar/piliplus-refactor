@@ -470,13 +470,17 @@ struct BiliClient: Sendable {
     }
 
     func danmaku(cid: Int) async throws -> [DanmakuCue] {
+        DanmakuXML.parse(try await danmakuDocument(cid: cid))
+    }
+
+    func danmakuDocument(cid: Int) async throws -> Data {
         await GuestIdentity.prepare(session: session)
         guard let url = URL(string: "https://api.bilibili.com/x/v1/dm/list.so?oid=\(cid)") else {
             throw BiliError.message("弹幕地址无效")
         }
         let data = try await getData(url, includeSession: false)
         guard let xml = RawInflate.expand(data) else { throw BiliError.message("弹幕解压失败") }
-        return DanmakuXML.parse(xml)
+        return xml
     }
 
     func subtitleLines(bvid: String, cid: Int, preference: String) async -> [SubtitleLine] {

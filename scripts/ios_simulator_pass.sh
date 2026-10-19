@@ -1082,6 +1082,227 @@ capture_sponsor_settings() {
   fi
 }
 
+capture_downloads() {
+  local dir proof line state="" fraction="" scheme="" danmaku="" err="" title=""
+  local progress_shot=0 ready=0
+  dir="$(container)"
+  proof="$dir/Documents/downloads-proof.json"
+  rm -f "$proof" "$OUT/screenshots/downloads-progress.png" "$OUT/screenshots/downloads.png"
+  : > "$OUT/perf/downloads.log"
+  : > "$OUT/perf/downloads.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/downloads.log" --stderr="$OUT/perf/downloads.err" \
+    "$UDID" "$BUNDLE" -screen downloads -perfLabel "$LABEL"
+  local deadline=$(( $(date +%s) + 300 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    if [[ -f "$proof" ]]; then
+      line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
+d=json.load(open(sys.argv[1]))
+keys=["state","fraction","scheme","danmaku","error","title"]
+print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
+      if [[ -n "$line" ]]; then
+        IFS=$'\t' read -r state fraction scheme danmaku err title <<< "$line"
+        echo "downloads state=$state fraction=$fraction scheme=$scheme danmaku=$danmaku error=$err title=$title"
+        if [[ "$progress_shot" -eq 0 ]] && python3 -c 'import sys; state, fraction = sys.argv[1], float(sys.argv[2]); sys.exit(0 if state in ("merging", "paused") or (state == "running" and fraction >= 0.02) else 1)' "$state" "$fraction"; then
+          xcrun simctl io "$UDID" screenshot "$OUT/screenshots/downloads-progress.png"
+          progress_shot=1
+          echo "saved downloads-progress.png"
+        fi
+        if [[ "$state" == "ready" && "$scheme" == "file" && "$err" == "-" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$danmaku"; then
+          if python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+frames = int(d.get("mergeFrames") or 0)
+p95 = float(d.get("mergeP95") or 0)
+scrolls = int(d.get("mergeScrolls") or 0)
+elapsed = float(d.get("mergeMs") or 0)
+work = float(d.get("mergeWorkMs") or 0)
+on_main = d.get("mergeOnMain") is True
+print("merge frames=%s p95=%s max=%s scrolls=%s ms=%s workMs=%s onMain=%s" % (frames, p95, d.get("mergeMax"), scrolls, elapsed, work, d.get("mergeOnMain")))
+ok = (not on_main) and scrolls >= 2 and frames >= 12 and 0 < p95 <= 50
+sys.exit(0 if ok else 1)
+' "$proof"; then
+            ready=1
+            break
+          fi
+          echo "downloads list did not stay responsive while merging" >&2
+          break
+        fi
+        if [[ "$state" == "failed" && "$err" != "-" ]]; then
+          echo "download failed: $err" >&2
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/downloads-proof.json"
+    echo "downloads proof:"
+    cat "$OUT/perf/downloads-proof.json"
+    echo
+  fi
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/downloads.png"
+  echo "saved downloads.png"
+  if [[ "$progress_shot" -ne 1 || "$ready" -ne 1 ]]; then
+    echo "offline download did not show progress and then a local file" >&2
+    tail -n 50 "$OUT/perf/downloads.log" || true
+    return 1
+  fi
+}
+
+capture_offline() {
+  local dir proof line seconds="" scheme="" danmaku="" err="" first="" advanced=0
+  dir="$(container)"
+  proof="$dir/Documents/offline-proof.json"
+  rm -f "$proof" "$OUT/screenshots/offline.png" "$OUT/screenshots/offline-failed.png"
+  : > "$OUT/perf/offline.log"
+  : > "$OUT/perf/offline.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/offline.log" --stderr="$OUT/perf/offline.err" \
+    "$UDID" "$BUNDLE" -screen offline -perfLabel "$LABEL"
+  for _ in $(seq 1 100); do
+    if [[ -f "$proof" ]]; then
+      line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
+d=json.load(open(sys.argv[1]))
+keys=["seconds","scheme","danmaku","error","asset"]
+print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
+      if [[ -n "$line" ]]; then
+        IFS=$'\t' read -r seconds scheme danmaku err asset <<< "$line"
+        echo "offline seconds=$seconds scheme=$scheme danmaku=$danmaku error=$err"
+        if [[ "$err" == "-" && "$scheme" == "file" ]] && python3 -c 'import sys; sys.exit(0 if int(float(sys.argv[1])) >= 1 else 1)' "$danmaku"; then
+          if [[ -z "$first" ]]; then
+            first="$seconds"
+          elif python3 -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) >= 0.8 else 1)' "$first" "$seconds"; then
+            advanced=1
+            break
+          fi
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/offline-a.png"
+  sleep 0.9
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/offline-b.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/offline-proof.json"
+    echo "offline proof:"
+    cat "$OUT/perf/offline-proof.json"
+    echo
+  fi
+  if [[ "$advanced" -ne 1 ]]; then
+    cp "$OUT/screenshots/offline-b.png" "$OUT/screenshots/offline-failed.png" || true
+    echo "offline playback did not advance from a file URL" >&2
+    tail -n 40 "$OUT/perf/offline.log" || true
+    return 1
+  fi
+  if ! python3 - "$OUT/screenshots/offline-a.png" "$OUT/screenshots/offline-b.png" <<'PY'
+import struct, sys, zlib
+
+def read_png(path):
+    data = open(path, "rb").read()
+    pos = 8
+    width = height = color = None
+    idat = b""
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, depth, color, _comp, _filt, inter = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"IDAT":
+            idat += chunk
+        elif kind == b"IEND":
+            break
+    raw = zlib.decompress(idat)
+    bpp = 4 if color == 6 else 3
+    stride = width * bpp
+    rows = []
+    index = 0
+    prev = bytearray(stride)
+    for _ in range(height):
+        filt = raw[index]
+        index += 1
+        row = bytearray(raw[index:index + stride])
+        index += stride
+        for x in range(stride):
+            left = row[x - bpp] if x >= bpp else 0
+            up = prev[x]
+            ul = prev[x - bpp] if x >= bpp else 0
+            if filt == 0:
+                value = row[x]
+            elif filt == 1:
+                value = (row[x] + left) & 255
+            elif filt == 2:
+                value = (row[x] + up) & 255
+            elif filt == 3:
+                value = (row[x] + ((left + up) // 2)) & 255
+            elif filt == 4:
+                guess = left + up - ul
+                pa, pb, pc = abs(guess - left), abs(guess - up), abs(guess - ul)
+                pred = left if pa <= pb and pa <= pc else (up if pb <= pc else ul)
+                value = (row[x] + pred) & 255
+            else:
+                raise SystemExit(f"bad png filter {filt}")
+            row[x] = value
+        rows.append(row)
+        prev = row
+    return width, height, bpp, rows
+
+def stats(path):
+    width, height, bpp, rows = read_png(path)
+    y0, y1 = int(height * 0.08), int(height * 0.32)
+    total = 0.0
+    squares = 0.0
+    count = 0
+    for y in range(y0, y1):
+        row = rows[y]
+        for x in range(width):
+            i = x * bpp
+            luma = 0.2126 * row[i] + 0.7152 * row[i + 1] + 0.0722 * row[i + 2]
+            total += luma
+            squares += luma * luma
+            count += 1
+    mean = total / count
+    variance = max(0.0, squares / count - mean * mean)
+    return width, height, mean, variance ** 0.5
+
+def motion(left, right):
+    aw, ah, ab, ar = read_png(left)
+    bw, bh, bb, br = read_png(right)
+    y0, y1 = int(ah * 0.08), int(ah * 0.32)
+    total = 0.0
+    count = 0
+    for y in range(y0, y1):
+        a = ar[y]
+        b = br[y]
+        for i in range(0, aw * ab, ab):
+            total += abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2])
+            count += 3
+    return total / count
+
+width, height, mean_b, std_b = stats(sys.argv[2])
+delta = motion(sys.argv[1], sys.argv[2])
+print(f"offline player band {width}x{height} mean={mean_b:.2f} stddev={std_b:.2f} motion={delta:.2f}")
+if std_b < 15 or mean_b > 245 or delta < 2.0:
+    raise SystemExit("player band does not look like moving video")
+PY
+  then
+    cp "$OUT/screenshots/offline-b.png" "$OUT/screenshots/offline-failed.png"
+    echo "offline player band did not show moving video" >&2
+    return 1
+  fi
+  cp "$OUT/screenshots/offline-b.png" "$OUT/screenshots/offline.png"
+  echo "saved offline.png"
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
@@ -1090,12 +1311,13 @@ space_status=0
 playback_status=0
 live_status=0
 sponsor_status=0
+download_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1142,6 +1364,17 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     capture_sponsor_settings || sponsor_status=1
     continue
   fi
+  if [[ "$screen" == "downloads" ]]; then
+    capture_downloads || download_status=1
+    continue
+  fi
+  if [[ "$screen" == "offline" ]]; then
+    if ! capture_offline; then
+      echo "retrying offline playback" >&2
+      capture_offline || download_status=1
+    fi
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -1152,8 +1385,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, or warm scroll check failed" >&2
   exit 1
 fi
 
