@@ -370,9 +370,9 @@ private struct ReleaseNotes {
             let plain = AttributedString(source.trimmingCharacters(in: .whitespacesAndNewlines))
             return plain.characters.isEmpty ? [] : [Block(text: plain, headerLevel: nil, listMarker: nil, code: false)]
         }
-        var grouped: [(PresentationIntent, AttributedString)] = []
+        var grouped: [(PresentationIntent?, AttributedString)] = []
         for run in parsed.runs {
-            let intent = run.presentationIntent ?? PresentationIntent()
+            let intent = run.presentationIntent
             let piece = AttributedString(parsed[run.range])
             if let index = grouped.indices.last, grouped[index].0 == intent {
                 var text = grouped[index].1
@@ -394,14 +394,16 @@ private struct ReleaseNotes {
         }
     }
 
-    private static func headerLevel(_ intent: PresentationIntent) -> Int? {
+    private static func headerLevel(_ intent: PresentationIntent?) -> Int? {
+        guard let intent else { return nil }
         for component in intent.components {
             if case .header(let level) = component.kind { return level }
         }
         return nil
     }
 
-    private static func listMarker(_ intent: PresentationIntent) -> String? {
+    private static func listMarker(_ intent: PresentationIntent?) -> String? {
+        guard let intent else { return nil }
         var ordered = false
         var ordinal = 0
         var item = false
@@ -423,8 +425,9 @@ private struct ReleaseNotes {
         return "•"
     }
 
-    private static func isCodeBlock(_ intent: PresentationIntent) -> Bool {
-        intent.components.contains { component in
+    private static func isCodeBlock(_ intent: PresentationIntent?) -> Bool {
+        guard let intent else { return false }
+        return intent.components.contains { component in
             if case .codeBlock = component.kind { return true }
             return false
         }
