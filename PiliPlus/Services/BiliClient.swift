@@ -52,6 +52,65 @@ struct BiliClient: Sendable {
         return list.compactMap(Self.video(fromPopular:))
     }
 
+    func weeklyIssues() async throws -> [WeeklyIssue] {
+        guard let url = HotRequest.issues().endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "每周必看不可用")
+        }
+        return (data["data"]["list"].array ?? []).compactMap { item in
+            let number = item["number"].int ?? 0
+            guard number > 0 else { return nil }
+            return WeeklyIssue(
+                number: number,
+                name: item["name"].string ?? "",
+                subject: item["subject"].string ?? ""
+            )
+        }
+    }
+
+    func weeklyVideos(number: Int) async throws -> [VideoItem] {
+        let params = ["number": "\(number)"]
+        let referer = "https://www.bilibili.com/v/popular/weekly"
+        var last = "这一期没有打开"
+        // A long guest session can make the signed call return -352. The same signature without that cookie still opens the issue.
+        for suppressCookie in [false, true] {
+            do {
+                let data = try await requestQuery(
+                    "/x/web-interface/popular/series/one",
+                    params: params,
+                    signed: true,
+                    referer: referer,
+                    suppressCookie: suppressCookie
+                )
+                let code = data["code"].int ?? -1
+                if code == 0 {
+                    let list = data["data"]["list"].array ?? data["data"]["archives"].array ?? []
+                    let videos = list.compactMap { Self.video(fromPopular: $0) ?? Self.video(fromFavorite: $0) }
+                    if !videos.isEmpty { return videos }
+                    last = "这一期没有视频"
+                    continue
+                }
+                last = code == -352 || code == 412
+                    ? BiliError.risk(code).localizedDescription
+                    : (data["message"].string ?? last)
+            } catch {
+                last = error.localizedDescription
+            }
+        }
+        throw BiliError.message(last)
+    }
+
+    func preciousVideos() async throws -> (videos: [VideoItem], explain: String) {
+        guard let url = HotRequest.precious().endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "入站必刷不可用")
+        }
+        let videos = (data["data"]["list"].array ?? []).compactMap(Self.video(fromPopular:))
+        return (videos, data["data"]["explain"].string ?? data["data"]["title"].string ?? "")
+    }
+
     func ranking(rid: Int = 0) async throws -> [VideoItem] {
         let data = try await withGuest {
             let data = try await getJSON("https://api.bilibili.com/x/web-interface/ranking/v2?rid=\(rid)&type=all")
@@ -663,7 +722,8 @@ struct BiliClient: Sendable {
         referer: String? = nil,
         origin: String? = nil,
         userAgent: String? = nil,
-        host: String = "https://api.bilibili.com"
+        host: String = "https://api.bilibili.com",
+        suppressCookie: Bool = false
     ) async throws -> JSON {
         let fields = signed ? try await wbiSign(params) : params
         let stripped = CharacterSet(charactersIn: "!'()*")
@@ -677,7 +737,7 @@ struct BiliClient: Sendable {
         guard let url = URL(string: "\(host)\(path)?\(query)") else {
             throw BiliError.message("地址无效")
         }
-        return try await getJSON(url, referer: referer, origin: origin, userAgent: userAgent)
+        return try await getJSON(url, referer: referer, origin: origin, userAgent: userAgent, suppressCookie: suppressCookie)
     }
 
     func liveRooms() async throws -> [LiveRoom] {
@@ -1629,7 +1689,8 @@ struct BiliClient: Sendable {
         cookieOverride: String? = nil,
         referer: String? = nil,
         origin: String? = nil,
-        userAgent: String? = nil
+        userAgent: String? = nil,
+        suppressCookie: Bool = false
     ) async throws -> JSON {
         try await send(
             url,
@@ -1639,7 +1700,8 @@ struct BiliClient: Sendable {
             cookieOverride: cookieOverride,
             referer: referer,
             origin: origin,
-            userAgent: userAgent
+            userAgent: userAgent,
+            suppressCookie: suppressCookie
         )
     }
 
@@ -1701,7 +1763,8 @@ struct BiliClient: Sendable {
         cookieOverride: String?,
         referer: String? = nil,
         origin: String? = nil,
-        userAgent: String? = nil
+        userAgent: String? = nil,
+        suppressCookie: Bool = false
     ) async throws -> JSON {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -1718,7 +1781,7 @@ struct BiliClient: Sendable {
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
-        applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: cookieOverride)
+        applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: cookieOverride, suppressCookie: suppressCookie)
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw BiliError.status(http.statusCode)
@@ -1727,7 +1790,7 @@ struct BiliClient: Sendable {
         return JSON(object)
     }
 
-    private func applyCommonHeaders(_ request: inout URLRequest, includeSession: Bool, cookieOverride: String?) {
+    private func applyCommonHeaders(_ request: inout URLRequest, includeSession: Bool, cookieOverride: String?, suppressCookie: Bool = false) {
         if request.value(forHTTPHeaderField: "User-Agent") == nil {
             request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
         }
@@ -1739,7 +1802,7 @@ struct BiliClient: Sendable {
         if request.value(forHTTPHeaderField: "Referer") == nil {
             request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Referer")
         }
-        let cookie = BiliHTTP.mergedCookie(includeSession: includeSession, override: cookieOverride)
+        let cookie = suppressCookie ? "" : BiliHTTP.mergedCookie(includeSession: includeSession, override: cookieOverride)
         if !cookie.isEmpty {
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
