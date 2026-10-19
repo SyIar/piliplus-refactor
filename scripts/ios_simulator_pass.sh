@@ -1153,6 +1153,53 @@ sys.exit(0 if ok else 1)
   fi
 }
 
+capture_detail() {
+  local screen="$1"
+  local dir proof line title="" owner="" collection="" related="" covers="" ready=0
+  dir="$(container)"
+  proof="$dir/Documents/detail-proof.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
+d=json.load(open(sys.argv[1]))
+keys=["title","owner","collection","related","covers"]
+print("\t".join(cell(d.get(k)) for k in keys))' "$proof" 2>/dev/null || true)"
+      if [[ -n "$line" ]]; then
+        IFS=$'\t' read -r title owner collection related covers <<< "$line"
+        echo "detail screen=$screen title=$title owner=$owner collection=$collection related=$related covers=$covers"
+        if [[ "$title" != "-" && "$owner" != "-" ]] && python3 -c 'import sys
+related = int(float(sys.argv[1])); covers = int(float(sys.argv[2]))
+need = related if related < 4 else 4
+sys.exit(0 if related >= 1 and covers >= need else 1)' "$related" "$covers"; then
+          ready=1
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  sleep 1.5
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/${screen}-proof.json"
+  fi
+  if [[ "$ready" -ne 1 ]]; then
+    echo "detail page did not show a title and related rows" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  echo "saved ${screen}.png"
+}
+
 capture_offline() {
   local dir proof line seconds="" scheme="" danmaku="" err="" first="" advanced=0
   dir="$(container)"
@@ -1404,6 +1451,107 @@ if not ok:
 PY
 }
 
+capture_playback_extra() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/playback-extra-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen playbackExtra -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing playback extra proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/playback-extra-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "heartbeat": ("POST", "/x/click-interface/web/heartbeat", "bvid=BV1&cid=7&csrf=jct-token&played_time=12&type=3", True),
+    "history-report": ("POST", "/x/v2/history/report", "aid=42&csrf=jct-token&type=3", True),
+    "danmaku": ("POST", "/x/v2/dm/post", "bvid=BV1&color=16777215&csrf=jct-token&fontsize=25&mode=1&msg=%E4%BD%A0%E5%A5%BD&oid=7&pool=0&progress=12000&rnd=1700000000&type=1", True),
+    "videoshot": ("GET", "/x/player/videoshot", "bvid=BV1&cid=7&index=1", False),
+    "player-info": ("GET", "/x/player/wbi/v2", "bvid=BV1&cid=7", False),
+}
+print(f"playback extra checked={data.get('checked')} ok={data.get('ok')} failures={data.get('failures')}")
+if data.get("ok") is not True or data.get("failures") or int(data.get("checked") or 0) != 5:
+    raise SystemExit("playback extra proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"playback extra cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body, csrf) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body"), bool(item.get("csrf"))) != (method, path, body, csrf):
+        raise SystemExit(f"{name} drifted: {item}")
+print("playback extra proof ok")
+PY
+}
+
+capture_extra_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/${screen}-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 2
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing ${screen} proof" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    tail -n 40 "$OUT/perf/${screen}.err" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-proof.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("applied", "seconds", "source", "from", "to", "reason", "count", "episode", "chapters", "energy", "title", "images", "frames", "showing", "sheet", "loginGuide", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} error: {data.get('error')}")
+if screen == "resume":
+    applied = float(data.get("applied") or 0)
+    seconds = float(data.get("seconds") or 0)
+    ok = applied >= 8 and abs(seconds - applied) < 8 and data.get("source") in ("local", "server")
+elif screen == "autoplay":
+    ok = data.get("from") and data.get("from") != data.get("to") and data.get("reason") in ("page", "related") and float(data.get("seconds") or 0) >= 0.4
+elif screen == "bangumi-play":
+    ok = int(data.get("count") or 0) >= 2 and str(data.get("episode") or "") != "" and float(data.get("seconds") or 0) >= 0.8
+elif screen == "chapters":
+    ok = int(data.get("chapters") or 0) >= 1 and int(data.get("energy") or 0) >= 8 and str(data.get("title") or "") != ""
+elif screen == "scrub":
+    ok = int(data.get("images") or 0) >= 1 and int(data.get("frames") or 0) >= 1 and data.get("showing") is True
+elif screen == "sleep":
+    ok = data.get("sheet") is True and data.get("options") == ["不开启", "15 分钟", "30 分钟", "60 分钟", "播完当前"] and data.get("loginGuide") is True
+else:
+    ok = False
+print(f"{screen} extra ui {'ok' if ok else 'rejected'}")
+if not ok:
+    raise SystemExit(f"{screen} extra ui rejected")
+PY
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
@@ -1414,18 +1562,28 @@ live_status=0
 sponsor_status=0
 download_status=0
 message_status=0
+extra_status=0
+detail_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
 capture_message_proof || message_status=1
+capture_playback_extra || extra_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback resume autoplay bangumi-play chapters scrub sleep history later fav favsheet guest-history guest-later guest-fav guest-dynamics guest-messages guest-chat search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings downloads offline detail detail-dark; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
       echo "retrying playback capture" >&2
       capture_playback || playback_status=1
+    fi
+    continue
+  fi
+  if [[ "$screen" == "resume" || "$screen" == "autoplay" || "$screen" == "bangumi-play" || "$screen" == "chapters" || "$screen" == "scrub" || "$screen" == "sleep" ]]; then
+    if ! capture_extra_ui "$screen"; then
+      echo "retrying ${screen}" >&2
+      capture_extra_ui "$screen" || extra_status=1
     fi
     continue
   fi
@@ -1482,6 +1640,13 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     fi
     continue
   fi
+  if [[ "$screen" == "detail" || "$screen" == "detail-dark" ]]; then
+    if ! capture_detail "$screen"; then
+      echo "retrying ${screen}" >&2
+      capture_detail "$screen" || detail_status=1
+    fi
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -1492,8 +1657,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, or warm scroll check failed" >&2
   exit 1
 fi
 

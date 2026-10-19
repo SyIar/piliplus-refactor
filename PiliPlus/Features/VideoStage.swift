@@ -45,6 +45,20 @@ struct VideoStage: View {
     @State private var sponsorUndone: Set<String> = []
     @State private var sponsorPrompted: Set<String> = []
     @State private var sponsorPrimed = false
+    @State private var chapters: [ChapterMark] = []
+    @State private var energy: [Double] = []
+    @State private var shot: VideoShotPage?
+    @State private var shotSheets: [Int: UIImage] = [:]
+    @State private var scrubPreview: UIImage?
+    @State private var danmakuDraft = ""
+    @State private var resumeApplied = 0.0
+    @State private var resumeSource = ""
+    @State private var autoplayFrom = ""
+    @State private var autoplayTo = ""
+    @State private var autoplayReason = ""
+    @State private var autoplayArmed = false
+    @State private var autoplaySawZero = false
+    @State private var didContinue = false
 
     var body: some View {
         ZStack {
@@ -68,8 +82,27 @@ struct VideoStage: View {
         }
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear { model.videoPageVisible = true }
+        .onAppear {
+            model.videoPageVisible = true
+            if LaunchMode.screen == "sleep" { showDanmaku = true }
+        }
         .onDisappear { model.videoPageVisible = false }
+        .onChange(of: showDanmaku) { _, shown in
+            guard shown, LaunchMode.screen == "sleep" else { return }
+            PlaybackUIProof.record("sleep", [
+                "sheet": true,
+                "options": PlaybackSleep.options,
+                "loginGuide": !model.loggedIn,
+                "error": ""
+            ])
+        }
+        .onChange(of: model.playbackSeconds) { _, seconds in
+            noteExtraProofs(seconds)
+        }
+        .onChange(of: model.playbackEndedToken) { _, token in
+            guard token > 0, autoplayEnabled else { return }
+            Task { await continueAfterEnd() }
+        }
         .sheet(isPresented: $showDownload) {
             if let video { DownloadSheet(video: video) }
         }
@@ -163,6 +196,10 @@ struct VideoStage: View {
                 showFav: $showFav,
                 showShare: $showShare,
                 segments: visibleSponsor,
+                chapters: chapters,
+                energy: energy,
+                scrubPreview: scrubPreview,
+                onScrub: { seconds in Task { await updateScrubPreview(at: seconds) } },
                 onQuality: { name in Task { await switchQuality(name) } },
                 onStepPage: { delta in
                     let next = currentPage + delta
@@ -210,9 +247,13 @@ struct VideoStage: View {
                     showFav: $showFav,
                     showShare: $showShare,
                     pageIndex: currentPage,
+                    autoplayNote: autoplayCaption,
                     onSelectPage: { index, page in
                         currentPage = index
                         Task { await reload(video, cid: page.cid) }
+                    },
+                    onSelectEpisode: { episode in
+                        Task { await playEpisode(episode) }
                     }
                 )
             } else {
@@ -492,8 +533,9 @@ struct VideoStage: View {
     private func load() async {
         if let ready = model.video(bvid), ready.playURL != nil {
             video = ready
-            model.play(ready)
             let cid = ready.pages.first?.cid ?? ready.cid
+            adoptExtras(bvid: ready.bvid, cid: cid, duration: ready.duration)
+            playFresh(ready, cid: cid)
             await loadTracks(bvid: ready.bvid, cid: cid, aid: ready.aid)
             if model.flag("自动全屏") { fullscreen = true }
             if model.flag("默认展示评论区") { tab = "评论" }
@@ -514,7 +556,8 @@ struct VideoStage: View {
                 model.qualityName = offer.selectedName
                 video = item
                 model.store(item)
-                model.play(item)
+                adoptExtras(bvid: item.bvid, cid: cid, duration: item.duration)
+                playFresh(item, cid: cid)
             } catch {
                 let text = error.localizedDescription
                 PlaybackProof.record(seconds: 0, quality: "", codec: "", error: text)
@@ -593,8 +636,19 @@ struct VideoStage: View {
         subtitles = await subs
         let nextRelated = (try? await rel) ?? []
         await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
+        let covers = ImageStore.preparedCount
         related = nextRelated
         related.forEach(model.store)
+        if let video {
+            DetailProof.record(
+                title: video.title,
+                owner: video.ownerName,
+                collection: video.collectionTitle.isEmpty ? model.seasonTitle : video.collectionTitle,
+                related: related.count,
+                covers: covers
+            )
+        }
+        await loadDecorations(bvid: bvid, cid: cid)
         let sponsor = await SponsorClient.segments(for: bvid)
         sponsorSegments = sponsor.items
         sponsorServer = sponsor.server
@@ -681,11 +735,11 @@ struct VideoStage: View {
                     showQuality = true
                 }
             case "选择音质": showAudio = true
-            case "播放顺序": model.show("播放顺序：\(model.values["播放顺序"] ?? "自动连播")")
+            case "播放顺序": showDanmaku = true
             case "弹幕设置", "弹幕列表": showDanmaku = true
             case "字幕设置":
                 model.show(subtitles.isEmpty ? "这条视频没有字幕" : "字幕偏好：\(model.values["字幕选择偏好"] ?? "自动")")
-            case "定时关闭": model.show("将在 30 分钟后停止播放")
+            case "定时关闭": showDanmaku = true
             case "播放地址":
                 UIPasteboard.general.string = video?.playURL
                 model.show("已复制定播放地址")
@@ -767,6 +821,45 @@ struct VideoStage: View {
     private var danmakuSheet: some View {
         NavigationStack {
             List {
+                Section("定时关闭") {
+                    Picker("定时关闭", selection: Binding(
+                        get: { model.sleepChoice },
+                        set: { model.chooseSleep($0) }
+                    )) {
+                        ForEach(PlaybackSleep.options, id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                }
+                Section("发送弹幕") {
+                    if model.loggedIn, let video {
+                        TextField("发一条弹幕", text: $danmakuDraft)
+                        Button("发送") {
+                            let text = danmakuDraft
+                            danmakuDraft = ""
+                            Task { await model.sendDanmaku(video, message: text) }
+                        }
+                        .disabled(danmakuDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } else {
+                        Button("登录后发送弹幕") { model.open(.login) }
+                            .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
+                Section("播放顺序") {
+                    Picker("播放顺序", selection: Binding(
+                        get: { model.values["播放顺序"] ?? "自动连播" },
+                        set: { model.values["播放顺序"] = $0; model.save() }
+                    )) {
+                        ForEach(["自动连播", "单集循环", "列表循环", "播完暂停", "倒序播放"], id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                }
                 Toggle("显示弹幕", isOn: Binding(get: { model.danmakuOn }, set: { model.danmakuOn = $0; model.setFlag("弹幕开关", $0) }))
                 Toggle("点击弹幕", isOn: Binding(get: { model.flag("启用点击弹幕") }, set: { model.setFlag("启用点击弹幕", $0) }))
                 Toggle("合并相同弹幕", isOn: Binding(get: { model.flag("合并弹幕") }, set: { model.setFlag("合并弹幕", $0) }))
@@ -797,9 +890,290 @@ struct VideoStage: View {
             .navigationTitle("播放设置")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents(LaunchMode.screen == "sleep" ? [.large] : [.medium, .large])
         .presentationDragIndicator(.visible)
-        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        .presentationBackgroundInteraction(LaunchMode.screen == "sleep" ? .disabled : .enabled(upThrough: .medium))
+    }
+
+    private var autoplayCaption: String {
+        guard LaunchMode.screen == "autoplay", !autoplayReason.isEmpty else { return "" }
+        return autoplayReason == "page" ? "已自动播放下一P" : "已自动播放相关视频"
+    }
+
+    private var autoplayEnabled: Bool {
+        switch LaunchMode.screen {
+        case nil, "autoplay", "bangumi-play": return true
+        default: return false
+        }
+    }
+
+    private func playFresh(_ item: VideoItem, cid: Int) {
+        let start = initialStart(item, cid: cid)
+        if LaunchMode.screen == "resume" {
+            resumeApplied = start
+            let local = PlaybackMemory.position(cid: cid)
+            let remote = Double(max(item.progress, 0))
+            resumeSource = remote > local && remote > 0 ? "server" : "local"
+        }
+        if LaunchMode.screen == "autoplay", autoplayFrom.isEmpty {
+            autoplayFrom = "\(item.bvid)#\(cid)"
+        }
+        model.play(item, at: start)
+        if LaunchMode.screen == "autoplay" { armAutoplay(item) }
+    }
+
+    private func initialStart(_ item: VideoItem, cid: Int) -> Double {
+        switch LaunchMode.screen {
+        case "playback", "sponsor", "offline", "autoplay", "chapters", "scrub", "sleep", "comments", "favsheet":
+            return 0
+        default:
+            let duration = item.pages.first { $0.cid == cid }?.duration ?? item.duration
+            return model.resumePosition(cid: cid, duration: duration, server: item.progress)
+        }
+    }
+
+    private func adoptExtras(bvid: String, cid: Int, duration: Int) {
+        guard model.extrasKey == "\(bvid)#\(cid)" else { return }
+        chapters = model.chapterMarks
+        energy = model.energySamples
+        shot = model.preparedShot
+        if let preview = model.preparedPreview { scrubPreview = preview }
+        if LaunchMode.screen == "scrub", scrubPreview != nil {
+            localProgress = Double(max(duration, 1)) * 0.35
+            seeking = true
+            PlaybackUIProof.record("scrub", [
+                "images": shot?.images.count ?? 0,
+                "frames": shot?.index.count ?? 0,
+                "showing": true,
+                "error": ""
+            ])
+        }
+        recordChapters()
+    }
+
+    private func loadDecorations(bvid: String, cid: Int) async {
+        let key = "\(bvid)#\(cid)"
+        if model.extrasKey == key {
+            recordChapters()
+            return
+        }
+        async let marksTask = model.client.playerChapters(bvid: bvid, cid: cid)
+        async let barsTask = model.client.energyBars(cid: cid)
+        let page = await model.client.videoShot(bvid: bvid, cid: cid)
+        chapters = await marksTask
+        energy = await barsTask
+        if energy.count < 8 {
+            let density = PlaybackMarkup.danmakuEnergy(danmaku)
+            if density.count >= 8 { energy = density }
+        }
+        shot = page
+        model.chapterMarks = chapters
+        model.energySamples = energy
+        model.preparedShot = page
+        model.extrasKey = key
+        recordChapters()
+        if LaunchMode.screen == "scrub" {
+            await finishScrub(duration: video?.duration ?? 0)
+        }
+    }
+
+    private func updateScrubPreview(at seconds: Double) async {
+        guard let page = shot else { return }
+        let cell = PlaybackMarkup.frameIndex(at: seconds, index: page.index)
+        let per = max(1, page.columns * page.rows)
+        let sheetIndex = cell / per
+        guard page.images.indices.contains(sheetIndex) else { return }
+        let sheetImage: UIImage
+        if let cached = shotSheets[sheetIndex] {
+            sheetImage = cached
+        } else if let fetched = await model.client.fetchImage(page.images[sheetIndex]) {
+            shotSheets[sheetIndex] = fetched
+            sheetImage = fetched
+        } else {
+            return
+        }
+        scrubPreview = PlaybackMarkup.crop(sheet: sheetImage, columns: page.columns, rows: page.rows, cell: cell)
+    }
+
+    private func finishScrub(duration: Int) async {
+        guard let page = shot else {
+            PlaybackUIProof.record("scrub", ["images": 0, "frames": 0, "showing": false, "error": "没有找到预览图"])
+            return
+        }
+        let seconds = Double(max(duration, 1)) * 0.35
+        let cell = PlaybackMarkup.frameIndex(at: seconds, index: page.index)
+        let per = max(1, page.columns * page.rows)
+        let sheetIndex = cell / per
+        guard page.images.indices.contains(sheetIndex),
+              let image = await model.client.fetchImage(page.images[sheetIndex]),
+              let piece = PlaybackMarkup.crop(sheet: image, columns: page.columns, rows: page.rows, cell: cell) else {
+            PlaybackUIProof.record("scrub", [
+                "images": page.images.count,
+                "frames": page.index.count,
+                "showing": false,
+                "error": "预览图没有裁出来"
+            ])
+            return
+        }
+        scrubPreview = piece
+        localProgress = seconds
+        seeking = true
+        PlaybackUIProof.record("scrub", [
+            "images": page.images.count,
+            "frames": page.index.count,
+            "showing": true,
+            "error": ""
+        ])
+    }
+
+    private func recordChapters() {
+        guard LaunchMode.screen == "chapters" else { return }
+        guard chapters.count >= 1, energy.count >= 8, let title = chapters.first?.title, !title.isEmpty else { return }
+        PlaybackUIProof.record("chapters", [
+            "chapters": chapters.count,
+            "energy": energy.count,
+            "title": title,
+            "error": ""
+        ])
+    }
+
+    private func noteExtraProofs(_ seconds: Double) {
+        if LaunchMode.screen == "resume", resumeApplied >= 8, abs(seconds - resumeApplied) < 8 {
+            PlaybackUIProof.record("resume", [
+                "applied": resumeApplied,
+                "seconds": seconds,
+                "source": resumeSource,
+                "bvid": video?.bvid ?? "",
+                "error": ""
+            ])
+        }
+        if LaunchMode.screen == "bangumi-play", model.seasonEpisodes.count >= 2, seconds >= 0.8 {
+            let episode = model.seasonEpisodes.first { $0.bvid == bvid }?.label ?? ""
+            PlaybackUIProof.record("bangumi-play", [
+                "count": model.seasonEpisodes.count,
+                "episode": episode,
+                "seconds": seconds,
+                "title": model.seasonTitle,
+                "error": episode.isEmpty ? "剧集标题是空的" : ""
+            ])
+        }
+        if LaunchMode.screen == "autoplay", !autoplayTo.isEmpty, autoplayTo != autoplayFrom {
+            let current = "\(model.nowPlaying?.bvid ?? "")#\(model.nowPlaying?.cid ?? 0)"
+            guard current == autoplayTo else { return }
+            if seconds < 0.3 { autoplaySawZero = true }
+            if autoplaySawZero, seconds >= 0.4, seconds <= 5 {
+                PlaybackUIProof.record("autoplay", [
+                    "from": autoplayFrom,
+                    "to": autoplayTo,
+                    "reason": autoplayReason,
+                    "seconds": seconds,
+                    "error": ""
+                ])
+            }
+        }
+    }
+
+    private func armAutoplay(_ item: VideoItem) {
+        guard !autoplayArmed else { return }
+        autoplayArmed = true
+        Task { await primeAutoplay(item) }
+    }
+
+    private func primeAutoplay(_ item: VideoItem) async {
+        let deadline = Date().addingTimeInterval(25)
+        while Date() < deadline {
+            let readyTime = model.playbackSeconds > 0.4
+            let readyNext = item.pages.count > 1 || !related.isEmpty
+            if readyTime && readyNext { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        let duration = Double(max(item.duration, 1))
+        let token = model.playbackEndedToken
+        if duration > 8, let player = model.player {
+            let target = max(0.5, duration - 1.2)
+            await player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        try? await Task.sleep(for: .seconds(3.2))
+        guard model.playbackEndedToken == token else { return }
+        await continueAfterEnd()
+    }
+
+    private func continueAfterEnd() async {
+        guard autoplayEnabled, !didContinue, let video else { return }
+        didContinue = true
+        if model.sleepChoice == "播完当前" {
+            model.player?.pause()
+            model.isPlaying = false
+            model.show("已定时关闭")
+            didContinue = false
+            return
+        }
+        let order = model.values["播放顺序"] ?? "自动连播"
+        switch order {
+        case "播完暂停":
+            model.player?.pause()
+            model.isPlaying = false
+        case "单集循环":
+            model.play(video, at: 0)
+        case "倒序播放":
+            await playNeighbor(video, delta: -1)
+        default:
+            await playNeighbor(video, delta: 1)
+        }
+        didContinue = false
+    }
+
+    private func playNeighbor(_ video: VideoItem, delta: Int) async {
+        let nextIndex = currentPage + delta
+        if video.pages.indices.contains(nextIndex) {
+            currentPage = nextIndex
+            let page = video.pages[nextIndex]
+            autoplayReason = "page"
+            autoplaySawZero = false
+            autoplayTo = "\(video.bvid)#\(page.cid)"
+            await reload(video, cid: page.cid)
+            return
+        }
+        let pool = delta < 0 ? related.reversed() : related
+        guard let next = pool.first(where: { $0.bvid != video.bvid }) else {
+            model.player?.pause()
+            model.isPlaying = false
+            model.show("没有下一个视频")
+            return
+        }
+        await playRelated(next)
+    }
+
+    private func playRelated(_ item: VideoItem) async {
+        do {
+            var detail = try await model.client.detail(bvid: item.bvid)
+            let cid = detail.pages.first?.cid ?? detail.cid
+            let offer = try await requestPlayback(bvid: detail.bvid, cid: cid, qn: QualityMap.qn(for: model.qualityName))
+            detail.apply(offer)
+            autoplayReason = "related"
+            autoplaySawZero = false
+            autoplayTo = "\(detail.bvid)#\(cid)"
+            video = detail
+            currentPage = 0
+            model.qualityName = offer.selectedName
+            model.store(detail)
+            model.play(detail, at: 0)
+            await loadTracks(bvid: detail.bvid, cid: cid, aid: detail.aid)
+        } catch {
+            model.show(error.localizedDescription)
+        }
+    }
+
+    private func playEpisode(_ episode: EpisodeItem) async {
+        guard !episode.bvid.isEmpty else { return }
+        if episode.bvid == bvid, let video {
+            if let index = video.pages.firstIndex(where: { $0.cid == episode.cid }) {
+                currentPage = index
+            }
+            await reload(video, cid: episode.cid)
+            return
+        }
+        await model.playListedEpisode(episode)
     }
 
     private func replySheet(_ comment: CommentItem) -> some View {
@@ -863,29 +1237,6 @@ final class PlayerUIView: UIView {
     }
 }
 
-struct EnergyBar: View {
-    var progress: Double
-    var duration: Double
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.2))
-                HStack(spacing: 2) {
-                    ForEach(0..<24, id: \.self) { index in
-                        Capsule()
-                            .fill(Palette.bili.opacity(0.35 + Double(index % 5) * 0.1))
-                            .frame(height: 4 + CGFloat(index % 7))
-                    }
-                }
-                Capsule()
-                    .fill(.white)
-                    .frame(width: w * min(1, progress / duration))
-            }
-        }
-    }
-}
-
 struct DanmakuLayer: View {
     @Environment(AppModel.self) private var model
     let cues: [DanmakuCue]
@@ -942,6 +1293,10 @@ struct PlayerControls: View {
     @Binding var showFav: Bool
     @Binding var showShare: Bool
     var segments: [SponsorSegment] = []
+    var chapters: [ChapterMark] = []
+    var energy: [Double] = []
+    var scrubPreview: UIImage?
+    var onScrub: (Double) -> Void = { _ in }
     var onQuality: (String) -> Void
     var onStepPage: (Int) -> Void
     private let speeds = ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"]
@@ -960,7 +1315,12 @@ struct PlayerControls: View {
 
     /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
     private var pinsChrome: Bool {
-        LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" || LaunchMode.screen == "offline"
+        switch LaunchMode.screen {
+        case "playback", "sponsor", "offline", "resume", "autoplay", "bangumi-play", "chapters", "scrub", "sleep", "detail", "detail-dark":
+            return true
+        default:
+            return false
+        }
     }
 
     var body: some View {
@@ -982,6 +1342,7 @@ struct PlayerControls: View {
                 controls
             }
             progressBar
+            scrubOverlay
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(.easeOut(duration: 0.22), value: chrome)
@@ -1153,12 +1514,86 @@ struct PlayerControls: View {
         }
     }
 
+    private var scrubOverlay: some View {
+        GeometryReader { geo in
+            let fraction = min(1, max(0, progress / duration))
+            ZStack(alignment: .bottomLeading) {
+                if seeking, let scrubPreview {
+                    Image(uiImage: scrubPreview)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 120, height: 68)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.white, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.45), radius: 4, y: 2)
+                        .position(
+                            x: min(max(68, geo.size.width * fraction), max(68, geo.size.width - 68)),
+                            y: geo.size.height - 86
+                        )
+                }
+                if let title = activeChapter, !title.isEmpty {
+                    Text(title)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.55), in: Capsule())
+                        .padding(.leading, 8)
+                        .padding(.bottom, 16)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var activeChapter: String? {
+        guard model.flag("显示视频分段信息"), !chapters.isEmpty else { return nil }
+        let time = Int(progress)
+        return chapters.last(where: { chapterSeconds($0) <= Double(time) })?.title ?? chapters.first?.title
+    }
+
+    private func chapterSeconds(_ mark: ChapterMark) -> Double {
+        if duration > 0, Double(mark.from) > duration * 2, mark.from > 1000 {
+            return Double(mark.from) / 1000
+        }
+        return Double(mark.from)
+    }
+
     private var progressBar: some View {
         GeometryReader { geo in
             let fraction = min(1, max(0, progress / duration))
             let thick = seeking
             let bar = thick ? 5.0 : 2.0
+            let showEnergy = model.flag("显示高能进度条") && energy.count >= 4
             ZStack(alignment: .bottomLeading) {
+                if showEnergy {
+                    Canvas { context, size in
+                        let slot = size.width / CGFloat(energy.count)
+                        for (index, sample) in energy.enumerated() {
+                            let height = max(2, size.height * CGFloat(min(1, max(0, sample))))
+                            let rect = CGRect(
+                                x: CGFloat(index) * slot,
+                                y: size.height - height,
+                                width: max(1, slot - 0.3),
+                                height: height
+                            )
+                            context.fill(Path(rect), with: .color(Palette.bili.opacity(0.9)))
+                        }
+                    }
+                    .frame(width: geo.size.width, height: 18)
+                    .offset(y: -6)
+                }
+                if model.flag("显示视频分段信息") {
+                    ForEach(Array(chapters.enumerated()), id: \.offset) { _, mark in
+                        let start = min(1, max(0, chapterSeconds(mark) / duration))
+                        Rectangle()
+                            .fill(.white)
+                            .frame(width: 2, height: 10)
+                            .offset(x: geo.size.width * start, y: -4)
+                    }
+                }
                 Rectangle()
                     .fill(.white.opacity(0.35))
                     .frame(height: bar)
@@ -1191,6 +1626,7 @@ struct PlayerControls: View {
                         localProgress = duration * Double(x / span)
                         seeking = true
                         chrome = true
+                        onScrub(localProgress)
                     }
                     .onEnded { value in
                         let span = max(geo.size.width, 1)
@@ -1203,7 +1639,7 @@ struct PlayerControls: View {
                     }
             )
         }
-        .frame(height: 28)
+        .frame(height: 36)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .accessibilityLabel("进度")
     }

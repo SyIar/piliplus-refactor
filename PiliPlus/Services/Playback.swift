@@ -317,7 +317,7 @@ struct DashStream: Sendable {
 
 enum PlaybackParser {
     static func offer(from data: JSON, requestedQN: Int, codecPreference: String, audioPreference: String) -> PlaybackOffer? {
-        let payload = data["data"]
+        let payload = playPayload(data)
         let videos = streams(payload["dash"]["video"])
         if let video = pickVideo(videos, qn: requestedQN, codecPreference: codecPreference) {
             var audioStreams = streams(payload["dash"]["audio"])
@@ -336,7 +336,11 @@ enum PlaybackParser {
                 codec: codecLabel(video.codecs)
             )
         }
-        let progressive = payload["durl"][0]["url"].string ?? ""
+        let progressive = BiliClient.https(
+            payload["durl"][0]["url"].string
+                ?? payload["durl"][0]["backup_url"].array?.first?.string
+                ?? ""
+        )
         guard !progressive.isEmpty else { return nil }
         let ids = (payload["accept_quality"].array ?? []).compactMap(\.int)
         let names = (payload["accept_description"].array ?? []).compactMap(\.string)
@@ -350,6 +354,28 @@ enum PlaybackParser {
             selectedName: QualityMap.name(for: selected),
             codec: "progressive"
         )
+    }
+
+    /// UGC playurl uses `data`. Bangumi playurl uses `result`, and the v2
+    /// endpoint nests the same dash/durl object under `video_info`.
+    private static func playPayload(_ data: JSON) -> JSON {
+        let nodes = [
+            data["data"],
+            data["result"],
+            data["data"]["video_info"],
+            data["result"]["video_info"]
+        ]
+        for node in nodes where hasMedia(node) {
+            return node
+        }
+        return data["data"]
+    }
+
+    private static func hasMedia(_ node: JSON) -> Bool {
+        if node["dash"]["video"].array?.isEmpty == false { return true }
+        if !(node["durl"][0]["url"].string ?? "").isEmpty { return true }
+        if !(node["durl"][0]["backup_url"].array?.first?.string ?? "").isEmpty { return true }
+        return false
     }
 
     private static func streams(_ node: JSON) -> [DashStream] {
@@ -428,7 +454,9 @@ enum RawInflate {
     static func expand(_ source: Data) -> Data? {
         guard !source.isEmpty else { return nil }
         if looksLikeXML(source) { return source }
-        return decompress(source, windowBits: -15) ?? decompress(source, windowBits: 15)
+        return decompress(source, windowBits: -15)
+            ?? decompress(source, windowBits: 15)
+            ?? decompress(source, windowBits: 31)
     }
 
     private static func looksLikeXML(_ data: Data) -> Bool {

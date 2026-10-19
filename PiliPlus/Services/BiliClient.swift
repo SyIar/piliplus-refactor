@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 enum BiliError: LocalizedError {
     case message(String)
@@ -1576,6 +1577,12 @@ struct BiliClient: Sendable {
         video.pages = pages
         if video.cid == 0 { video.cid = pages.first?.cid ?? 0 }
         video.desc = item["desc"].string ?? video.desc
+        let history = item["history"]
+        let historyCID = history["cid"].int ?? 0
+        let historyProgress = history["progress"].int ?? 0
+        if historyProgress != 0, historyCID == 0 || historyCID == video.cid || historyCID == video.pages.first?.cid {
+            video.progress = historyProgress
+        }
         let season = item["ugc_season"]
         let seasonTitle = season["title"].string ?? ""
         if !seasonTitle.isEmpty {
@@ -2230,6 +2237,106 @@ struct BiliClient: Sendable {
         guard code == 0 else {
             throw BiliError.message(data["message"].string ?? data["msg"].string ?? "操作没有成功")
         }
+    }
+
+    func playerChapters(bvid: String, cid: Int) async -> [ChapterMark] {
+        let form = PlaybackRequest.playerInfo(bvid: bvid, cid: cid)
+        let referer = BiliHTTP.referer(bvid: bvid)
+        if let signed = try? await requestQuery(form.path, params: form.fields, signed: true, referer: referer), signed["code"].int == 0 {
+            let marks = PlaybackMarkup.chapters(from: signed)
+            if !marks.isEmpty { return marks }
+        }
+        if let plain = try? await requestQuery("/x/player/v2", params: form.fields, signed: false, referer: referer), plain["code"].int == 0 {
+            return PlaybackMarkup.chapters(from: plain)
+        }
+        return []
+    }
+
+    func energyBars(cid: Int) async -> [Double] {
+        guard cid > 0 else { return [] }
+        let urls = [
+            "https://bvc.bilivideo.com/pbp/data?cid=\(cid)",
+            "https://api.bilibili.com/pbp/data?cid=\(cid)"
+        ]
+        for string in urls {
+            guard let url = URL(string: string) else { continue }
+            do {
+                let body = try await getData(url, includeSession: false)
+                let preview = String(data: body.prefix(160), encoding: .utf8) ?? "binary \(body.count)"
+                let object = (try? JSONSerialization.jsonObject(with: body))
+                    ?? RawInflate.expand(body).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+                guard let object else {
+                    PlaybackLog.line("energy \(url.host ?? "") unparsed \(preview)")
+                    continue
+                }
+                let values = PlaybackMarkup.energy(from: JSON(object))
+                PlaybackLog.line("energy \(url.host ?? "") count=\(values.count) \(preview)")
+                if values.count >= 4 { return values }
+            } catch {
+                PlaybackLog.line("energy \(url.host ?? "") \(error.localizedDescription)")
+            }
+        }
+        return []
+    }
+
+    func videoShot(bvid: String, cid: Int) async -> VideoShotPage? {
+        let form = PlaybackRequest.videoshot(bvid: bvid, cid: cid)
+        guard let url = form.endpoint else { return nil }
+        guard let data = try? await getJSON(url, referer: BiliHTTP.referer(bvid: bvid)), data["code"].int == 0 else { return nil }
+        return PlaybackMarkup.shot(from: data)
+    }
+
+    func fetchImage(_ string: String) async -> UIImage? {
+        let clean = Self.https(string)
+        guard let url = URL(string: clean) else { return nil }
+        guard let data = try? await getData(url, includeSession: false) else { return nil }
+        return UIImage(data: data)
+    }
+
+    func seasonPlayback(ep: Int, cid: Int, qn: Int, codec: String) async -> PlaybackOffer? {
+        guard ep > 0, cid > 0 else { return nil }
+        let referer = "https://www.bilibili.com/bangumi/play/ep\(ep)"
+        let urls = [
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=4048&fourk=1",
+            "https://api.bilibili.com/pgc/player/web/v2/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=4048&fourk=1&from_client=BROWSER",
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&cid=\(cid)&qn=\(qn)&fnver=0&fnval=1&fourk=1&platform=html5",
+            "https://api.bilibili.com/pgc/player/web/playurl?ep_id=\(ep)&qn=16&fnver=0&fnval=1&platform=html5"
+        ]
+        for string in urls {
+            guard let url = URL(string: string) else { continue }
+            do {
+                let data = try await getJSON(url, referer: referer)
+                let code = data["code"].int ?? -1
+                let message = data["message"].string ?? ""
+                let info = data["result"]["video_info"]
+                let dash = data["result"]["dash"]["video"].array?.count
+                    ?? data["data"]["dash"]["video"].array?.count
+                    ?? info["dash"]["video"].array?.count
+                    ?? 0
+                let durl = data["result"]["durl"][0]["url"].string
+                    ?? data["data"]["durl"][0]["url"].string
+                    ?? info["durl"][0]["url"].string
+                    ?? ""
+                PlaybackLog.line("pgc ep \(ep) code=\(code) dash=\(dash) durl=\(durl.isEmpty ? 0 : 1) \(message)")
+                if code == -10403 || message.contains("地区") { return nil }
+                guard code == 0, let offer = PlaybackParser.offer(from: data, requestedQN: qn, codecPreference: codec, audioPreference: "高码率") else { continue }
+                return offer
+            } catch {
+                PlaybackLog.line("pgc ep \(ep) \(error.localizedDescription)")
+            }
+        }
+        return nil
+    }
+
+    func seasonGuide(id: Int) async throws -> SeasonGuide {
+        guard let url = URL(string: "https://api.bilibili.com/pgc/view/web/season?season_id=\(id)") else {
+            throw BiliError.message("番剧地址无效")
+        }
+        let data = try await getJSON(url, referer: "https://www.bilibili.com/bangumi/play/ss\(id)")
+        guard data["code"].int == 0, let guide = PlaybackMarkup.season(from: data, seasonID: id) else {
+            throw BiliError.message(data["message"].string ?? "番剧不可用")
+        }
+        return guide
     }
 }
 

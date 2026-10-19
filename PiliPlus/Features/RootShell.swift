@@ -78,6 +78,9 @@ struct RootShell: View {
         if LaunchMode.screen == "messageProof" {
             MessageRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "playbackExtra" {
+            PlaybackRequestProof.writeAndExit()
+        }
         if LaunchMode.screen == "guest-messages" || LaunchMode.screen == "messages" {
             await LaunchClock.waitForFirstFrame()
             if LaunchMode.screen == "guest-messages" { model.loggedIn = false }
@@ -161,9 +164,45 @@ struct RootShell: View {
             }
             return
         }
+        if LaunchMode.screen == "detail" || LaunchMode.screen == "detail-dark" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openDetailSample()
+            return
+        }
         if LaunchMode.screen == "playback" {
             if model.feed.isEmpty { await model.loadRecommend(reset: true) }
             await model.openFirstPlayable()
+            return
+        }
+        if LaunchMode.screen == "resume" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openResumeSample()
+            return
+        }
+        if LaunchMode.screen == "autoplay" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openAutoplaySample()
+            return
+        }
+        if LaunchMode.screen == "bangumi-play" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openBangumiPlayback()
+            return
+        }
+        if LaunchMode.screen == "chapters" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openChapterSample()
+            return
+        }
+        if LaunchMode.screen == "scrub" {
+            await LaunchClock.waitForFirstFrame()
+            await model.openScrubSample()
+            return
+        }
+        if LaunchMode.screen == "sleep" {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            await model.openSleepSample()
             return
         }
         if LaunchMode.screen == "live" || LaunchMode.screen == "live-area" {

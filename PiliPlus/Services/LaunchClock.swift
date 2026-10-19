@@ -149,6 +149,9 @@ enum LaunchMode {
         if screen == "sponsor" || screen == "sponsor-settings" { return false }
         if screen == "downloads" || screen == "offline" { return false }
         if screen == "messageProof" || screen == "messages" { return false }
+        if screen == "playbackExtra" || screen == "resume" || screen == "autoplay" || screen == "bangumi-play" { return false }
+        if screen == "detail" || screen == "detail-dark" { return false }
+        if screen == "chapters" || screen == "scrub" || screen == "sleep" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }
@@ -160,7 +163,10 @@ enum LaunchMode {
     /// Simulator builds often cannot decode the AV1 rendition. The playback
     /// screenshot pass asks for AVC so a real frame can advance.
     static func playbackCodec(preferred: String) -> String {
-        guard screen == "playback" || screen == "sponsor", ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
+        let forced = screen == "playback" || screen == "sponsor" || screen == "resume" || screen == "autoplay"
+            || screen == "bangumi-play" || screen == "chapters" || screen == "scrub" || screen == "sleep"
+            || screen == "detail" || screen == "detail-dark"
+        guard forced, ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             return preferred
         }
         return "avc1"
