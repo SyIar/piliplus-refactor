@@ -53,6 +53,13 @@ final class AppModel {
     var cinema: [SeasonItem] = []
     var bangumiSchedule: [String: Int] = [:]
     var lives: [LiveRoom] = []
+    var liveArea = "推荐"
+    var livePage = 0
+    var liveHasMore = true
+    var loadingLive = false
+    var liveError = ""
+    var liveOffers: [Int: LiveOffer] = [:]
+    private var liveGeneration = 0
     var dynamics: [DynamicItem] = []
     var dynamicOffset = ""
     var dynamicHasMore = false
@@ -285,9 +292,113 @@ final class AppModel {
             hot = popular
             Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
         }
-        lives = (try? await rooms) ?? lives
+        if let fetched = try? await rooms, liveArea == "推荐", livePage <= 1 {
+            lives = fetched
+            if !fetched.isEmpty { livePage = 1 }
+            liveHasMore = fetched.count >= 8
+        }
         hotwords = (try? await words) ?? hotwords
         if zoneFeed.isEmpty { await loadZone(zoneName, reset: true) }
+    }
+
+    func loadLive(area: String, reset: Bool) async {
+        guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
+        if !reset {
+            guard liveHasMore, !loadingLive, liveArea == area else { return }
+        }
+        liveGeneration += 1
+        let generation = liveGeneration
+        if reset, area != liveArea {
+            lives = []
+        }
+        liveArea = area
+        if reset {
+            livePage = 0
+            liveHasMore = true
+            liveError = ""
+        }
+        loadingLive = true
+        let next = livePage + 1
+        do {
+            let page = try await client.liveList(area: area, page: next)
+            guard generation == liveGeneration else { return }
+            if reset {
+                lives = page
+                liveHasMore = page.count >= 8
+            } else {
+                let known = Set(lives.map(\.id))
+                let fresh = page.filter { !known.contains($0.id) }
+                lives.append(contentsOf: fresh)
+                liveHasMore = !fresh.isEmpty && page.count >= 8
+            }
+            livePage = next
+            liveError = ""
+            loadingLive = false
+            Task { await ImageStore.shared.prepare(urls: page.map(\.cover), maxPixel: 560) }
+        } catch {
+            guard generation == liveGeneration else { return }
+            liveError = error.localizedDescription
+            loadingLive = false
+            if reset { show(error.localizedDescription) }
+        }
+    }
+
+    func openFirstLive() async {
+        let rooms = await busiestLiveRooms()
+        if lives.isEmpty {
+            lives = rooms
+            livePage = rooms.isEmpty ? 0 : 1
+            liveHasMore = rooms.count >= 8
+        }
+        let deadline = Date().addingTimeInterval(70)
+        var attempts = 0
+        for room in rooms where attempts < 5 {
+            if LaunchMode.screen == "live-room", Date() >= deadline { break }
+            attempts += 1
+            guard let offer = try? await client.livePlay(room: room.id, qn: 10_000),
+                  offer.protocolName == "hls",
+                  URL(string: offer.url) != nil else { continue }
+            liveOffers[room.id] = offer
+            print("live open \(room.id) online \(room.online) \(offer.protocolName) \(offer.selectedName)")
+            open(.live(room.id))
+            return
+        }
+        if let first = rooms.first { open(.live(first.id)) }
+    }
+
+    /// Highest `online` across the homepage rail and the online-sorted area lists.
+    private func busiestLiveRooms() async -> [LiveRoom] {
+        var best: [Int: LiveRoom] = [:]
+        func absorb(_ rooms: [LiveRoom]) {
+            for room in rooms {
+                if let existing = best[room.id], existing.online >= room.online { continue }
+                best[room.id] = room
+            }
+        }
+        absorb((try? await client.liveList(area: "推荐", page: 1)) ?? [])
+        absorb((try? await client.liveList(area: "网游", page: 1)) ?? [])
+        absorb((try? await client.liveList(area: "娱乐", page: 1)) ?? [])
+        let ranked = best.values.sorted { lhs, rhs in
+            if lhs.online != rhs.online { return lhs.online > rhs.online }
+            return lhs.id < rhs.id
+        }
+        let preview = ranked.prefix(5).map { "\($0.id):\($0.online)" }.joined(separator: " ")
+        print("live candidates \(ranked.count) \(preview)")
+        return ranked
+    }
+
+    func sendLiveDanmaku(room: Int, message: String) async -> Bool {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        guard let csrf = csrf(for: "发送弹幕") else { return false }
+        do {
+            try await client.sendLiveDanmaku(room: room, message: text, csrf: csrf)
+            show("弹幕已发送")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
     }
 
     func loadDynamics(kind: String, reset: Bool) async {

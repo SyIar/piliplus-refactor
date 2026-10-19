@@ -164,6 +164,7 @@ struct LiveRoom: Identifiable, Hashable {
     let face: String
     let online: Int
     let area: String
+    var mid: Int = 0
 }
 
 struct HotWord: Identifiable, Hashable {

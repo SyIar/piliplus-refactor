@@ -40,6 +40,17 @@ enum BiliHTTP {
         return headers
     }
 
+    static func liveAssetHeaders(room: Int) -> [String: String] {
+        var headers = [
+            "User-Agent": pcUserAgent,
+            "Referer": "https://live.bilibili.com/\(room)",
+            "Origin": "https://live.bilibili.com"
+        ]
+        let cookie = mergedCookie(includeSession: true, override: nil)
+        if !cookie.isEmpty { headers["Cookie"] = cookie }
+        return headers
+    }
+
     static func mergedCookie(includeSession: Bool, override: String?) -> String {
         var parts: [String] = []
         if let guest = GuestIdentity.cachedHeader() { parts.append(guest) }
@@ -69,6 +80,13 @@ enum GuestIdentity {
     private static let ticketKey = "piliplus.bili_ticket"
     private static let ticketExpiresKey = "piliplus.bili_ticket_expires"
     private static let lock = NSLock()
+
+    /// Cookie `buvid3`. A guest live socket (uid 0) only receives the welcome line unless the auth packet carries this.
+    static var buvid3: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return UserDefaults.standard.string(forKey: buvid3Key) ?? ""
+    }
 
     static func cachedHeader() -> String? {
         lock.lock()

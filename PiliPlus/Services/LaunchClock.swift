@@ -145,6 +145,7 @@ enum LaunchMode {
         if screen == "accountProof" || screen == "socialProof" || screen == "spaceProof" || screen == "comments" { return false }
         if screen?.hasPrefix("guest-") == true || screen?.hasPrefix("search-") == true { return false }
         if screen == "space" || screen?.hasPrefix("space-") == true { return false }
+        if screen == "live" || screen == "live-area" || screen == "live-room" || screen == "liveProof" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }

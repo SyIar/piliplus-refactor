@@ -653,7 +653,8 @@ struct BiliClient: Sendable {
         signed: Bool,
         referer: String? = nil,
         origin: String? = nil,
-        userAgent: String? = nil
+        userAgent: String? = nil,
+        host: String = "https://api.bilibili.com"
     ) async throws -> JSON {
         let fields = signed ? try await wbiSign(params) : params
         let stripped = CharacterSet(charactersIn: "!'()*")
@@ -664,28 +665,239 @@ struct BiliClient: Sendable {
             }
             return "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(value))"
         }.joined(separator: "&")
-        guard let url = URL(string: "https://api.bilibili.com\(path)?\(query)") else {
+        guard let url = URL(string: "\(host)\(path)?\(query)") else {
             throw BiliError.message("地址无效")
         }
         return try await getJSON(url, referer: referer, origin: origin, userAgent: userAgent)
     }
 
     func liveRooms() async throws -> [LiveRoom] {
-        let data = try await getJSON("https://api.live.bilibili.com/xlive/web-interface/v1/second/getList?platform=web&parent_area_id=0&area_id=0&sort_type=&page=1")
-        let list = data["data"]["list"].array ?? []
-        return list.compactMap { item in
-            let id = item["roomid"].int ?? 0
-            guard id > 0 else { return nil }
-            return LiveRoom(
-                id: id,
-                title: item["title"].string ?? "直播",
-                cover: Self.https(item["cover"].string ?? item["user_cover"].string ?? ""),
-                uname: item["uname"].string ?? "",
-                face: Self.https(item["face"].string ?? ""),
-                online: item["online"].int ?? item["watched_show"]["num"].int ?? 0,
-                area: item["area_name"].string ?? item["area_v2_name"].string ?? "直播"
+        try await liveList(area: "推荐", page: 1)
+    }
+
+    func liveList(area: String, page: Int) async throws -> [LiveRoom] {
+        var web: [SignedForm] = []
+        var app: [SignedForm] = []
+        if area == "推荐" {
+            if page <= 1 { web.append(LiveRequest.moreRecommend()) }
+            web.append(LiveRequest.recommend(page: page))
+            web.append(LiveRequest.area(parent: 0, page: page, sort: "online"))
+            web.append(LiveRequest.area(parent: 0, page: page))
+            app.append(LiveRequest.appFeed(page: page))
+        } else {
+            let parent = LiveRequest.parentID(for: area)
+            web.append(LiveRequest.roomList(parent: parent, page: page))
+            web.append(Self.guardedArea(parent: parent, page: page, sort: "online"))
+            web.append(Self.guardedArea(parent: parent, page: page, sort: ""))
+            app.append(LiveRequest.appArea(parent: parent, page: page))
+        }
+        var last = "没有直播"
+        for form in web {
+            do {
+                let rooms = try await fetchLive(form, signed: !form.path.hasPrefix("/room/"))
+                if !rooms.isEmpty {
+                    print("live list ok \(form.path) \(rooms.count)")
+                    return rooms
+                }
+                last = "\(form.path) empty"
+            } catch {
+                last = error.localizedDescription
+                print("live list \(form.path) \(last)")
+            }
+        }
+        for form in app {
+            do {
+                let rooms = try await fetchAppLive(form)
+                if !rooms.isEmpty {
+                    print("live list ok \(form.path) \(rooms.count)")
+                    return rooms
+                }
+                last = "\(form.path) empty"
+            } catch {
+                last = error.localizedDescription
+                print("live list \(form.path) \(last)")
+            }
+        }
+        if page > 1 { return [] }
+        throw BiliError.message(last)
+    }
+
+    /// Area `getList` rejects a bare WBI query. The same dm_img fields used by space dynamics go with it.
+    private static func guardedArea(parent: Int, page: Int, sort: String) -> SignedForm {
+        var fields = LiveRequest.area(parent: parent, page: page, sort: sort).fields
+        fields["web_location"] = "444.8"
+        fields["dm_img_list"] = "[]"
+        fields["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
+        fields["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
+        fields["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+        return SignedForm(method: "GET", path: "/xlive/web-interface/v1/second/getList", fields: fields)
+    }
+
+    func liveRoomInfo(room: Int) async throws -> LiveRoom {
+        let data = try await withGuest {
+            try await getJSON(
+                liveURL(LiveRequest.roomInfo(room: room)),
+                referer: "https://live.bilibili.com/\(room)",
+                origin: "https://live.bilibili.com",
+                userAgent: BiliHTTP.pcUserAgent
             )
         }
+        try Self.requireOK(data)
+        let info = data["data"]["room_info"]
+        let anchor = data["data"]["anchor_info"]["base_info"]
+        let id = info["room_id"].int ?? room
+        return LiveRoom(
+            id: id,
+            title: Self.unescape(info["title"].string ?? "直播间"),
+            cover: Self.https(info["cover"].string ?? info["keyframe"].string ?? ""),
+            uname: anchor["uname"].string ?? "",
+            face: Self.https(anchor["face"].string ?? ""),
+            online: info["online"].int ?? 0,
+            area: info["area_name"].string ?? info["parent_area_name"].string ?? "直播",
+            mid: anchor["uid"].int ?? anchor["mid"].int ?? info["uid"].int ?? 0
+        )
+    }
+
+    func livePlay(room: Int, qn: Int) async throws -> LiveOffer {
+        let form = LiveRequest.playInfo(room: room, qn: qn)
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                form.path,
+                params: form.fields,
+                signed: true,
+                referer: "https://live.bilibili.com/\(room)",
+                origin: "https://live.bilibili.com",
+                userAgent: BiliHTTP.pcUserAgent,
+                host: "https://api.live.bilibili.com"
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        guard let offer = Self.liveOffer(from: data, requestedQN: qn) else {
+            throw BiliError.message("没有可播放的直播流")
+        }
+        return offer
+    }
+
+    func liveDanmuInfo(room: Int) async throws -> LiveDanmuInfo {
+        let form = LiveRequest.danmuInfo(room: room)
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                form.path,
+                params: form.fields,
+                signed: true,
+                referer: "https://live.bilibili.com/\(room)",
+                origin: "https://live.bilibili.com",
+                userAgent: BiliHTTP.pcUserAgent,
+                host: "https://api.live.bilibili.com"
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        let token = data["data"]["token"].string ?? ""
+        guard !token.isEmpty else { throw BiliError.message("没有弹幕令牌") }
+        let hosts = (data["data"]["host_list"].array ?? []).compactMap { item -> LiveDanmuHost? in
+            let host = item["host"].string ?? ""
+            guard !host.isEmpty else { return nil }
+            return LiveDanmuHost(host: host, wssPort: item["wss_port"].int ?? 443)
+        }.sorted { Self.danmuHostRank($0) < Self.danmuHostRank($1) }
+        guard !hosts.isEmpty else { throw BiliError.message("没有弹幕服务器") }
+        return LiveDanmuInfo(token: token, hosts: hosts)
+    }
+
+    /// `broadcastlv` is the web default. Overseas comet hosts answered but then stayed quiet.
+    private static func danmuHostRank(_ host: LiveDanmuHost) -> Int {
+        let name = host.host
+        if name.contains("broadcastlv") { return 0 }
+        if name.hasPrefix("hw-") || name.hasPrefix("ali-") || name.contains("-sg-") { return 2 }
+        return 1
+    }
+
+    func sendLiveDanmaku(room: Int, message: String, csrf: String) async throws {
+        let form = LiveRequest.send(room: room, message: message, csrf: csrf, rnd: Int(Date().timeIntervalSince1970))
+        let signed = try await wbiSign(["web_location": "444.8"])
+        let query = signed.keys.sorted().map { key in
+            "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(signed[key, default: ""]))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "https://api.live.bilibili.com/msg/send?\(query)") else {
+            throw BiliError.message("地址无效")
+        }
+        let data = try await postForm(
+            url,
+            fields: form.fields,
+            referer: "https://live.bilibili.com/\(room)",
+            origin: "https://live.bilibili.com",
+            userAgent: BiliHTTP.pcUserAgent
+        )
+        try Self.requireOK(data)
+    }
+
+    private func fetchLive(_ form: SignedForm, signed: Bool = true) async throws -> [LiveRoom] {
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                form.path,
+                params: form.fields,
+                signed: signed,
+                referer: "https://live.bilibili.com",
+                origin: "https://live.bilibili.com",
+                userAgent: BiliHTTP.pcUserAgent,
+                host: "https://api.live.bilibili.com"
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        return Self.loggedLiveRooms(form.path, data)
+    }
+
+    private static let appLiveAgent = "Mozilla/5.0 BiliDroid/8.43.0 (bbcallen@gmail.com) os/android model/android mobi_app/android build/8430300 channel/master innerVer/8430300 osVer/15 network/2"
+
+    /// App-signed homepage and area lists used by upstream `LiveHttp.liveFeedIndex` / `liveSecondList`.
+    private func fetchAppLive(_ form: SignedForm) async throws -> [LiveRoom] {
+        let data = try await withGuest {
+            let signed = AppSign.sign(form.fields)
+            let query = signed.keys.sorted().map { key in
+                let value = signed[key, default: ""]
+                if value.isEmpty { return PercentEncoding.encodeURIComponent(key) }
+                return "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(value))"
+            }.joined(separator: "&")
+            guard let url = URL(string: "https://api.live.bilibili.com\(form.path)?\(query)") else {
+                throw BiliError.message("地址无效")
+            }
+            let data = try await getJSON(
+                url,
+                referer: "https://live.bilibili.com",
+                origin: "https://live.bilibili.com",
+                userAgent: Self.appLiveAgent
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        return Self.loggedLiveRooms(form.path, data)
+    }
+
+    private static func loggedLiveRooms(_ path: String, _ data: JSON) -> [LiveRoom] {
+        let rooms = liveRooms(in: data)
+        if rooms.isEmpty {
+            let keys = (data["data"].raw as? [String: Any])?.keys.sorted().joined(separator: ",") ?? ""
+            let raw = String(describing: data.raw)
+            print("live list empty \(path) keys=\(keys) \(raw.prefix(360))")
+        }
+        return rooms
+    }
+
+    private func liveURL(_ form: SignedForm) throws -> URL {
+        guard let url = URL(string: "https://api.live.bilibili.com\(form.path)?\(form.body)") else {
+            throw BiliError.message("地址无效")
+        }
+        return url
     }
 
     func followDynamics(type: String, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool) {
@@ -1218,7 +1430,10 @@ struct BiliClient: Sendable {
         _ url: URL,
         fields: [String: String],
         cookieOverride: String? = nil,
-        includeCSRF: Bool = true
+        includeCSRF: Bool = true,
+        referer: String? = nil,
+        origin: String? = nil,
+        userAgent: String? = nil
     ) async throws -> JSON {
         var fields = fields
         if includeCSRF, fields["csrf"] == nil, let csrf = SessionVault.shared.current()?.csrf, !csrf.isEmpty {
@@ -1233,7 +1448,10 @@ struct BiliClient: Sendable {
             body: Data(body.utf8),
             contentType: "application/x-www-form-urlencoded",
             includeSession: cookieOverride == nil,
-            cookieOverride: cookieOverride
+            cookieOverride: cookieOverride,
+            referer: referer,
+            origin: origin,
+            userAgent: userAgent
         )
     }
 
@@ -1524,6 +1742,136 @@ struct BiliClient: Sendable {
         )
     }
 
+    static func liveRooms(in data: JSON) -> [LiveRoom] {
+        var rows = data["data"]["list"].array ?? []
+        if rows.isEmpty { rows = data["data"]["recommend_room_list"].array ?? [] }
+        if rows.isEmpty { rows = data["data"]["room_list"].array ?? [] }
+        if rows.isEmpty { rows = data["data"].array ?? [] }
+        rows.append(contentsOf: data["data"]["card_list"].array ?? [])
+        var rooms: [LiveRoom] = []
+        for item in rows {
+            if let room = liveRoom(from: item) { rooms.append(room) }
+            if let nested = liveRoom(from: item["card_data"]["small_card_v1"]) { rooms.append(nested) }
+            for child in item["list"].array ?? [] {
+                if let room = liveRoom(from: child) { rooms.append(room) }
+            }
+            for child in item["card_data"]["my_idol_v1"]["list"].array ?? [] {
+                if let room = liveRoom(from: child) { rooms.append(room) }
+            }
+        }
+        var seen = Set<Int>()
+        return rooms.filter { seen.insert($0.id).inserted }
+    }
+
+    static func liveRoom(from item: JSON) -> LiveRoom? {
+        var id = item["roomid"].int ?? item["room_id"].int ?? 0
+        if id == 0 {
+            let uname = item["uname"].string ?? ""
+            let cover = item["cover"].string ?? item["user_cover"].string ?? item["system_cover"].string ?? ""
+            if !uname.isEmpty || !cover.isEmpty { id = item["id"].int ?? 0 }
+        }
+        guard id > 0 else { return nil }
+        let title = unescape(item["title"].string ?? item["uname"].string ?? "")
+        guard !title.isEmpty else { return nil }
+        return LiveRoom(
+            id: id,
+            title: title,
+            cover: https(item["cover"].string ?? item["user_cover"].string ?? item["system_cover"].string ?? item["keyframe"].string ?? ""),
+            uname: item["uname"].string ?? "",
+            face: https(item["face"].string ?? ""),
+            online: item["online"].int ?? item["watched_show"]["num"].int ?? 0,
+            area: item["area_v2_name"].string ?? item["area_name"].string ?? "直播",
+            mid: item["uid"].int ?? item["mid"].int ?? 0
+        )
+    }
+
+    static func liveOffer(from data: JSON, requestedQN: Int) -> LiveOffer? {
+        let streams = data["data"]["playurl_info"]["playurl"]["stream"].array ?? []
+        struct Candidate {
+            var score: Int
+            var url: String
+            var proto: String
+            var qn: Int
+            var names: [String]
+            var ids: [Int]
+        }
+        var found: [Candidate] = []
+        for stream in streams {
+            let proto = stream["protocol_name"].string ?? ""
+            for format in stream["format"].array ?? [] {
+                let formatName = format["format_name"].string ?? ""
+                for codec in format["codec"].array ?? [] {
+                    let codecName = codec["codec_name"].string ?? ""
+                    let qn = codec["current_qn"].int ?? requestedQN
+                    let accept = (codec["accept_qn"].array ?? []).compactMap(\.int)
+                    let ids = accept.isEmpty ? [qn] : accept
+                    let base = codec["base_url"].string ?? ""
+                    let infos = codec["url_info"].array ?? []
+                    for (index, info) in infos.enumerated() {
+                        var host = info["host"].string ?? ""
+                        let extra = info["extra"].string ?? ""
+                        if host.hasPrefix("//") { host = "https:" + host }
+                        guard !host.isEmpty, !base.isEmpty else { continue }
+                        var score = 0
+                        if proto == "http_hls" { score += 80 }
+                        if formatName == "ts" { score += 30 }
+                        if formatName == "fmp4" { score += 8 }
+                        if codecName == "avc" || codecName == "avc1" { score += 24 }
+                        if qn == requestedQN { score += 3 }
+                        score -= index
+                        var url = host + base + extra
+                        if url.hasPrefix("http://") { url = "https://" + url.dropFirst("http://".count) }
+                        found.append(Candidate(
+                            score: score,
+                            url: url,
+                            proto: proto == "http_hls" ? "hls" : "flv",
+                            qn: qn,
+                            names: ids.map(LiveRequest.qualityName),
+                            ids: ids
+                        ))
+                    }
+                }
+            }
+        }
+        found.sort { $0.score > $1.score }
+        guard let best = found.first else { return nil }
+        let selected = LiveRequest.qualityName(best.qn)
+        var names: [String] = []
+        var kept: [Int] = []
+        for id in best.ids {
+            let name = LiveRequest.qualityName(id)
+            if names.contains(name) { continue }
+            names.append(name)
+            kept.append(id)
+        }
+        if !names.contains(selected) {
+            names.insert(selected, at: 0)
+            kept.insert(best.qn, at: 0)
+        }
+        var alternates: [String] = []
+        for item in found.dropFirst() where item.proto == "hls" && item.url != best.url && !alternates.contains(item.url) {
+            alternates.append(item.url)
+            if alternates.count == 4 { break }
+        }
+        let host = URL(string: best.url)?.host ?? ""
+        print("live offer \(best.proto) \(formatName(best.url)) qn \(best.qn) \(host)")
+        return LiveOffer(
+            url: best.url,
+            alternates: alternates,
+            protocolName: best.proto,
+            qualities: names,
+            qualityIDs: kept,
+            selectedQN: best.qn,
+            selectedName: selected
+        )
+    }
+
+    private static func formatName(_ url: String) -> String {
+        if url.contains(".m3u8") { return "m3u8" }
+        if url.contains(".flv") { return "flv" }
+        return "stream"
+    }
+
     static func live(fromSearch item: JSON) -> LiveRoom? {
         let id = item["roomid"].int ?? item["room_id"].int ?? item["roomId"].int ?? 0
         let title = plain(item["title"].string ?? "")
@@ -1535,7 +1883,8 @@ struct BiliClient: Sendable {
             uname: plain(item["uname"].string ?? item["author"].string ?? ""),
             face: https(item["uface"].string ?? ""),
             online: flexibleCount(item["online"]),
-            area: item["cate_name"].string ?? item["area_v2_name"].string ?? "直播"
+            area: item["cate_name"].string ?? item["area_v2_name"].string ?? "直播",
+            mid: item["uid"].int ?? item["mid"].int ?? 0
         )
     }
 

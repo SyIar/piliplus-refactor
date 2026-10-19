@@ -390,19 +390,19 @@ private struct SeasonCard: View {
 
 struct LivePlaza: View {
     @Environment(AppModel.self) private var model
-    @State private var area = "推荐"
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(Menus.liveAreas, id: \.self) { item in
-                            Button(item) { area = item }
-                                .font(.caption.weight(area == item ? .bold : .regular))
+                            Button(item) { Task { await model.loadLive(area: item, reset: true) } }
+                                .font(.caption.weight(model.liveArea == item ? .bold : .regular))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .foregroundStyle(area == item ? .white : .primary)
-                                .selectionCapsule(selected: area == item)
+                                .foregroundStyle(model.liveArea == item ? .white : .primary)
+                                .selectionCapsule(selected: model.liveArea == item)
                         }
                     }
                 }
@@ -416,46 +416,57 @@ struct LivePlaza: View {
                         .contentPlate(radius: 18)
                 }
                 .buttonStyle(.plain)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                    ForEach(model.lives) { room in
-                        Button { model.open(.live(room.id)) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                RemoteImage(url: room.cover)
-                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                    .overlay(alignment: .topLeading) {
-                                        Text(room.area)
-                                            .font(.caption2.weight(.bold))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(.black.opacity(0.45), in: Capsule())
-                                            .foregroundStyle(.white)
-                                            .padding(8)
+                if model.loadingLive && model.lives.isEmpty {
+                    ProgressView("正在加载")
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                } else if model.lives.isEmpty {
+                    ContentUnavailableView("暂无直播", systemImage: "dot.radiowaves.left.and.right", description: Text("换个分区，或下拉刷新"))
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        ForEach(Array(model.lives.enumerated()), id: \.element.id) { index, room in
+                            Button { model.open(.live(room.id)) } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    RemoteImage(url: room.cover)
+                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        .overlay(alignment: .topLeading) {
+                                            Text(room.area)
+                                                .font(.caption2.weight(.bold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(.black.opacity(0.45), in: Capsule())
+                                                .foregroundStyle(.white)
+                                                .padding(8)
+                                        }
+                                    Text(room.title).font(.caption.weight(.semibold)).lineLimit(2).foregroundStyle(.primary)
+                                    HStack {
+                                        Text(room.uname)
+                                            .lineLimit(1)
+                                            .layoutPriority(-1)
+                                        Spacer(minLength: 0)
+                                        Label(CountText.format(room.online), systemImage: "person.2")
+                                            .lineLimit(1)
+                                            .fixedSize()
                                     }
-                                Text(room.title).font(.caption.weight(.semibold)).lineLimit(2).foregroundStyle(.primary)
-                                HStack {
-                                    Text(room.uname)
-                                        .lineLimit(1)
-                                        .layoutPriority(-1)
-                                    Spacer(minLength: 0)
-                                    Label(CountText.format(room.online), systemImage: "person.2")
-                                        .lineLimit(1)
-                                        .fixedSize()
+                                    .lineLimit(1)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                                 }
-                                .lineLimit(1)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .onAppear {
+                                guard index >= model.lives.count - 1 else { return }
+                                Task { await model.loadLive(area: model.liveArea, reset: false) }
                             }
                         }
-                        .buttonStyle(.plain)
                     }
-                }
-                if model.lives.isEmpty {
-                    ContentUnavailableView("暂无直播", systemImage: "dot.radiowaves.left.and.right", description: Text("下拉刷新，或检查网络"))
                 }
             }
             .padding(16)
         }
-        .refreshable { await model.refreshHome() }
+        .refreshable { await model.loadLive(area: model.liveArea, reset: true) }
+        .task {
+            if model.lives.isEmpty { await model.loadLive(area: model.liveArea, reset: true) }
+        }
         .scrollEdgeSoft()
     }
 }
