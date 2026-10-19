@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -69,10 +70,11 @@ jobs:
           unzip -t PiliPlus.ipa
 
       - name: Publish GitHub Release
+        if: github.ref == 'refs/tags/v2.0.1'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0.0
-          name: PiliPlus 2.0.0
+          tag_name: v2.0.1
+          name: PiliPlus 2.0.1
           target_commitish: ${{ github.sha }}
           prerelease: false
           draft: false
