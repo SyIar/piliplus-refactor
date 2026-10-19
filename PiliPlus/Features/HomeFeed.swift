@@ -414,16 +414,14 @@ struct LivePlaza: View {
                         }
                     }
                 }
-                Button {
-                    model.open(.feature("关注的直播"))
-                } label: {
-                    Label("关注的直播", systemImage: "heart")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .contentPlate(radius: 18)
+                HStack(spacing: 8) {
+                    plazaLink("关注的直播", "heart") { model.open(.feature("关注的直播")) }
+                    plazaLink("搜索直播", "magnifyingglass") { model.open(.feature("搜索直播")) }
+                    plazaLink("分区详情", "square.grid.2x2") {
+                        model.liveFocusArea = model.liveArea == "推荐" ? "网游" : model.liveArea
+                        model.open(.feature("直播分区"))
+                    }
                 }
-                .buttonStyle(.plain)
                 if model.loadingLive && model.lives.isEmpty {
                     ProgressView("正在加载")
                         .frame(maxWidth: .infinity, minHeight: 180)
@@ -476,5 +474,20 @@ struct LivePlaza: View {
             if model.lives.isEmpty { await model.loadLive(area: model.liveArea, reset: true) }
         }
         .scrollEdgeSoft()
+    }
+
+    private func plazaLink(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .contentPlate(radius: 18)
+        }
+        .buttonStyle(.plain)
     }
 }

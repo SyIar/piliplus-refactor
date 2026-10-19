@@ -334,6 +334,33 @@ struct RootShell: View {
             await model.openFirstLive()
             return
         }
+        if let screen = LaunchMode.screen, [
+            "live-area-detail", "live-follow", "live-search", "live-block", "live-rank", "live-sc", "live-emote"
+        ].contains(screen) {
+            await LaunchClock.waitForFirstFrame()
+            model.homeTab = "直播"
+            switch screen {
+            case "live-area-detail":
+                model.liveFocusArea = "网游"
+                model.open(.feature("直播分区"))
+            case "live-follow":
+                model.open(.feature("关注的直播"))
+            case "live-search":
+                model.open(.feature("搜索直播"))
+            case "live-block":
+                model.open(.feature("弹幕屏蔽"))
+            case "live-rank":
+                model.liveFocusRoom = 0
+                model.open(.feature("高能榜"))
+            case "live-sc":
+                model.liveFocusRoom = 0
+                model.open(.feature("醒目留言"))
+            default:
+                model.liveFocusRoom = 0
+                model.open(.feature("直播表情"))
+            }
+            return
+        }
         if LaunchMode.screen == "sponsor" {
             await LaunchClock.waitForFirstFrame()
             await openSponsorVideo()
@@ -484,6 +511,13 @@ struct RootShell: View {
             case "切换账号": AccountSwitchPage()
             case "最近点赞": RecentVideoPage(kind: "最近点赞")
             case "最近投币": RecentVideoPage(kind: "最近投币")
+            case "关注的直播": FollowedLivePage()
+            case "搜索直播": LiveSearchPage()
+            case "直播分区": LiveAreaDetailPage(parentName: model.liveFocusArea)
+            case "弹幕屏蔽": LiveBlockPage()
+            case "高能榜": LiveRankPage()
+            case "醒目留言": LiveSuperChatPage()
+            case "直播表情": LiveEmotePage()
             case "大航海": RankListPage(title: "大航海")
             default: FeaturePageView(title: title)
             }

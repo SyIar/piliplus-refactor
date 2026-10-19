@@ -831,6 +831,84 @@ PY
   fi
 }
 
+capture_live_extra_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/live-extra-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  local tries=90
+  if [[ "$screen" == "live-sc" || "$screen" == "live-rank" || "$screen" == "live-area-detail" ]]; then tries=120; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing live extra proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  if ! python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("state", "rows", "parent", "child", "query", "title", "room", "note", "kind", "error", "covers", "hidden", "kept")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+state = data.get("state")
+rows = int(data.get("rows") or 0)
+err = str(data.get("error") or "")
+note = str(data.get("note") or "")
+title = str(data.get("title") or "")
+titles = [str(item) for item in (data.get("titles") or [])]
+names = [str(item) for item in (data.get("names") or [])]
+words = [str(item) for item in (data.get("words") or [])]
+blob = titles + names + words + [title, note]
+fixture = any("液态玻璃" in item or "玻璃试验" in item or "fixture" in item.lower() for item in blob)
+def rows_ok(minimum):
+    return state == "rows" and rows >= minimum and not fixture and not err
+if screen == "live-area-detail":
+    ok = rows_ok(1) and data.get("parent") == "网游" and str(data.get("child") or "") != "" and int(data.get("room") or 0) > 0 and len(titles) >= 1
+elif screen == "live-follow":
+    ok = state == "login" and rows == 0 and note != "" and not fixture
+elif screen == "live-search":
+    ok = rows_ok(1) and data.get("query") == "原神" and len(titles) >= 1
+elif screen == "live-block":
+    ok = "广告" in words and int(data.get("hidden") or 0) >= 1 and int(data.get("kept") or 0) >= 1 and not fixture
+elif screen == "live-rank":
+    ok = rows_ok(1) and len(names) >= 1 and int(data.get("room") or 0) > 0 and title != ""
+elif screen == "live-sc":
+    filled = rows_ok(1) and len(titles) >= 1
+    quiet = state == "empty" and rows == 0 and note != "" and title != "" and int(data.get("room") or 0) > 0 and not err
+    ok = (filled or quiet) and not fixture
+elif screen == "live-emote":
+    ok = ((state == "login" and rows == 0 and note != "") or rows_ok(1) or (state == "empty" and note != "" and title != "")) and not fixture
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} live extra rejected")
+print(f"{screen} live extra ok")
+PY
+  then
+    echo "live extra log ${screen}:" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+}
+
 capture_live_room() {
   local dir proof advanced=0 first="" cur="" err="" dm=0 proto="" title=""
   dir="$(container)"
@@ -2149,6 +2227,7 @@ for screen in hot-weekly hot-precious; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if ! capture_hot_ui "$screen"; then
     echo "retrying ${screen}" >&2
+    if [[ "$screen" == "hot-weekly" ]]; then sleep 8; fi
     capture_hot_ui "$screen" || hot_status=1
   fi
 done
@@ -2170,8 +2249,16 @@ for screen in acct-likes acct-coins acct-articles acct-charge acct-guards acct-s
     capture_account_manage_ui "$screen" || account_manage_status=1
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, or warm scroll check failed" >&2
+live_extra_status=0
+for screen in live-area-detail live-follow live-search live-block live-rank live-sc live-emote; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_live_extra_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_live_extra_ui "$screen" || live_extra_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 || "$live_extra_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, live extras, or warm scroll check failed" >&2
   exit 1
 fi
 

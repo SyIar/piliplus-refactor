@@ -64,6 +64,10 @@ final class AppModel {
     var loadingLive = false
     var liveError = ""
     var liveOffers: [Int: LiveOffer] = [:]
+    var liveFocusArea = "网游"
+    var liveFocusRoom = 0
+    var liveFocusUID = 0
+    var liveFocusTitle = ""
     private var liveGeneration = 0
     var dynamics: [DynamicItem] = []
     var dynamicFocus: DynamicItem?
