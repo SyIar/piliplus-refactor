@@ -88,6 +88,7 @@ final class AppModel {
     private var endObserver: NSObjectProtocol?
     private var lastMemoryStamp = -1.0
     private var lastHeartbeatStamp = -20.0
+    private var localHistoryNoted: Set<String> = []
     private var playGeneration = 0
     var qualityName = "高清 720P"
     var danmakuOn = true
@@ -121,6 +122,13 @@ final class AppModel {
     var laterVideos: [VideoItem] = []
     var loadingLater = false
     var searchHistory: [String] = []
+    var libraryQuery = ""
+    var libraryOrder = "最近收藏"
+    var libraryEditing = false
+    var libraryPicked: Set<String> = []
+    var followedBangumi: [SeasonItem] = []
+    var followedDrama: [SeasonItem] = []
+    var followedSeries: [SeasonItem] = []
     var favFolders: [FavFolder] = []
     var folderVideos: [Int: [VideoItem]] = [:]
     var folderPage: [Int: Int] = [:]
@@ -1349,6 +1357,14 @@ final class AppModel {
             lastMemoryStamp = seconds
             PlaybackMemory.remember(bvid: video.bvid, cid: video.cid, seconds: seconds)
         }
+        if seconds >= 1, !localHistoryNoted.contains(video.bvid) {
+            localHistoryNoted.insert(video.bvid)
+            var copy = video
+            copy.progress = max(1, Int(seconds))
+            copy.playURL = nil
+            copy.audioURL = nil
+            LocalLibrary.rememberHistory(copy)
+        }
         if let deadline = sleepDeadline, Date() >= deadline {
             sleepDeadline = nil
             sleepChoice = "不开启"
@@ -1494,25 +1510,47 @@ final class AppModel {
         guard let video = video(bvid), video.aid > 0 else { show("还不能加入稍后再看"); return }
         if later.contains(bvid) {
             Task { await removeLater(video) }
-        } else {
-            guard let csrf = csrf(for: "添加稍后再看") else { return }
-            Task {
-                do {
-                    try await client.submit(AccountRequest.addWatchLater(aid: video.aid, csrf: csrf))
-                    later.insert(bvid)
-                    if !laterVideos.contains(where: { $0.bvid == bvid }) {
-                        laterVideos.insert(video, at: 0)
-                    }
-                    show("已添加至稍后再看")
-                } catch {
-                    show(error.localizedDescription)
+            return
+        }
+        if !loggedIn {
+            queueLocalLater(video)
+            return
+        }
+        guard let csrf = csrf(for: "添加稍后再看") else { return }
+        Task {
+            do {
+                try await client.submit(AccountRequest.addWatchLater(aid: video.aid, csrf: csrf))
+                later.insert(bvid)
+                if !laterVideos.contains(where: { $0.bvid == bvid }) {
+                    laterVideos.insert(video, at: 0)
                 }
+                show("已添加至稍后再看")
+            } catch {
+                show(error.localizedDescription)
             }
         }
     }
 
+    private func queueLocalLater(_ video: VideoItem, quiet: Bool = false) {
+        var copy = video
+        copy.playURL = nil
+        copy.audioURL = nil
+        LocalLibrary.addLater(copy)
+        later.insert(video.bvid)
+        if !laterVideos.contains(where: { $0.bvid == video.bvid }) {
+            laterVideos.insert(copy, at: 0)
+        }
+        if !quiet { show("已添加至稍后再看") }
+    }
+
     func removeLater(_ video: VideoItem) async {
         if LaunchMode.accountPreview {
+            later.remove(video.bvid)
+            laterVideos.removeAll { $0.bvid == video.bvid }
+            return
+        }
+        if !loggedIn {
+            LocalLibrary.removeLater(video.bvid)
             later.remove(video.bvid)
             laterVideos.removeAll { $0.bvid == video.bvid }
             return
@@ -1532,6 +1570,13 @@ final class AppModel {
         if LaunchMode.accountPreview {
             later.removeAll()
             laterVideos.removeAll()
+            return
+        }
+        if !loggedIn {
+            LocalLibrary.clearLater()
+            later.removeAll()
+            laterVideos.removeAll()
+            show("已清空稍后再看")
             return
         }
         guard let csrf = csrf(for: "清空稍后再看") else { return }
@@ -1567,7 +1612,11 @@ final class AppModel {
 
     func loadHistory(reset: Bool) async {
         if LaunchMode.accountPreview { return }
-        guard loggedIn else { return }
+        if LaunchMode.screen?.hasPrefix("guest-") == true { return }
+        if !loggedIn {
+            if reset { history = LocalLibrary.history() }
+            return
+        }
         if reset {
             historyCursorMax = 0
             historyCursorViewAt = 0
@@ -1601,6 +1650,11 @@ final class AppModel {
             history.removeAll { $0.bvid == video.bvid }
             return
         }
+        if !loggedIn {
+            LocalLibrary.removeHistory(video.bvid)
+            history.removeAll { $0.bvid == video.bvid }
+            return
+        }
         guard video.aid > 0, let csrf = csrf(for: "删除记录") else { return }
         do {
             try await client.submit(AccountRequest.deleteHistory(aid: video.aid, csrf: csrf))
@@ -1613,6 +1667,13 @@ final class AppModel {
     func clearHistory() async {
         if LaunchMode.accountPreview {
             history.removeAll()
+            return
+        }
+        if !loggedIn {
+            LocalLibrary.clearHistory()
+            history.removeAll()
+            historyHasMore = false
+            show("已清空观看记录")
             return
         }
         guard let csrf = csrf(for: "清空观看记录") else { return }
@@ -1648,7 +1709,12 @@ final class AppModel {
     }
 
     func loadLater() async {
-        if LaunchMode.accountPreview || !loggedIn { return }
+        if LaunchMode.accountPreview || LaunchMode.screen?.hasPrefix("guest-") == true { return }
+        if !loggedIn {
+            laterVideos = LocalLibrary.later()
+            later = Set(laterVideos.map(\.bvid))
+            return
+        }
         guard !loadingLater else { return }
         loadingLater = true
         defer { loadingLater = false }
@@ -1675,12 +1741,18 @@ final class AppModel {
         }
     }
 
-    func loadFolder(_ id: Int, reset: Bool) async {
-        if LaunchMode.accountPreview || !loggedIn { return }
+    func loadFolder(_ id: Int, reset: Bool, keyword: String = "", order: String = "") async {
+        let guestFolder = LaunchMode.screen == "lib-fav"
+        if (LaunchMode.accountPreview || !loggedIn) && !guestFolder { return }
         if !reset, folderHasMore[id] == false { return }
         let next = reset ? 1 : (folderPage[id] ?? 0) + 1
         do {
-            let page = try await client.folderVideos(mediaID: id, page: next)
+            let page: (items: [VideoItem], hasMore: Bool)
+            if keyword.isEmpty && (order.isEmpty || order == "最近收藏") {
+                page = try await client.folderVideos(mediaID: id, page: next)
+            } else {
+                page = try await client.folderVideos(mediaID: id, page: next, keyword: keyword, order: order)
+            }
             if reset || folderVideos[id] == nil {
                 folderVideos[id] = page.items
             } else {
@@ -1694,6 +1766,295 @@ final class AppModel {
         } catch {
             if reset { show(error.localizedDescription) }
         }
+    }
+
+    func deleteFavoriteItems(_ videos: [VideoItem], mediaID: Int) async {
+        let aids = videos.map(\.aid).filter { $0 > 0 }
+        guard !aids.isEmpty else { return }
+        guard loggedIn, let csrf = session?.csrf, !csrf.isEmpty else {
+            show("请先登录后再删除")
+            return
+        }
+        do {
+            try await client.submit(LibraryRequest.batchUnfavorite(mediaID: mediaID, aids: aids, csrf: csrf))
+            let gone = Set(videos.map(\.bvid))
+            folderVideos[mediaID]?.removeAll { gone.contains($0.bvid) }
+            show("已删除")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func filtered(_ videos: [VideoItem]) -> [VideoItem] {
+        let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return videos }
+        return videos.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.ownerName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    func filteredShows(_ items: [SeasonItem]) -> [SeasonItem] {
+        let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return items }
+        return items.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    func prepareLibraryShot(_ screen: String) async {
+        loggedIn = false
+        libraryEditing = false
+        libraryOrder = "最近收藏"
+        libraryQuery = ""
+        switch screen {
+        case "lib-history":
+            await prepareLocalHistoryShot()
+        case "lib-later":
+            await prepareLocalLaterShot()
+        case "lib-fav":
+            await prepareFavoriteShot()
+        case "lib-sub":
+            await prepareSubscriptionShot()
+        default:
+            LibraryUIProof.record(["error": "未知页面"])
+        }
+    }
+
+    private func prepareLocalHistoryShot() async {
+        loggedIn = false
+        let played = await playRealVideos(count: 3)
+        player?.pause()
+        isPlaying = false
+        nowPlaying = nil
+        history = played
+        let token = Self.selectiveToken(in: played)
+        libraryQuery = token
+        let shown = filtered(played)
+        let real = played.allSatisfy { !LocalLibrary.isFixture($0) }
+        let ready = played.count >= 3 && !token.isEmpty && shown.count >= 1 && shown.count < played.count && real
+        if ready {
+            await ImageStore.shared.prepare(urls: played.map(\.cover), maxPixel: 320)
+        }
+        LibraryUIProof.record([
+            "query": token,
+            "total": played.count,
+            "shown": shown.count,
+            "titles": played.map(\.title),
+            "bvids": played.map(\.bvid),
+            "covers": ready ? ImageStore.preparedCount : 0,
+            "error": ready && ImageStore.preparedCount >= 1 ? "" : "没有播完足够的真实视频"
+        ])
+        open(.feature("观看记录"))
+    }
+
+    private func prepareLocalLaterShot() async {
+        loggedIn = false
+        laterVideos = []
+        later = []
+        let queued = await queueRealVideos(count: 4)
+        let token = Self.selectiveToken(in: queued)
+        libraryQuery = token
+        let shown = filtered(queued)
+        let real = queued.allSatisfy { !LocalLibrary.isFixture($0) }
+        let ready = queued.count >= 3 && !token.isEmpty && shown.count >= 1 && shown.count < queued.count && real
+        if ready {
+            await ImageStore.shared.prepare(urls: queued.map(\.cover), maxPixel: 320)
+        }
+        LibraryUIProof.record([
+            "query": token,
+            "total": queued.count,
+            "shown": shown.count,
+            "titles": queued.map(\.title),
+            "bvids": queued.map(\.bvid),
+            "covers": ready ? ImageStore.preparedCount : 0,
+            "error": ready && ImageStore.preparedCount >= 1 ? "" : "没有排进足够的真实视频"
+        ])
+        open(.feature("稍后再看"))
+    }
+
+    /// Detail, a real play URL, then at least a second of playback. Fixtures never qualify.
+    private func playRealVideos(count: Int) async -> [VideoItem] {
+        var played: [VideoItem] = []
+        var seen: Set<String> = []
+        let deadline = Date().addingTimeInterval(75)
+        for page in 1...3 {
+            if played.count >= count || Date() >= deadline { break }
+            let seeds = (try? await client.recommend(idx: page)) ?? []
+            for item in seeds {
+                if played.count >= count || Date() >= deadline { break }
+                guard seen.insert(item.bvid).inserted, !LocalLibrary.isFixture(item) else { continue }
+                guard let detail = try? await client.detail(bvid: item.bvid),
+                      !detail.title.isEmpty,
+                      !LocalLibrary.isFixture(detail) else { continue }
+                let cid = detail.pages.first?.cid ?? detail.cid
+                guard cid > 0 else { continue }
+                guard let offer = try? await client.playback(
+                    bvid: detail.bvid,
+                    cid: cid,
+                    qn: 16,
+                    tryLook: true,
+                    codecPreference: "avc1",
+                    audioPreference: "高码率"
+                ) else { continue }
+                var playable = detail
+                playable.apply(offer)
+                guard playable.playURL != nil else { continue }
+                store(playable)
+                playbackSeconds = 0
+                play(playable)
+                var sawReset = false
+                let started = Date()
+                var confirmed = 0.0
+                while Date().timeIntervalSince(started) < 14 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard nowPlaying?.bvid == playable.bvid else { continue }
+                    let seconds = player?.currentTime().seconds ?? 0
+                    guard seconds.isFinite else { continue }
+                    if seconds < 0.5 { sawReset = true }
+                    if sawReset, seconds >= 1 {
+                        confirmed = seconds
+                        break
+                    }
+                }
+                guard confirmed >= 1 else {
+                    print("library history skip \(playable.bvid) seconds \(confirmed)")
+                    continue
+                }
+                var recorded = playable
+                recorded.progress = max(1, Int(confirmed))
+                recorded.playURL = nil
+                recorded.audioURL = nil
+                LocalLibrary.rememberHistory(recorded)
+                played.append(recorded)
+                print("library history played \(recorded.bvid) \(recorded.title) \(recorded.progress)s")
+            }
+        }
+        return played
+    }
+
+    /// Recommended cards often omit `aid`. Load the archive so the local queue has a real title, cover, and uploader.
+    private func queueRealVideos(count: Int) async -> [VideoItem] {
+        var queued: [VideoItem] = []
+        var seen: Set<String> = []
+        let deadline = Date().addingTimeInterval(60)
+        for page in 1...4 {
+            if queued.count >= count || Date() >= deadline { break }
+            let seeds = (try? await client.recommend(idx: page)) ?? []
+            if seeds.isEmpty { print("library later empty recommend page \(page)") }
+            for item in seeds {
+                if queued.count >= count || Date() >= deadline { break }
+                guard !item.bvid.isEmpty else { continue }
+                guard seen.insert(item.bvid).inserted, !LocalLibrary.isFixture(item) else { continue }
+                guard let detail = try? await client.detail(bvid: item.bvid),
+                      detail.aid > 0,
+                      !detail.title.isEmpty,
+                      !detail.cover.isEmpty,
+                      !LocalLibrary.isFixture(detail) else {
+                    print("library later skip \(item.bvid)")
+                    continue
+                }
+                var copy = detail
+                copy.playURL = nil
+                copy.audioURL = nil
+                store(copy)
+                queueLocalLater(copy, quiet: true)
+                if let saved = laterVideos.first(where: { $0.bvid == copy.bvid }) {
+                    queued.append(saved)
+                    print("library later queued \(saved.bvid) \(saved.title)")
+                }
+            }
+        }
+        laterVideos = queued
+        later = Set(queued.map(\.bvid))
+        return queued
+    }
+
+    private static func selectiveToken(in videos: [VideoItem]) -> String {
+        for video in videos {
+            let pieces = (video.title + " " + video.ownerName).split { !$0.isLetter && !$0.isNumber }.map(String.init)
+            for piece in pieces where piece.count >= 2 {
+                let token = String(piece.prefix(2))
+                let hits = videos.filter {
+                    $0.title.localizedCaseInsensitiveContains(token) || $0.ownerName.localizedCaseInsensitiveContains(token)
+                }
+                if hits.count >= 1, hits.count < videos.count { return token }
+            }
+        }
+        return ""
+    }
+
+    private func prepareFavoriteShot() async {
+        do {
+            let folders = try await client.folders(mid: 8_047_632, rid: nil)
+            guard let folder = folders.max(by: { $0.count < $1.count }) else {
+                LibraryUIProof.record(["query": "", "rows": 0, "error": "没有公开收藏夹"])
+                open(.feature("我的收藏"))
+                return
+            }
+            let seed = try await client.folderVideos(mediaID: folder.id, page: 1)
+            let token = Self.libraryToken(seed.items.first?.title ?? "")
+            guard !token.isEmpty else {
+                LibraryUIProof.record(["query": "", "rows": 0, "error": "收藏夹没有标题"])
+                return
+            }
+            favFolders = [folder]
+            libraryQuery = token
+            libraryOrder = "最多播放"
+            libraryEditing = true
+            let filtered = try await client.folderVideos(mediaID: folder.id, page: 1, keyword: token, order: libraryOrder)
+            folderVideos[folder.id] = filtered.items
+            folderPage[folder.id] = 1
+            folderHasMore[folder.id] = filtered.hasMore
+            libraryPicked = Set(filtered.items.prefix(1).map(\.bvid))
+            await ImageStore.shared.prepare(urls: filtered.items.prefix(6).map(\.cover), maxPixel: 320)
+            LibraryUIProof.record([
+                "query": token,
+                "order": libraryOrder,
+                "folder": folder.title,
+                "rows": filtered.items.count,
+                "selected": libraryPicked.count,
+                "editing": true,
+                "covers": ImageStore.preparedCount,
+                "error": filtered.items.isEmpty ? "关键词没有命中收藏" : ""
+            ])
+            open(.folder(folder.id))
+        } catch {
+            LibraryUIProof.record(["query": libraryQuery, "rows": 0, "error": error.localizedDescription])
+            open(.feature("我的收藏"))
+        }
+    }
+
+    private func prepareSubscriptionShot() async {
+        let mid = 8_047_632
+        do {
+            async let bangumi = client.followedShows(vmid: mid, type: 1, page: 1)
+            async let drama = client.followedShows(vmid: mid, type: 2, page: 1)
+            async let series = client.collections(mid: mid)
+            let shows = try await bangumi
+            let serials = try await drama
+            let seasons = try await series
+            followedBangumi = shows
+            followedDrama = serials
+            followedSeries = seasons
+            let covers = (shows + serials + seasons).prefix(8).map(\.cover)
+            await ImageStore.shared.prepare(urls: covers, maxPixel: 240)
+            let listed = shows.count + serials.count
+            LibraryUIProof.record([
+                "bangumi": shows.count,
+                "drama": serials.count,
+                "series": seasons.count,
+                "covers": ImageStore.preparedCount,
+                "error": listed >= 1 && seasons.count >= 1 ? "" : "订阅列表不完整"
+            ])
+            open(.feature("我的订阅"))
+        } catch {
+            LibraryUIProof.record(["bangumi": 0, "drama": 0, "series": 0, "covers": 0, "error": error.localizedDescription])
+            open(.feature("我的订阅"))
+        }
+    }
+
+    private static func libraryToken(_ title: String) -> String {
+        let pieces = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard let chunk = pieces.first(where: { $0.count >= 2 }) else { return "" }
+        return String(chunk.prefix(2))
     }
 
     private func csrf(for action: String) -> String? {

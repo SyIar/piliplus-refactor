@@ -171,22 +171,10 @@ struct SearchStudio: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(room.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
-                                HStack {
-                                    Text(room.uname).lineLimit(1).layoutPriority(-1)
-                                    Spacer(minLength: 8)
-                                    if room.online > 0 {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "person.fill")
-                                            Text(CountText.format(room.online))
-                                                .lineLimit(1)
-                                                .fixedSize(horizontal: true, vertical: false)
-                                        }
-                                        .fixedSize(horizontal: true, vertical: false)
-                                    }
-                                }
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                VideoListMeta(owner: room.uname, viewCount: room.online, danmaku: 0, viewSymbol: "person.fill")
+                                    .font(.caption)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .buttonStyle(.plain)
@@ -199,21 +187,7 @@ struct SearchStudio: View {
                         if !article.summary.isEmpty {
                             Text(article.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
-                        HStack {
-                            Text(article.author).lineLimit(1).layoutPriority(-1)
-                            Spacer(minLength: 8)
-                            if article.view > 0 {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "eye.fill")
-                                    Text(CountText.format(article.view))
-                                        .lineLimit(1)
-                                        .fixedSize(horizontal: true, vertical: false)
-                                }
-                                .fixedSize(horizontal: true, vertical: false)
-                            }
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        VideoListMeta(owner: article.author, viewCount: article.view, danmaku: 0, viewSymbol: "eye.fill")
                     }
                     .padding(12)
                     .contentPlate(radius: 18)
@@ -221,7 +195,7 @@ struct SearchStudio: View {
             default:
                 if results.isEmpty && !searching { emptyResult }
                 ForEach(results) { video in
-                    VideoCard(video: video)
+                    VideoCard(video: video, stackedMeta: true)
                 }
             }
             if !searching && hasResults {

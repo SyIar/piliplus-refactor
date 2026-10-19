@@ -256,7 +256,52 @@ struct BiliClient: Sendable {
     }
 
     func folderVideos(mediaID: Int, page: Int) async throws -> (items: [VideoItem], hasMore: Bool) {
-        let data = try await fetchAccount(AccountRequest.folderContents(mediaID: mediaID, page: page))
+        try await folderPage(AccountRequest.folderContents(mediaID: mediaID, page: page))
+    }
+
+    func folderVideos(mediaID: Int, page: Int, keyword: String, order: String) async throws -> (items: [VideoItem], hasMore: Bool) {
+        try await folderPage(LibraryRequest.folderQuery(mediaID: mediaID, page: page, keyword: keyword, order: LibraryRequest.orderCode(order)))
+    }
+
+    func followedShows(vmid: Int, type: Int, page: Int) async throws -> [SeasonItem] {
+        let data = try await fetchAccount(LibraryRequest.bangumiFollow(vmid: vmid, type: type, page: page))
+        try Self.requireOK(data)
+        return (data["data"]["list"].array ?? []).compactMap { item in
+            let id = item["season_id"].int ?? 0
+            let title = item["title"].string ?? ""
+            guard id > 0, !title.isEmpty else { return nil }
+            return SeasonItem(
+                seasonID: id,
+                title: Self.unescape(title),
+                cover: Self.https(item["cover"].string ?? ""),
+                badge: item["badge"].string ?? "",
+                subtitle: item["new_ep"]["index_show"].string ?? "",
+                view: item["stat"]["follow"].int ?? 0
+            )
+        }
+    }
+
+    func collections(mid: Int) async throws -> [SeasonItem] {
+        let data = try await fetchAccount(SpaceRequest.series(mid: mid, page: 1))
+        try Self.requireOK(data)
+        return (data["data"]["items_lists"]["seasons_list"].array ?? []).compactMap { item in
+            let meta = item["meta"]
+            let id = meta["season_id"].int ?? 0
+            let title = meta["name"].string ?? meta["title"].string ?? ""
+            guard id > 0, !title.isEmpty else { return nil }
+            return SeasonItem(
+                seasonID: id,
+                title: Self.unescape(title),
+                cover: Self.https(meta["cover"].string ?? ""),
+                badge: "合集",
+                subtitle: "\(meta["total"].int ?? 0) 个视频",
+                view: 0
+            )
+        }
+    }
+
+    private func folderPage(_ form: SignedForm) async throws -> (items: [VideoItem], hasMore: Bool) {
+        let data = try await fetchAccount(form)
         let medias = data["data"]["medias"].array ?? data["data"]["list"].array ?? []
         let items = medias.compactMap(Self.video(fromFavorite:))
         let hasMore = data["data"]["has_more"].bool ?? (items.count >= 20)

@@ -1597,6 +1597,121 @@ print(f"{screen} hot ui ok")
 PY
 }
 
+capture_library_proof() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/library-proof.json"
+  rm -f "$proof"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen libProof -perfLabel "$LABEL"
+  for _ in $(seq 1 30); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing library request proof" >&2
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/library-proof.json"
+  python3 - "$proof" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+expect = {
+    "fav-query": ("GET", "/x/v3/fav/resource/list", "keyword=AI&media_id=11&order=view&pn=1&ps=20"),
+    "fav-batch": ("POST", "/x/v3/fav/resource/batch-del", "csrf=jct-token&media_id=11&resources=8%3A2%2C9%3A2"),
+    "bangumi": ("GET", "/x/space/bangumi/follow/list", "pn=1&ps=20&type=1&vmid=7"),
+    "series": ("GET", "/x/polymer/web-space/seasons_series_list", "mid=42&page_num=1&page_size=20"),
+}
+print("library proof", data.get("checked"), data.get("failures"))
+if data.get("ok") is not True or data.get("failures"):
+    raise SystemExit("library request proof failed")
+found = {item["name"]: item for item in data.get("cases", [])}
+if set(found) != set(expect):
+    raise SystemExit(f"library cases {sorted(set(found) ^ set(expect))}")
+for name, (method, path, body) in expect.items():
+    item = found[name]
+    if (item.get("method"), item.get("path"), item.get("body")) != (method, path, body):
+        raise SystemExit(f"{name} drifted: {item}")
+print("library request proof ok")
+PY
+}
+
+capture_library_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/library-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+    "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  local tries=90
+  if [[ "$screen" == "lib-history" || "$screen" == "lib-later" ]]; then tries=180; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing library ui proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("query","order","folder","rows","shown","total","selected","editing","covers","bangumi","drama","series","error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+if data.get("error"):
+    raise SystemExit(f"{screen} {data.get('error')}")
+def real_rows(data):
+    titles = [str(item) for item in (data.get("titles") or [])]
+    bvids = [str(item) for item in (data.get("bvids") or [])]
+    query = str(data.get("query") or "")
+    shown, total = int(data.get("shown") or 0), int(data.get("total") or 0)
+    fixture = any("液态玻璃" in title or "fixture" in title.lower() for title in titles)
+    fixture = fixture or any("fixture" in bvid.lower() for bvid in bvids)
+    return (
+        query != ""
+        and shown >= 1
+        and shown < total
+        and total >= 3
+        and len(titles) >= 3
+        and len(bvids) >= 3
+        and int(data.get("covers") or 0) >= 1
+        and not fixture
+    )
+if screen == "lib-history":
+    ok = real_rows(data)
+elif screen == "lib-later":
+    ok = real_rows(data)
+elif screen == "lib-fav":
+    ok = str(data.get("query") or "") != "" and data.get("order") == "最多播放" and int(data.get("rows") or 0) >= 1 and int(data.get("selected") or 0) >= 1 and data.get("editing") is True and int(data.get("covers") or 0) >= 1
+elif screen == "lib-sub":
+    listed = int(data.get("bangumi") or 0) + int(data.get("drama") or 0)
+    ok = listed >= 1 and int(data.get("series") or 0) >= 1 and int(data.get("covers") or 0) >= 1
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} library ui rejected")
+print(f"{screen} library ui ok")
+PY
+}
+
 capture_message_proof() {
   local dir proof found=0
   dir="$(container)"
@@ -1930,8 +2045,17 @@ for screen in hot-weekly hot-precious; do
     capture_hot_ui "$screen" || hot_status=1
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, or warm scroll check failed" >&2
+library_status=0
+capture_library_proof || library_status=1
+for screen in lib-history lib-later lib-fav lib-sub; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_library_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_library_ui "$screen" || library_status=1
+  fi
+done
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, or warm scroll check failed" >&2
   exit 1
 fi
 

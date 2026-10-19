@@ -4,6 +4,8 @@ struct VideoCard: View {
     @Environment(AppModel.self) private var model
     let video: VideoItem
     var compact = false
+    /// Search rows stack the uploader above the counts. Home cards keep one line.
+    var stackedMeta = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -40,25 +42,29 @@ struct VideoCard: View {
             }
             .buttonStyle(.plain)
             Spacer(minLength: 0)
-            HStack(spacing: 8) {
-                Button {
-                    guard video.ownerMid > 0 else { return }
-                    model.open(.user(video.ownerMid, video.ownerName))
-                } label: {
-                    Text(video.ownerName)
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
+            if stackedMeta {
+                VideoListMeta(owner: video.ownerName, viewCount: video.view, danmaku: video.danmaku)
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        guard video.ownerMid > 0 else { return }
+                        model.open(.user(video.ownerMid, video.ownerName))
+                    } label: {
+                        Text(video.ownerName)
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .layoutPriority(-1)
+                    Spacer(minLength: 0)
+                    if video.view > 0 { cardCount("play.fill", CountText.format(video.view)) }
+                    if video.danmaku > 0 { cardCount("text.bubble.fill", CountText.format(video.danmaku)) }
                 }
-                .buttonStyle(.plain)
-                .layoutPriority(-1)
-                Spacer(minLength: 0)
-                if video.view > 0 { cardCount("play.fill", CountText.format(video.view)) }
-                if video.danmaku > 0 { cardCount("text.bubble.fill", CountText.format(video.danmaku)) }
+                .lineLimit(1)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .lineLimit(1)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contextMenu {
@@ -77,6 +83,93 @@ struct VideoCard: View {
             Text(text).lineLimit(1).fixedSize(horizontal: true, vertical: false)
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// Uploader on the first line. Plays, danmaku, then progress share the second
+/// line. A count that does not fit is omitted whole, never cut mid-number.
+struct VideoListMeta: View {
+    let owner: String
+    let viewCount: Int
+    let danmaku: Int
+    var progress: String? = nil
+    var viewSymbol = "play.fill"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !owner.isEmpty {
+                Text(owner)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            if viewCount > 0 || danmaku > 0 || !(progress ?? "").isEmpty {
+                IntactChipRow(spacing: 8) {
+                    if viewCount > 0 { metaChip(viewSymbol, CountText.format(viewCount)) }
+                    if danmaku > 0 { metaChip("text.bubble.fill", CountText.format(danmaku)) }
+                    if let progress, !progress.isEmpty {
+                        Text(progress)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metaChip(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(text)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// Keeps each child at its ideal width and drops trailing children that do not fit.
+struct IntactChipRow: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let limit = proposal.width ?? .greatestFiniteMagnitude
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let next = width == 0 ? size.width : width + spacing + size.width
+            if width > 0, next > limit + 0.5 { break }
+            width = next
+            height = max(height, size.height)
+        }
+        let capped = limit.isFinite ? min(width, limit) : width
+        return CGSize(width: max(capped, 0), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var dropped = false
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let next = x == bounds.minX ? size.width : (x - bounds.minX) + spacing + size.width
+            if dropped || (x > bounds.minX && next > bounds.width + 0.5) {
+                dropped = true
+                subview.place(
+                    at: CGPoint(x: bounds.minX, y: bounds.minY),
+                    proposal: ProposedViewSize(width: 0, height: 0)
+                )
+                continue
+            }
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+            x += size.width + spacing
+        }
     }
 }
 
