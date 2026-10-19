@@ -148,6 +148,7 @@ enum LaunchMode {
         if screen == "live" || screen == "live-area" || screen == "live-room" || screen == "liveProof" { return false }
         if screen == "sponsor" || screen == "sponsor-settings" { return false }
         if screen == "downloads" || screen == "offline" { return false }
+        if screen == "messageProof" || screen == "messages" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }

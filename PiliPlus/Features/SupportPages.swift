@@ -251,54 +251,6 @@ struct FeaturePageView: View {
     }
 }
 
-struct InboxView: View {
-    @Environment(AppModel.self) private var model
-    @State private var tab = "回复我的"
-    var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(Menus.messageTabs.filter { !($0 == "收到的赞" && model.flag("消息页禁用\"收到的赞\"功能")) }, id: \.self) { Text($0).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(12)
-            List {
-                if tab == "回复我的" { rows(model.unreadReply, "回复了你的评论", "text.bubble") }
-                if tab == "@我" { rows(model.unreadAt, "在动态里提到了你", "at") }
-                if tab == "收到的赞" { rows(model.unreadLike, "赞了你的评论", "hand.thumbsup") }
-                if tab == "系统通知" { rows(1, "欢迎使用 PiliPlus", "bell") }
-                Section {
-                    Button { model.open(.feature("私信")) } label: { Label("私信", systemImage: "envelope") }
-                }
-            }
-        }
-        .navigationTitle("消息")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("全部已读") {
-                    model.unreadReply = 0
-                    model.unreadAt = 0
-                    model.unreadLike = 0
-                    model.show("已全部标为已读")
-                }
-            }
-        }
-    }
-
-    private func rows(_ count: Int, _ subtitle: String, _ icon: String) -> some View {
-        ForEach(0..<max(count, 1), id: \.self) { index in
-            Button { model.open(.feature(tab)) } label: {
-                HStack {
-                    Image(systemName: icon).foregroundStyle(Palette.bili).frame(width: 28)
-                    VStack(alignment: .leading) {
-                        Text(index == 0 ? subtitle : "更早的\(tab)").foregroundStyle(.primary)
-                        Text("刚刚").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-}
-
 struct LoginGate: View {
     @Environment(AppModel.self) private var model
     @State private var mode = "扫码"

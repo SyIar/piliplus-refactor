@@ -8,6 +8,8 @@ enum Route: Hashable {
     case settings
     case setting(String)
     case messages
+    case notices(String)
+    case chat(Int, String)
     case login
     case feature(String)
     case folder(Int)
@@ -124,9 +126,10 @@ final class AppModel {
     var following = 0
     var followers = 0
     var dynamicCount = 0
-    var unreadReply = 2
-    var unreadAt = 1
-    var unreadLike = 3
+    var unreadReply = 0
+    var unreadAt = 0
+    var unreadLike = 0
+    var unreadSystem = 0
 
     var colorScheme: ColorScheme? {
         switch theme {
