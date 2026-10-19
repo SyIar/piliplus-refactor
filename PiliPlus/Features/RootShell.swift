@@ -383,6 +383,26 @@ struct RootShell: View {
             }
             return
         }
+        if let screen = LaunchMode.screen, screen.hasPrefix("gap-") {
+            await LaunchClock.waitForFirstFrame()
+            switch screen {
+            case "gap-poster":
+                model.shareBVID = ""
+                model.open(.feature("分享海报"))
+            case "gap-cast":
+                model.shareBVID = ""
+                model.open(.feature("投屏"))
+            case "gap-webdav":
+                if let address = LaunchMode.webdav {
+                    model.values["WebDAV 地址"] = address
+                    model.save()
+                }
+                model.open(.feature("WebDAV"))
+            default:
+                model.open(.feature("检查更新"))
+            }
+            return
+        }
         if LaunchMode.screen == "sponsor" {
             await LaunchClock.waitForFirstFrame()
             await openSponsorVideo()
@@ -554,6 +574,10 @@ struct RootShell: View {
             case "赛事": EsportsPage()
             case "装扮气泡": BubblePage()
             case "离线缓存搜索": CacheSearchPage()
+            case "分享海报": SharePosterPage()
+            case "投屏": CastPage()
+            case "WebDAV": WebDAVPage()
+            case "检查更新": UpdatePage()
             default: FeaturePageView(title: title)
             }
         case .dynamic(let id): DynamicDetailPage(id: id)

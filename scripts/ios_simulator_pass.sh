@@ -1000,6 +1000,92 @@ PY
   fi
 }
 
+capture_gap_ui() {
+  local screen="$1"
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/gap-ui.json"
+  rm -f "$proof" "$OUT/screenshots/${screen}.png"
+  : > "$OUT/perf/${screen}.log"
+  : > "$OUT/perf/${screen}.err"
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if [[ "$screen" == "gap-webdav" ]]; then
+    xcrun simctl launch --terminate-running-process \
+      --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+      "$UDID" "$BUNDLE" -screen "$screen" -webdav "http://127.0.0.1:8765" -perfLabel "$LABEL"
+  elif [[ "$screen" == "gap-update" && -n "${GITHUB_TOKEN:-}" ]]; then
+    echo "gap-update sends the GitHub token"
+    SIMCTL_CHILD_GITHUB_TOKEN="$GITHUB_TOKEN" xcrun simctl launch --terminate-running-process \
+      --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+      "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  else
+    if [[ "$screen" == "gap-update" ]]; then
+      echo "gap-update has no GitHub token" >&2
+    fi
+    xcrun simctl launch --terminate-running-process \
+      --stdout="$OUT/perf/${screen}.log" --stderr="$OUT/perf/${screen}.err" \
+      "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
+  fi
+  local tries=80
+  if [[ "$screen" == "gap-webdav" ]]; then tries=40; fi
+  for _ in $(seq 1 "$tries"); do
+    if [[ -f "$proof" ]]; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/${screen}.png"
+  echo "saved ${screen}.png"
+  if [[ "$found" -ne 1 ]]; then
+    echo "missing gap proof for ${screen}" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+  cp "$proof" "$OUT/perf/${screen}-ui.json"
+  if ! python3 - "$screen" "$proof" <<'PY'
+import json, sys
+screen, path = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+print(screen, {k: data.get(k) for k in ("state", "rows", "title", "query", "bvid", "note", "body", "error")})
+if data.get("screen") != screen:
+    raise SystemExit(f"{screen} proof screen mismatch")
+state = data.get("state")
+rows = int(data.get("rows") or 0)
+err = str(data.get("error") or "")
+note = str(data.get("note") or "")
+title = str(data.get("title") or "")
+names = [str(item) for item in (data.get("names") or [])]
+blob = names + [title, note]
+fixture = any("液态玻璃" in item or "玻璃试验" in item or "fixture" in item.lower() for item in blob)
+def rows_ok(minimum):
+    return state == "rows" and rows >= minimum and not fixture and not err
+if screen == "gap-poster":
+    ok = rows_ok(1) and title != "" and str(data.get("bvid") or "").startswith("BV") and any(name.strip() for name in names) and int(data.get("covers") or 0) >= 1
+elif screen == "gap-cast":
+    real = title != "" and str(data.get("bvid") or "").startswith("BV") and not fixture and not err
+    found = state == "rows" and rows >= 1 and any(name.strip() for name in names)
+    quiet = state == "empty" and rows == 0 and note == "没有发现投屏设备"
+    ok = real and (found or quiet)
+elif screen == "gap-webdav":
+    ok = rows_ok(1) and title == "应用主题" and note == "蓝色" and "127.0.0.1" in str(data.get("query") or "")
+elif screen == "gap-update":
+    body = str(data.get("body") or "")
+    ok = rows_ok(1) and note.startswith("v") and title != "" and len(body) >= 12
+else:
+    ok = False
+if not ok:
+    raise SystemExit(f"{screen} gap rejected")
+print(f"{screen} gap ok")
+PY
+  then
+    echo "gap log ${screen}:" >&2
+    tail -n 40 "$OUT/perf/${screen}.log" || true
+    return 1
+  fi
+}
+
 capture_live_room() {
   local dir proof advanced=0 first="" cur="" err="" dm=0 proto="" title=""
   dir="$(container)"
@@ -2353,11 +2439,78 @@ for screen in content-article content-audio content-music content-course content
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if ! capture_content_ui "$screen"; then
     echo "retrying ${screen}" >&2
-    capture_content_ui "$screen" || content_status=1
+    if [[ "$screen" == "content-article" ]]; then sleep 15; fi
+    if ! capture_content_ui "$screen"; then
+      if [[ "$screen" == "content-article" ]]; then
+        echo "retrying ${screen} once more" >&2
+        sleep 20
+        capture_content_ui "$screen" || content_status=1
+      else
+        content_status=1
+      fi
+    fi
   fi
 done
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 || "$live_extra_status" -ne 0 || "$content_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, live extras, other content, or warm scroll check failed" >&2
+gap_status=0
+python3 - "$OUT/perf/webdav.log" <<'PY' &
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+log = open(sys.argv[1], "w", buffering=1)
+store = {}
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_OPTIONS(self):
+        self.reply(200, b"")
+
+    def do_PUT(self):
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        store[self.path] = self.rfile.read(length)
+        log.write(f"PUT {self.path} {len(store[self.path])}\n")
+        self.reply(201, b"")
+
+    def do_GET(self):
+        body = store.get(self.path)
+        if body is None:
+            log.write(f"GET {self.path} miss\n")
+            self.reply(404, b"")
+            return
+        log.write(f"GET {self.path} {len(body)}\n")
+        self.reply(200, body, "application/json")
+
+    def reply(self, code, body, content_type="text/plain"):
+        self.send_response(code)
+        self.send_header("DAV", "1")
+        self.send_header("Allow", "OPTIONS, GET, PUT")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Type", content_type)
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        log.write((fmt % args) + "\n")
+
+ThreadingHTTPServer(("127.0.0.1", 8765), Handler).serve_forever()
+PY
+WEBDAV_PID=$!
+for _ in $(seq 1 25); do
+  if python3 -c 'import socket; s=socket.create_connection(("127.0.0.1",8765),1); s.close()' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+for screen in gap-poster gap-cast gap-webdav gap-update; do
+  xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+  if ! capture_gap_ui "$screen"; then
+    echo "retrying ${screen}" >&2
+    capture_gap_ui "$screen" || gap_status=1
+  fi
+done
+kill "$WEBDAV_PID" >/dev/null 2>&1 || true
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 || "$download_status" -ne 0 || "$message_status" -ne 0 || "$extra_status" -ne 0 || "$detail_status" -ne 0 || "$dyn_status" -ne 0 || "$settings_status" -ne 0 || "$hot_status" -ne 0 || "$library_status" -ne 0 || "$account_manage_status" -ne 0 || "$live_extra_status" -ne 0 || "$content_status" -ne 0 || "$gap_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, offline cache, messages, playback extras, detail page, dynamics, settings, hot extras, library extras, account management, live extras, other content, gap extras, or warm scroll check failed" >&2
   exit 1
 fi
 

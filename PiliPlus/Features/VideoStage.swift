@@ -744,6 +744,10 @@ struct VideoStage: View {
                 UIPasteboard.general.string = video?.playURL
                 model.show("已复制定播放地址")
             case "保存封面": model.show("封面已保存")
+            case "投屏":
+                showMore = false
+                if let video { model.shareBVID = video.bvid }
+                model.open(.feature("投屏"))
             case "重载视频": Task { await load() }
             case "举报": model.show("已打开举报")
             case "离线缓存": showDownload = true
@@ -755,7 +759,11 @@ struct VideoStage: View {
 
     private var shareSheet: some View {
         GlassMenuSheet(title: "分享", rows: Menus.shareTargets.map { ("square.and.arrow.up", $0) }) { action in
-            if action.contains("复制"), let video {
+            if action == "生成海报" {
+                showShare = false
+                if let video { model.shareBVID = video.bvid }
+                model.open(.feature("分享海报"))
+            } else if action.contains("复制"), let video {
                 UIPasteboard.general.string = action.contains("BV") ? video.bvid : "https://www.bilibili.com/video/\(video.bvid)"
                 model.show("已复制")
             } else {

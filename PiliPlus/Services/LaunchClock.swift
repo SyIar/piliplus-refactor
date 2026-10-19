@@ -157,10 +157,22 @@ enum LaunchMode {
         if screen == "libProof" || screen?.hasPrefix("lib-") == true { return false }
         if screen == "acctProof" || screen?.hasPrefix("acct-") == true { return false }
         if screen?.hasPrefix("content-") == true { return false }
+        if screen?.hasPrefix("gap-") == true { return false }
         if screen == "chapters" || screen == "scrub" || screen == "sleep" { return false }
         if perfScroll { return false }
         return screen != nil || perfStartup
     }
+    /// Set by the simulator script from the Actions token. Never written into proofs.
+    static var githubToken: String {
+        let raw = ProcessInfo.processInfo.environment["GITHUB_TOKEN"] ?? ""
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static var webdav: String? {
+        guard let index = args.firstIndex(of: "-webdav"), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }
+
     static var label: String? {
         guard let index = args.firstIndex(of: "-perfLabel"), args.indices.contains(index + 1) else { return nil }
         return args[index + 1]

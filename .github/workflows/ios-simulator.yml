@@ -54,6 +54,7 @@ jobs:
       - name: Boot, measure, screenshot
         env:
           PERF_LABEL: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/ios_simulator_pass.sh
 
       - name: Upload simulator artifacts

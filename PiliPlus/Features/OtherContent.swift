@@ -24,10 +24,15 @@ struct ArticleReaderPage: View {
                                 .frame(height: 180)
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
-                        Text(article.body)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 18) {
+                            ForEach(Array(paragraphs(article.body).enumerated()), id: \.offset) { _, paragraph in
+                                Text(paragraph)
+                                    .font(.body)
+                                    .lineSpacing(8)
+                                    .foregroundStyle(.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                     }
                     .padding(16)
                 }
@@ -40,6 +45,15 @@ struct ArticleReaderPage: View {
         .navigationTitle("专栏")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+    }
+
+    /// `<p>` and `<br>` already become newlines. Each block gets its own gap.
+    private func paragraphs(_ body: String) -> [String] {
+        let parts = body
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty && !body.isEmpty ? [body] : parts
     }
 
     private func load() async {
