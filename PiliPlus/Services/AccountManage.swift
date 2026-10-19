@@ -358,7 +358,7 @@ extension BiliClient {
                 )
                 if let rows = Self.fans(in: data) {
                     print("fans web cookie=\(!suppressCookie) rows=\(rows.count)")
-                    return FansLoad(people: rows, login: false, followers: await followerCount(mid), note: "")
+                    return FansLoad(people: rows, login: false, followers: await followerCount(mid: mid), note: "")
                 }
                 let code = data["code"].int ?? -1
                 if code == -101 { sawLogin = true }
@@ -383,7 +383,7 @@ extension BiliClient {
                 let data = try await appAccountGET(path, query: appQuery, referer: "https://www.bilibili.com")
                 if let rows = Self.fans(in: data) {
                     print("fans app \(path) rows=\(rows.count)")
-                    return FansLoad(people: rows, login: false, followers: await followerCount(mid), note: "")
+                    return FansLoad(people: rows, login: false, followers: await followerCount(mid: mid), note: "")
                 }
                 let code = data["code"].int ?? -1
                 if code == -101 { sawLogin = true }
@@ -394,7 +394,7 @@ extension BiliClient {
                 print("fans app \(path) \(last)")
             }
         }
-        let count = await followerCount(mid)
+        let count = await followerCount(mid: mid)
         if sawLogin || last.contains("未登录") {
             let note = count > 0 ? "公开粉丝数 \(count)。登录后查看名单" : "登录后查看粉丝名单"
             return FansLoad(people: [], login: true, followers: count, note: note)
