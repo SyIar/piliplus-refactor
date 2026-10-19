@@ -14,6 +14,8 @@ enum Route: Hashable {
     case feature(String)
     case folder(Int)
     case user(Int, String)
+    case dynamic(String)
+    case topic(Int, String)
 }
 
 enum ThemeChoice: String, CaseIterable, Identifiable {
@@ -64,6 +66,8 @@ final class AppModel {
     var liveOffers: [Int: LiveOffer] = [:]
     private var liveGeneration = 0
     var dynamics: [DynamicItem] = []
+    var dynamicFocus: DynamicItem?
+    var dynamicError = ""
     var dynamicOffset = ""
     var dynamicHasMore = false
     var loadingDynamics = false
@@ -473,6 +477,95 @@ final class AppModel {
         }
     }
 
+    func loadSampleDynamic(requirePoll: Bool) async -> DynamicItem? {
+        var topics: [TopicItem] = []
+        if requirePoll {
+            topics += (try? await client.searchTopics(keyword: "投票")) ?? []
+        }
+        let hot = (try? await client.hotTopics()) ?? []
+        let known = Set(topics.map(\.id))
+        topics += hot.filter { !known.contains($0.id) }
+        var fallback: DynamicItem?
+        for topic in topics.prefix(requirePoll ? 6 : 8) {
+            let items = (try? await client.topicDynamics(id: topic.id)) ?? []
+            if requirePoll, let found = items.first(where: { $0.hasPoll && $0.pollCounts.contains { $0 > 0 } }) { return found }
+            if requirePoll {
+                fallback = fallback ?? items.first(where: \.hasPoll)
+            }
+            if !requirePoll {
+                if let draw = items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty && $0.comment > 0 && $0.commentID > 0 }) {
+                    return draw
+                }
+                if fallback == nil {
+                    fallback = items.first(where: { !$0.text.isEmpty && $0.comment > 0 && $0.commentID > 0 })
+                        ?? items.first(where: { !$0.images.isEmpty && !$0.text.isEmpty && $0.commentID > 0 })
+                }
+            }
+        }
+        return fallback
+    }
+
+    func publishDynamic(text: String, images: [Data], topicName: String) async -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            show("写点内容再发布")
+            return false
+        }
+        guard let csrf = csrf(for: "发布动态") else { return false }
+        do {
+            var remote: [String] = []
+            for data in images {
+                let url = try await client.uploadDynamicImage(data, csrf: csrf)
+                remote.append(url)
+            }
+            try await client.publishDynamic(text: trimmed, images: remote, topicID: 0, topicName: topicName, repostID: "", csrf: csrf)
+            show("动态已发布")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
+    }
+
+    func repostDynamic(_ item: DynamicItem, text: String) async -> Bool {
+        guard !item.id.isEmpty else { return false }
+        guard let csrf = csrf(for: "转发") else { return false }
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "转发动态" : text
+        do {
+            try await client.publishDynamic(text: message, images: [], topicID: 0, topicName: "", repostID: item.id, csrf: csrf)
+            show("已转发")
+            return true
+        } catch {
+            do {
+                try await client.repostDynamic(id: item.id, content: message, csrf: csrf)
+                show("已转发")
+                return true
+            } catch {
+                show(error.localizedDescription)
+                return false
+            }
+        }
+    }
+
+    func likeDynamic(_ item: DynamicItem) async {
+        guard !item.id.isEmpty else { return }
+        guard let csrf = csrf(for: "点赞") else { return }
+        let next = !item.liked
+        do {
+            try await client.likeDynamic(id: item.id, liked: next, csrf: csrf)
+            if let index = dynamics.firstIndex(where: { $0.id == item.id }) {
+                dynamics[index].liked = next
+                dynamics[index].like += next ? 1 : -1
+            }
+            if dynamicFocus?.id == item.id {
+                dynamicFocus?.liked = next
+            }
+            show(next ? "已赞动态" : "已取消赞")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
     func followUser(mid: Int, follow: Bool) async -> Bool {
         guard mid > 0 else { return false }
         guard let csrf = csrf(for: follow ? "关注" : "取消关注") else { return false }
@@ -486,12 +579,12 @@ final class AppModel {
         }
     }
 
-    func sendComment(aid: Int, message: String, root: Int, parent: Int) async -> Bool {
+    func sendComment(aid: Int, message: String, root: Int, parent: Int, type: Int = 1) async -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
         guard let csrf = csrf(for: "评论") else { return false }
         do {
-            try await client.submit(SocialRequest.replyAdd(oid: aid, message: text, root: root, parent: parent, csrf: csrf))
+            try await client.submit(SocialRequest.replyAdd(oid: aid, message: text, root: root, parent: parent, csrf: csrf, type: type))
             show("评论已发送")
             return true
         } catch {

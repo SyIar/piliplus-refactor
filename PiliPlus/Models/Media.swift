@@ -126,14 +126,36 @@ struct DynamicItem: Identifiable, Hashable {
     let id: String
     let name: String
     let face: String
-    let text: String
+    var text: String
     let time: String
     let kind: String
     var video: VideoItem?
     var like: Int
     var comment: Int
     var repost: Int
+    var commentID: Int = 0
+    var commentType: Int = 0
     var mid: Int = 0
+    var images: [String] = []
+    var pollTitle: String = ""
+    var pollOptions: [String] = []
+    var pollCounts: [Int] = []
+    var pollJoined: Int = 0
+    var pollVoteID: Int = 0
+    var topicName: String = ""
+    var topicID: Int = 0
+    var origText: String = ""
+    var liked: Bool = false
+
+    var hasPoll: Bool { !pollOptions.isEmpty }
+}
+
+struct TopicItem: Identifiable, Hashable, Sendable {
+    var id: Int
+    var name: String
+    var view: Int
+    var discuss: Int
+    var summary: String
 }
 
 struct SpaceProfile: Hashable, Sendable {

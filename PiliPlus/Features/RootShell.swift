@@ -81,6 +81,59 @@ struct RootShell: View {
         if LaunchMode.screen == "playbackExtra" {
             PlaybackRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "dynProof" {
+            DynamicRequestProof.writeAndExit()
+        }
+        if LaunchMode.screen == "dyn-compose" {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            model.open(.feature("发布动态"))
+            return
+        }
+        if LaunchMode.screen == "dyn-topics" {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            model.open(.feature("话题"))
+            return
+        }
+        if LaunchMode.screen == "dyn-topic" {
+            await LaunchClock.waitForFirstFrame()
+            let topics = (try? await model.client.hotTopics()) ?? []
+            var opened = false
+            for topic in topics.prefix(5) {
+                let rows = (try? await model.client.topicDynamics(id: topic.id)) ?? []
+                if !rows.isEmpty {
+                    model.open(.topic(topic.id, topic.name))
+                    opened = true
+                    break
+                }
+            }
+            if !opened {
+                model.dynamicError = topics.isEmpty ? "没有话题" : "这个话题还没有动态"
+                model.open(.feature("话题"))
+            }
+            return
+        }
+        if LaunchMode.screen == "dyn-detail" || LaunchMode.screen == "dyn-poll" || LaunchMode.screen == "dyn-repost" {
+            await LaunchClock.waitForFirstFrame()
+            if LaunchMode.screen == "dyn-repost" { model.loggedIn = false }
+            if let item = await model.loadSampleDynamic(requirePoll: LaunchMode.screen == "dyn-poll") {
+                model.dynamicFocus = item
+                if LaunchMode.screen == "dyn-repost" {
+                    model.open(.feature("转发动态"))
+                } else {
+                    model.open(.dynamic(item.id))
+                }
+            } else {
+                model.dynamicError = LaunchMode.screen == "dyn-poll" ? "没有找到带投票的动态" : "没有找到动态"
+                if LaunchMode.screen == "dyn-repost" {
+                    model.open(.feature("转发动态"))
+                } else {
+                    model.open(.dynamic(""))
+                }
+            }
+            return
+        }
         if LaunchMode.screen == "guest-messages" || LaunchMode.screen == "messages" {
             await LaunchClock.waitForFirstFrame()
             if LaunchMode.screen == "guest-messages" { model.loggedIn = false }
@@ -364,8 +417,13 @@ struct RootShell: View {
             case "离线缓存": DownloadsPage()
             case "私信": MessageHome()
             case "回复我的", "@我", "收到的赞", "系统通知": NoticeListView(kind: title)
+            case "发布动态": DynamicComposer()
+            case "转发动态": DynamicComposer(repost: model.dynamicFocus)
+            case "话题": TopicHome()
             default: FeaturePageView(title: title)
             }
+        case .dynamic(let id): DynamicDetailPage(id: id)
+        case .topic(let id, let name): TopicDetailPage(id: id, name: name)
         case .folder(let id): FolderContentsView(mediaID: id)
         case .user(let mid, let name): SpacePage(mid: mid, name: name)
         }

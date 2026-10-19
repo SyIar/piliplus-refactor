@@ -12,9 +12,9 @@ enum SocialRequest {
         ])
     }
 
-    static func replyList(oid: Int, sort: Int, page: Int) -> SignedForm {
+    static func replyList(oid: Int, sort: Int, page: Int, type: Int = 1) -> SignedForm {
         SignedForm(method: "GET", path: "/x/v2/reply", fields: [
-            "type": "1",
+            "type": "\(type)",
             "oid": "\(oid)",
             "sort": "\(sort)",
             "pn": "\(max(1, page))",
@@ -22,9 +22,9 @@ enum SocialRequest {
         ])
     }
 
-    static func replyThread(oid: Int, root: Int, page: Int) -> SignedForm {
+    static func replyThread(oid: Int, root: Int, page: Int, type: Int = 1) -> SignedForm {
         SignedForm(method: "GET", path: "/x/v2/reply/reply", fields: [
-            "type": "1",
+            "type": "\(type)",
             "oid": "\(oid)",
             "root": "\(root)",
             "pn": "\(max(1, page))",
@@ -33,9 +33,9 @@ enum SocialRequest {
     }
 
     /// Top-level send leaves `root` and `parent` at 0, so they stay off the form.
-    static func replyAdd(oid: Int, message: String, root: Int, parent: Int, csrf: String) -> SignedForm {
+    static func replyAdd(oid: Int, message: String, root: Int, parent: Int, csrf: String, type: Int = 1) -> SignedForm {
         var fields = [
-            "type": "1",
+            "type": "\(type)",
             "oid": "\(oid)",
             "message": message,
             "plat": "1",
