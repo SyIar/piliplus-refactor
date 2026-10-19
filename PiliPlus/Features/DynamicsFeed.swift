@@ -113,13 +113,18 @@ struct DynamicsFeed: View {
     }
 
     private var filtered: [DynamicItem] {
-        if !LaunchMode.usesFixtures { return model.dynamics }
-        switch tab {
-        case "投稿": return model.dynamics.filter { $0.kind == "投稿" }
-        case "番剧": return model.dynamics.filter { $0.kind.contains("番") }
-        case "专栏": return model.dynamics.filter { $0.kind == "专栏" }
-        default: return model.dynamics
+        let base: [DynamicItem]
+        if !LaunchMode.usesFixtures {
+            base = model.dynamics
+        } else {
+            switch tab {
+            case "投稿": base = model.dynamics.filter { $0.kind == "投稿" }
+            case "番剧": base = model.dynamics.filter { $0.kind.contains("番") }
+            case "专栏": base = model.dynamics.filter { $0.kind == "专栏" }
+            default: base = model.dynamics
+            }
         }
+        return base.filter { !model.hidesDynamic($0) }
     }
 
     private func dynamicCard(_ item: DynamicItem) -> some View {
@@ -197,7 +202,7 @@ struct DynamicsFeed: View {
         case "复制动态":
             UIPasteboard.general.string = item.text
             model.show("已复制")
-        case "不感兴趣": model.show("将减少该内容")
+        case "不感兴趣": model.dismissDynamic(item)
         case "举报": model.show("已提交举报")
         case "删除": model.show(model.loggedIn ? "已删除" : "只能删除自己的动态")
         default: model.show(action)

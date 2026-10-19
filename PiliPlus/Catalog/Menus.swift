@@ -69,6 +69,7 @@ enum Menus {
         ],
         "播放器设置": [
             .init(title: "弹幕开关", subtitle: "是否展示弹幕", kind: .toggle),
+            .init(title: "弹幕屏蔽词", subtitle: "命中则不显示弹幕", kind: .text),
             .init(title: "启用点击弹幕", subtitle: "点击弹幕悬停，支持点赞、复制、举报", kind: .toggle),
             .init(title: "倍速设置", subtitle: "设置视频播放速度", kind: .options(["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"])),
             .init(title: "倾斜角度阈值", subtitle: "重力感应进入全屏的角度", kind: .options(["20°", "30°", "40°", "关闭"])),

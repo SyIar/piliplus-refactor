@@ -31,7 +31,7 @@ struct PiliPlusApp: App {
             RootShell()
                 .environment(model)
                 .preferredColorScheme(model.colorScheme)
-                .tint(Palette.bili)
+                .tint(model.accentColor)
                 .background(FirstFrameProbe().frame(width: 0, height: 0).allowsHitTesting(false))
         }
     }

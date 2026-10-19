@@ -114,9 +114,9 @@ struct VideoDetailIntro: View {
                 if let summary = aiSummary {
                     aiRow(summary)
                 }
-                if model.flag("视频页显示相关视频"), !offline, !related.isEmpty {
+                if model.flag("视频页显示相关视频"), !offline, !shownRelated.isEmpty {
                     VStack(spacing: 2) {
-                        ForEach(related) { item in
+                        ForEach(shownRelated) { item in
                             RelatedVideoRow(video: item)
                         }
                     }
@@ -133,6 +133,8 @@ struct VideoDetailIntro: View {
     }
 
     private var offline: Bool { video.playURL?.hasPrefix("file:") == true }
+
+    private var shownRelated: [VideoItem] { related.filter { !model.hidesRelated($0) } }
 
     private var aiSummary: String? { nil }
 

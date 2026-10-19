@@ -4,10 +4,18 @@ struct HomeFeed: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        pages
+        let page = pages
             .navigationTitle("首页")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { HomeToolbar() }
+        if model.pureBlack {
+            page
+                .containerBackground(Color.black, for: .navigation)
+                .toolbarBackground(.visible, for: .navigationBar)
+                .toolbarBackground(Color.black, for: .navigationBar)
+        } else {
+            page
+        }
     }
 
     @ViewBuilder
@@ -59,7 +67,6 @@ private extension View {
     func homeTabBar() -> some View {
         safeAreaInset(edge: .top, spacing: 0) {
             HomeTabStrip()
-                .background(Color(.systemBackground))
         }
     }
 }
@@ -81,7 +88,7 @@ private struct HomeTabStrip: View {
                             .foregroundStyle(model.homeTab == tab ? .white : .primary)
                             .background {
                                 if model.homeTab == tab {
-                                    Capsule().fill(Palette.bili.gradient)
+                                    Capsule().fill(model.accentColor.gradient)
                                 }
                             }
                     }
@@ -92,6 +99,7 @@ private struct HomeTabStrip: View {
             .padding(.vertical, 8)
         }
         .frame(height: 56)
+        .background(model.pureBlack ? Color.black : Color(.systemBackground))
     }
 }
 
@@ -117,9 +125,8 @@ private struct RecommendPage: View {
                         RecommendGrid()
                             .padding(.horizontal, 16)
                             .padding(.bottom, 12)
-                    } header: {
+                    }                     header: {
                         HomeTabStrip()
-                            .background(Color(.systemBackground))
                     }
                 }
             }
@@ -196,16 +203,17 @@ private struct RecommendGrid: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        let videos = model.feed.filter { !model.hidesVideo($0) }
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 16) {
             if model.loadingFeed && model.feed.isEmpty {
                 ForEach(0..<6, id: \.self) { _ in ShimmerCard() }
             }
-            ForEach(model.feed) { video in
+            ForEach(videos) { video in
                 VideoCard(video: video)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .id(video.bvid)
                     .onAppear {
-                        guard video.bvid == model.feed.last?.bvid else { return }
+                        guard video.bvid == videos.last?.bvid else { return }
                         Task { await model.loadRecommend(reset: false) }
                     }
             }

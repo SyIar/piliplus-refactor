@@ -44,6 +44,7 @@ struct RootShell: View {
                 }
             }
         }
+        .modifier(AppFontScale(size: model.preferredDynamicType))
         .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
         .tabViewBottomAccessory(isEnabled: model.nowPlaying != nil && !model.videoPageVisible) {
             if let video = model.nowPlaying {
@@ -112,6 +113,11 @@ struct RootShell: View {
                 model.dynamicError = topics.isEmpty ? "没有话题" : "这个话题还没有动态"
                 model.open(.feature("话题"))
             }
+            return
+        }
+        if let screen = LaunchMode.screen, screen.hasPrefix("set-") {
+            await LaunchClock.waitForFirstFrame()
+            await model.prepareSettingsShot(screen)
             return
         }
         if LaunchMode.screen == "dyn-detail" || LaunchMode.screen == "dyn-poll" || LaunchMode.screen == "dyn-repost" {
@@ -426,6 +432,19 @@ struct RootShell: View {
         case .topic(let id, let name): TopicDetailPage(id: id, name: name)
         case .folder(let id): FolderContentsView(mediaID: id)
         case .user(let mid, let name): SpacePage(mid: mid, name: name)
+        }
+    }
+}
+
+private struct AppFontScale: ViewModifier {
+    var size: DynamicTypeSize?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let size {
+            content.dynamicTypeSize(size)
+        } else {
+            content
         }
     }
 }

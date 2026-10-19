@@ -156,6 +156,26 @@ final class AppModel {
         }
     }
 
+    var pureBlack: Bool { theme == .black || toggles["纯黑主题"] == true }
+
+    var accentColor: Color {
+        switch values["应用主题"] {
+        case "蓝色": .blue
+        case "绿色": .green
+        default: Palette.bili
+        }
+    }
+
+    var preferredDynamicType: DynamicTypeSize? {
+        switch values["App字体设置"] {
+        case "更小": .xSmall
+        case "默认": .large
+        case "更大": .xxLarge
+        case "特大": .accessibility2
+        default: nil
+        }
+    }
+
     init() {
         load()
         if toggles.isEmpty { seedDefaults() }
@@ -257,6 +277,7 @@ final class AppModel {
     func setFlag(_ key: String, _ value: Bool) {
         toggles[key] = value
         if key == "弹幕开关" { danmakuOn = value }
+        if key == "纯黑主题" { theme = value ? .black : (theme == .black ? .dark : theme) }
         if key == "后台播放" || key == "后台画中画" { applyBackgroundPolicy() }
         save()
         if flag("震动反馈") {
@@ -607,11 +628,12 @@ final class AppModel {
         let next = feedPage + 1
         do {
             let page = try await client.recommend(idx: next)
+            let incoming = page.filter { !disliked.contains($0.bvid) }
             if reset {
-                feed = page
+                feed = incoming
             } else {
                 let known = Set(feed.map(\.bvid))
-                feed.append(contentsOf: page.filter { !known.contains($0.bvid) })
+                feed.append(contentsOf: incoming.filter { !known.contains($0.bvid) })
             }
             feedPage = next
             feedHasMore = page.count >= 8
@@ -725,9 +747,64 @@ final class AppModel {
         kind == "影视" ? cinema : bangumi
     }
 
+    func terms(in key: String) -> [String] {
+        (values[key] ?? "")
+            .split(whereSeparator: { " ,，\n\r、\t".contains($0) })
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    func hidesVideo(_ video: VideoItem) -> Bool {
+        if disliked.contains(video.bvid) { return true }
+        if terms(in: "标题关键词过滤").contains(where: { video.title.localizedCaseInsensitiveContains($0) }) { return true }
+        if terms(in: "分区关键词过滤").contains(where: { video.tname.localizedCaseInsensitiveContains($0) }) { return true }
+        return false
+    }
+
+    func hidesRelated(_ video: VideoItem) -> Bool {
+        guard flag("过滤器也应用于详情页相关视频") else { return false }
+        if terms(in: "标题关键词过滤").contains(where: { video.title.localizedCaseInsensitiveContains($0) }) { return true }
+        if terms(in: "分区关键词过滤").contains(where: { video.tname.localizedCaseInsensitiveContains($0) }) { return true }
+        return false
+    }
+
+    func hidesDynamic(_ item: DynamicItem) -> Bool {
+        if disliked.contains("dyn:\(item.id)") { return true }
+        return terms(in: "动态关键词过滤").contains { word in
+            item.text.localizedCaseInsensitiveContains(word) || item.name.localizedCaseInsensitiveContains(word)
+        }
+    }
+
+    func foldsComment(_ message: String) -> Bool {
+        terms(in: "评论关键词过滤").contains { message.localizedCaseInsensitiveContains($0) }
+    }
+
+    func blocksDanmaku(_ text: String) -> Bool {
+        terms(in: "弹幕屏蔽词").contains { text.localizedCaseInsensitiveContains($0) }
+    }
+
+    func moveHomeTab(_ title: String, up: Bool) {
+        guard let index = homeTabs.firstIndex(of: title) else { return }
+        let next = up ? index - 1 : index + 1
+        guard homeTabs.indices.contains(next) else { return }
+        homeTabs.swapAt(index, next)
+        values["首页标签页"] = homeTabs.joined(separator: " / ")
+        save()
+    }
+
+    func dismissDynamic(_ item: DynamicItem) {
+        guard !item.id.isEmpty else { return }
+        disliked.insert("dyn:\(item.id)")
+        dynamics.removeAll { $0.id == item.id }
+        save()
+        show("将减少该内容")
+    }
+
     func dislike(_ video: VideoItem) async {
+        disliked.insert(video.bvid)
         feed.removeAll { $0.bvid == video.bvid }
         zoneFeed.removeAll { $0.bvid == video.bvid }
+        save()
         guard loggedIn, let csrf = session?.csrf, !csrf.isEmpty else {
             show("已减少此类推荐")
             return
@@ -1763,7 +1840,8 @@ final class AppModel {
             "homeTabs": homeTabs,
             "navItems": navItems,
             "searchHistory": searchHistory,
-            "anonymity": anonymity
+            "anonymity": anonymity,
+            "disliked": Array(disliked).sorted()
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
             UserDefaults.standard.set(data, forKey: defaultsKey)
@@ -1782,6 +1860,127 @@ final class AppModel {
         navItems = object["navItems"] as? [String] ?? navItems
         searchHistory = object["searchHistory"] as? [String] ?? []
         anonymity = object["anonymity"] as? Bool ?? false
+        disliked = Set(object["disliked"] as? [String] ?? [])
         danmakuOn = flag("弹幕开关") || toggles["弹幕开关"] == nil
+    }
+
+    func prepareSettingsShot(_ screen: String) async {
+        loggedIn = false
+        isolateSettingsShot()
+        switch screen {
+        case "set-filter":
+            await loadRecommend(reset: true)
+            let word = feed.compactMap { titleToken($0.title) }.first ?? ""
+            guard !word.isEmpty else {
+                SettingsUIProof.record(["keyword": "", "hidden": 0, "shown": feed.count, "error": "没有可过滤的标题"])
+                open(.setting("推荐流设置"))
+                return
+            }
+            values["标题关键词过滤"] = word
+            save()
+            let hidden = feed.filter { hidesVideo($0) }.count
+            SettingsUIProof.record([
+                "keyword": word,
+                "hidden": hidden,
+                "shown": feed.count - hidden,
+                "sample": feed.first?.title ?? "",
+                "error": hidden >= 1 ? "" : "没有隐藏任何推荐"
+            ])
+            open(.setting("推荐流设置"))
+        case "set-dislike":
+            await loadRecommend(reset: true)
+            await ImageStore.shared.prepare(urls: feed.prefix(8).map(\.cover), maxPixel: 560)
+            guard let first = feed.first else {
+                SettingsUIProof.record(["removed": "", "kept": false, "after": 0, "error": "推荐为空"])
+                return
+            }
+            let before = feed.count
+            await dislike(first)
+            let kept = disliked.contains(first.bvid) && !feed.contains { $0.bvid == first.bvid }
+            SettingsUIProof.record([
+                "removed": first.bvid,
+                "title": first.title,
+                "before": before,
+                "after": feed.count,
+                "kept": kept,
+                "error": kept && feed.count >= 1 ? "" : "不感兴趣没有生效"
+            ])
+        case "set-danmaku":
+            values["弹幕屏蔽词"] = "广告"
+            save()
+            let blocked = blocksDanmaku("广告来了")
+            let shown = !blocksDanmaku("正常弹幕")
+            SettingsUIProof.record([
+                "words": values["弹幕屏蔽词"] ?? "",
+                "blocked": blocked,
+                "shown": shown,
+                "error": blocked && shown ? "" : "屏蔽词没有生效"
+            ])
+            open(.setting("弹幕屏蔽词"))
+        case "set-accent":
+            values["应用主题"] = "蓝色"
+            save()
+            await loadHomeShot()
+            SettingsUIProof.record(["accent": values["应用主题"] ?? "", "error": values["应用主题"] == "蓝色" ? "" : "主题色没有生效"])
+        case "set-black":
+            theme = .black
+            toggles["纯黑主题"] = true
+            save()
+            await loadHomeShot()
+            SettingsUIProof.record([
+                "theme": theme.rawValue,
+                "pure": pureBlack,
+                "error": theme == .black && pureBlack ? "" : "纯黑没有生效"
+            ])
+        case "set-tabs":
+            while homeTabs.first != "推荐", homeTabs.contains("推荐") {
+                moveHomeTab("推荐", up: true)
+            }
+            homeTab = "推荐"
+            await loadHomeShot()
+            SettingsUIProof.record([
+                "first": homeTabs.first ?? "",
+                "tabs": homeTabs.joined(separator: "/"),
+                "error": homeTabs.first == "推荐" ? "" : "标签顺序没有生效"
+            ])
+        case "set-font":
+            values["App字体设置"] = "更大"
+            save()
+            await loadHomeShot()
+            SettingsUIProof.record([
+                "font": values["App字体设置"] ?? "",
+                "error": preferredDynamicType == .xxLarge ? "" : "字号没有生效"
+            ])
+        default:
+            SettingsUIProof.record(["error": "未知页面"])
+        }
+    }
+
+    private func loadHomeShot() async {
+        await loadRecommend(reset: true)
+        await ImageStore.shared.prepare(urls: feed.prefix(8).map(\.cover), maxPixel: 560)
+    }
+
+    private func isolateSettingsShot() {
+        values["标题关键词过滤"] = ""
+        values["分区关键词过滤"] = ""
+        values["评论关键词过滤"] = ""
+        values["动态关键词过滤"] = ""
+        values["弹幕屏蔽词"] = ""
+        values["应用主题"] = "哔哩粉"
+        values["App字体设置"] = "系统默认"
+        toggles["纯黑主题"] = false
+        theme = .system
+        homeTabs = ["直播", "推荐", "热门", "分区", "番剧", "影视"]
+        values["首页标签页"] = homeTabs.joined(separator: " / ")
+        homeTab = "推荐"
+        disliked = []
+        save()
+    }
+
+    private func titleToken(_ title: String) -> String? {
+        let pieces = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        guard let chunk = pieces.first(where: { $0.count >= 2 }) else { return nil }
+        return String(chunk.prefix(4))
     }
 }
