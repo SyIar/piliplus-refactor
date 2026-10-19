@@ -79,13 +79,47 @@ struct SeasonItem: Identifiable, Hashable {
 }
 
 struct CommentItem: Identifiable, Hashable {
-    let id: Int
-    let name: String
-    let face: String
-    let message: String
-    let like: Int
-    let ctime: Int
-    let replies: [CommentItem]
+    var id: Int
+    var name: String
+    var face: String
+    var message: String
+    var like: Int
+    var ctime: Int
+    var replies: [CommentItem]
+    var replyCount: Int = 0
+    var root: Int = 0
+    var mid: Int = 0
+    /// Empty when the reply payload has no `fans_detail`.
+    var medalName: String = ""
+    var medalLevel: Int = 0
+}
+
+struct SearchUser: Identifiable, Hashable {
+    var id: Int { mid }
+    var mid: Int
+    var name: String
+    var face: String
+    var fans: Int
+    var sign: String
+}
+
+struct SearchPage {
+    var videos: [VideoItem]
+    var users: [SearchUser]
+    var seasons: [SeasonItem]
+    var lives: [LiveRoom]
+    var articles: [SearchArticle]
+    /// Set when a type search came back with rows we could not read.
+    var note: String = ""
+}
+
+struct SearchArticle: Identifiable, Hashable {
+    var id: Int
+    var title: String
+    var summary: String
+    var cover: String
+    var author: String
+    var view: Int
 }
 
 struct DynamicItem: Identifiable, Hashable {

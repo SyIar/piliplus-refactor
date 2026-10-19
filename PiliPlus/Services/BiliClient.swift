@@ -296,21 +296,126 @@ struct BiliClient: Sendable {
     }
 
     func searchVideos(keyword: String, order: String = "totalrank", duration: Int = 0, tid: Int = 0, page: Int = 1) async throws -> [VideoItem] {
-        var comps = URLComponents(string: "https://api.bilibili.com/x/web-interface/search/type")!
-        var items = [
-            URLQueryItem(name: "search_type", value: "video"),
-            URLQueryItem(name: "keyword", value: keyword),
-            URLQueryItem(name: "order", value: order),
-            URLQueryItem(name: "page", value: "\(page)")
-        ]
-        if duration > 0 { items.append(URLQueryItem(name: "duration", value: "\(duration)")) }
-        if tid > 0 { items.append(URLQueryItem(name: "tids", value: "\(tid)")) }
-        comps.queryItems = items
-        let data = try await getJSON(comps.url!)
-        if data["code"].int != 0 {
+        try await search(type: "video", keyword: keyword, page: page, order: order, duration: duration, tid: tid).videos
+    }
+
+    func search(type: String, keyword: String, page: Int, order: String = "", duration: Int = 0, tid: Int = 0) async throws -> SearchPage {
+        let form = SocialRequest.search(type: type, keyword: keyword, page: page, order: order, duration: duration, tid: tid)
+        var found = try await fetchSearch(form, signed: false)
+        let media = type == "media_bangumi" || type == "media_ft"
+        if Self.searchIsEmpty(found) {
+            if media { await refreshGuest() }
+            if let signed = try? await fetchSearch(form, signed: true), !Self.searchIsEmpty(signed) {
+                found = signed
+            }
+        }
+        if Self.searchIsEmpty(found), media {
+            let grouped = (try? await groupedMedia(keyword: keyword, page: page, type: type)) ?? []
+            if !grouped.isEmpty {
+                found = SearchPage(videos: [], users: [], seasons: grouped, lives: [], articles: [])
+            }
+        }
+        // Type search answers with an empty list for bangumi on this network.
+        // The public PGC rank already includes the same shows, so match it by title.
+        if Self.searchIsEmpty(found), media {
+            let ranked = await rankedSeasons(matching: keyword, type: type)
+            if !ranked.isEmpty {
+                found = SearchPage(videos: [], users: [], seasons: ranked, lives: [], articles: [])
+            }
+        }
+        return found
+    }
+
+    private func groupedMedia(keyword: String, page: Int, type: String) async throws -> [SeasonItem] {
+        let encoded = PercentEncoding.encodeURIComponent(keyword)
+        guard let url = URL(string: "https://api.bilibili.com/x/web-interface/search/all/v2?keyword=\(encoded)&page=\(max(1, page))") else {
+            return []
+        }
+        let data = try await withGuest {
+            let data = try await getJSON(url, referer: "https://search.bilibili.com")
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        guard data["code"].int == 0 else { return [] }
+        let wanted = type == "media_ft" ? "media_ft" : "media_bangumi"
+        var seasons: [SeasonItem] = []
+        for group in data["data"]["result"].array ?? [] {
+            guard group["result_type"].string == wanted else { continue }
+            seasons.append(contentsOf: (group["data"].array ?? []).compactMap(Self.bangumi(fromSearch:)))
+        }
+        return seasons
+    }
+
+    private func rankedSeasons(matching keyword: String, type: String) async -> [SeasonItem] {
+        let word = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return [] }
+        let kinds = type == "media_ft" ? [2, 5] : [1, 4]
+        var items: [SeasonItem] = []
+        for kind in kinds {
+            if let page = try? await seasons(type: kind) {
+                items.append(contentsOf: page)
+            }
+        }
+        var seen = Set<Int>()
+        return items.filter { item in
+            let title = item.title
+            let hit = title.localizedStandardContains(word) || word.localizedStandardContains(title)
+            guard hit, seen.insert(item.seasonID).inserted else { return false }
+            return true
+        }
+    }
+
+    private func fetchSearch(_ form: SignedForm, signed: Bool) async throws -> SearchPage {
+        let data = try await withGuest {
+            let payload: JSON
+            if signed {
+                payload = try await requestQuery(
+                    "/x/web-interface/wbi/search/type",
+                    params: form.fields,
+                    signed: true,
+                    referer: "https://search.bilibili.com"
+                )
+            } else {
+                guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+                payload = try await getJSON(url, referer: "https://search.bilibili.com")
+            }
+            let code = payload["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return payload
+        }
+        guard data["code"].int == 0 else {
             throw BiliError.message(data["message"].string ?? "搜索失败")
         }
-        return (data["data"]["result"].array ?? []).compactMap(Self.video(fromSearch:))
+        return Self.interpretSearch(data)
+    }
+
+    private static func searchIsEmpty(_ page: SearchPage) -> Bool {
+        page.videos.isEmpty && page.users.isEmpty && page.seasons.isEmpty && page.lives.isEmpty && page.articles.isEmpty
+    }
+
+    private static func interpretSearch(_ data: JSON) -> SearchPage {
+        let list = searchRows(data["data"]["result"])
+        var page = searchPage(list)
+        if searchIsEmpty(page) {
+            let nested = list.flatMap { $0["data"].array ?? [] }
+            if !nested.isEmpty { page = searchPage(nested) }
+        }
+        if searchIsEmpty(page) {
+            let keys = (list.first?.raw as? [String: Any])?.keys.sorted().joined(separator: ",") ?? ""
+            page.note = "rows=\(list.count) keys=\(keys)"
+        }
+        return page
+    }
+
+    private static func searchPage(_ list: [JSON]) -> SearchPage {
+        SearchPage(
+            videos: list.compactMap(video(fromSearch:)),
+            users: list.compactMap(user(fromSearch:)),
+            seasons: list.compactMap(bangumi(fromSearch:)),
+            lives: list.compactMap(live(fromSearch:)),
+            articles: list.compactMap(article(fromSearch:))
+        )
     }
 
     func hotwords() async throws -> [HotWord] {
@@ -335,8 +440,17 @@ struct BiliClient: Sendable {
         return (data["data"].array ?? []).compactMap(Self.video(fromRelated:))
     }
 
-    func replies(aid: Int, page: Int = 1) async throws -> [CommentItem] {
-        let data = try await getJSON("https://api.bilibili.com/x/v2/reply?type=1&sort=1&oid=\(aid)&pn=\(page)&ps=20")
+    func replies(aid: Int, page: Int = 1, sort: Int = 1) async throws -> [CommentItem] {
+        try await replyPage(SocialRequest.replyList(oid: aid, sort: sort, page: page))
+    }
+
+    func replyThread(oid: Int, root: Int, page: Int) async throws -> [CommentItem] {
+        try await replyPage(SocialRequest.replyThread(oid: oid, root: root, page: page))
+    }
+
+    private func replyPage(_ form: SignedForm) async throws -> [CommentItem] {
+        guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
         guard data["code"].int == 0 else { throw BiliError.message(data["message"].string ?? "评论不可用") }
         return (data["data"]["replies"].array ?? []).compactMap(Self.comment)
     }
@@ -567,9 +681,12 @@ struct BiliClient: Sendable {
         }
     }
 
-    func dynamics() async throws -> [DynamicItem] {
-        // 未登录时使用综合热门作为动态流的公开替代，登录 Cookie 接入后可切到 polymer 动态接口。
-        Self.dynamics(from: try await popular())
+    func followDynamics(type: String, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool) {
+        let data = try await fetchAccount(SocialRequest.followFeed(type: type, offset: offset))
+        let items = (data["data"]["items"].array ?? []).compactMap(Self.dynamic(fromPolymer:))
+        let next = data["data"]["offset"].string ?? ""
+        let hasMore = data["data"]["has_more"].bool ?? !next.isEmpty
+        return (items, next, hasMore && !items.isEmpty)
     }
 
     static func dynamics(from videos: [VideoItem]) -> [DynamicItem] {
@@ -948,15 +1065,186 @@ struct BiliClient: Sendable {
         let id = item["rpid"].int ?? 0
         guard id != 0 else { return nil }
         let replies = (item["replies"].array ?? []).compactMap(comment)
+        let member = item["member"]
+        let fans = member["fans_detail"]
         return CommentItem(
             id: id,
-            name: item["member"]["uname"].string ?? "用户",
-            face: https(item["member"]["avatar"].string ?? ""),
+            name: member["uname"].string ?? "用户",
+            face: https(member["avatar"].string ?? ""),
             message: item["content"]["message"].string ?? "",
             like: item["like"].int ?? 0,
             ctime: item["ctime"].int ?? 0,
-            replies: replies
+            replies: replies,
+            replyCount: item["rcount"].int ?? replies.count,
+            root: item["root"].int ?? 0,
+            mid: member["mid"].int ?? 0,
+            medalName: fans["medal_name"].string ?? "",
+            medalLevel: fans["level"].int ?? 0
         )
+    }
+
+    static func user(fromSearch item: JSON) -> SearchUser? {
+        let mid = item["mid"].int ?? 0
+        let name = plain(item["uname"].string ?? item["name"].string ?? "")
+        guard mid > 0, !name.isEmpty else { return nil }
+        return SearchUser(
+            mid: mid,
+            name: name,
+            face: https(item["upic"].string ?? item["face"].string ?? ""),
+            fans: flexibleCount(item["fans"]),
+            sign: plain(item["usign"].string ?? item["sign"].string ?? "")
+        )
+    }
+
+    static func bangumi(fromSearch item: JSON) -> SeasonItem? {
+        let id = item["season_id"].int ?? item["media_id"].int ?? 0
+        let title = plain(item["title"].string ?? item["org_title"].string ?? "")
+        guard id > 0, !title.isEmpty else { return nil }
+        return SeasonItem(
+            seasonID: id,
+            title: title,
+            cover: https(item["cover"].string ?? ""),
+            badge: item["season_type_name"].string ?? "",
+            subtitle: plain(item["index_show"].string ?? item["styles"].string ?? ""),
+            view: item["media_score"]["user_count"].int ?? 0
+        )
+    }
+
+    static func live(fromSearch item: JSON) -> LiveRoom? {
+        let id = item["roomid"].int ?? item["room_id"].int ?? item["roomId"].int ?? 0
+        let title = plain(item["title"].string ?? "")
+        guard id > 0, !title.isEmpty else { return nil }
+        return LiveRoom(
+            id: id,
+            title: title,
+            cover: https(item["cover"].string ?? item["user_cover"].string ?? ""),
+            uname: plain(item["uname"].string ?? item["author"].string ?? ""),
+            face: https(item["uface"].string ?? ""),
+            online: flexibleCount(item["online"]),
+            area: item["cate_name"].string ?? item["area_v2_name"].string ?? "直播"
+        )
+    }
+
+    static func article(fromSearch item: JSON) -> SearchArticle? {
+        let id = item["id"].int ?? item["cvid"].int ?? 0
+        let title = plain(item["title"].string ?? "")
+        guard id > 0, !title.isEmpty else { return nil }
+        let images = item["image_urls"].array ?? []
+        let firstImage = images.first ?? JSON(NSNull())
+        let cover = firstImage["img_src"].string ?? firstImage.string ?? item["cover"].string ?? ""
+        return SearchArticle(
+            id: id,
+            title: title,
+            summary: plain(item["desc"].string ?? ""),
+            cover: https(cover),
+            author: plain(item["author"].string ?? item["mid"].string ?? ""),
+            view: flexibleCount(item["view"])
+        )
+    }
+
+    static func dynamic(fromPolymer item: JSON) -> DynamicItem? {
+        let id = item["id_str"].string ?? ""
+        guard !id.isEmpty else { return nil }
+        let modules = item["modules"]
+        let author = modules["module_author"]
+        let desc = modules["module_dynamic"]["desc"]["text"].string ?? ""
+        let stat = modules["module_stat"]
+        let archive = archiveJSON(in: item)
+        var clip = Self.video(fromArchive: archive)
+        if clip == nil { clip = Self.video(fromArchive: archiveJSON(in: item["orig"])) }
+        let type = item["type"].string ?? ""
+        let kind: String
+        switch type {
+        case "DYNAMIC_TYPE_AV": kind = "投稿"
+        case "DYNAMIC_TYPE_PGC", "DYNAMIC_TYPE_PGC_UNION": kind = "番剧"
+        case "DYNAMIC_TYPE_ARTICLE": kind = "专栏"
+        case "DYNAMIC_TYPE_FORWARD": kind = "转发"
+        default: kind = "动态"
+        }
+        let text = unescape(desc.isEmpty ? (clip?.title ?? author["pub_action"].string ?? kind) : desc)
+        return DynamicItem(
+            id: id,
+            name: author["name"].string ?? "用户",
+            face: https(author["face"].string ?? ""),
+            text: text,
+            time: author["pub_time"].string ?? "",
+            kind: kind,
+            video: clip,
+            like: stat["like"]["count"].int ?? 0,
+            comment: stat["comment"]["count"].int ?? 0,
+            repost: stat["forward"]["count"].int ?? 0
+        )
+    }
+
+    private static func archiveJSON(in item: JSON) -> JSON {
+        let major = item["modules"]["module_dynamic"]["major"]
+        if major["archive"]["bvid"].string?.isEmpty == false { return major["archive"] }
+        return major["archive"]
+    }
+
+    private static func video(fromArchive item: JSON) -> VideoItem? {
+        let bvid = item["bvid"].string ?? ""
+        let title = plain(item["title"].string ?? "")
+        guard !bvid.isEmpty, !title.isEmpty else { return nil }
+        return VideoItem(
+            bvid: bvid,
+            aid: item["aid"].int ?? 0,
+            cid: 0,
+            title: title,
+            cover: https(item["cover"].string ?? ""),
+            duration: parseClock(item["duration_text"].string ?? ""),
+            ownerName: item["author"]["name"].string ?? "",
+            ownerMid: item["author"]["mid"].int ?? 0,
+            ownerFace: https(item["author"]["face"].string ?? ""),
+            desc: "",
+            pubdate: 0,
+            view: flexibleCount(item["stat"]["play"]),
+            danmaku: flexibleCount(item["stat"]["danmaku"]),
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: 0,
+            pages: [],
+            tname: ""
+        )
+    }
+
+    /// Type search returns either a row array or a dictionary of named arrays.
+    static func searchRows(_ payload: JSON) -> [JSON] {
+        if let list = payload.array { return list }
+        let keys = ["live_room", "live_user", "media_bangumi", "media_ft", "article", "video", "user", "bili_user"]
+        for key in keys {
+            if let list = payload[key].array, !list.isEmpty { return list }
+        }
+        guard let dict = payload.raw as? [String: Any] else { return [] }
+        for value in dict.values {
+            if let list = value as? [Any], !list.isEmpty { return list.map(JSON.init) }
+        }
+        return []
+    }
+
+    static func flexibleCount(_ json: JSON) -> Int {
+        if let value = json.int { return value }
+        guard var text = json.string else { return 0 }
+        text = text.replacingOccurrences(of: ",", with: "")
+        if text.hasSuffix("亿") {
+            let number = Double(text.dropLast()) ?? 0
+            return Int((number * 100_000_000).rounded())
+        }
+        if text.hasSuffix("万") {
+            let number = Double(text.dropLast()) ?? 0
+            return Int((number * 10_000).rounded())
+        }
+        return Int(Double(text) ?? 0)
+    }
+
+    static func plain(_ text: String) -> String {
+        var value = unescape(text)
+        while let start = value.range(of: "<em"), let end = value.range(of: ">", range: start.upperBound..<value.endIndex) {
+            value.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        return value.replacingOccurrences(of: "</em>", with: "")
     }
 
     static func unescape(_ text: String) -> String {

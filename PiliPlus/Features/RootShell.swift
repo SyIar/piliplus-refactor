@@ -66,6 +66,17 @@ struct RootShell: View {
         if LaunchMode.screen == "accountProof" {
             AccountRequestProof.writeAndExit()
         }
+        if LaunchMode.screen == "socialProof" {
+            SocialRequestProof.writeAndExit()
+        }
+        if LaunchMode.screen == "guest-dynamics" {
+            await LaunchClock.waitForFirstFrame()
+            model.loggedIn = false
+            model.dynamics = []
+            model.selectedTab = 1
+            SocialUIProof.record(["prompt": true, "rows": 0, "error": ""])
+            return
+        }
         if let screen = LaunchMode.screen, screen.hasPrefix("guest-") {
             await LaunchClock.waitForFirstFrame()
             model.loggedIn = false
@@ -104,8 +115,23 @@ struct RootShell: View {
             case "fav":
                 model.selectedTab = 2
                 model.open(.feature("我的收藏"))
+            case "dynamics":
+                SocialUIProof.record(["prompt": false, "rows": model.dynamics.count, "error": ""])
             default:
                 break
+            }
+            return
+        }
+        if LaunchMode.searchCapture != nil {
+            model.selectedTab = 3
+            return
+        }
+        if LaunchMode.screen == "comments" {
+            if model.feed.isEmpty { await model.loadRecommend(reset: true) }
+            let pick = model.feed.first { $0.reply > 0 } ?? model.feed.first
+            if let pick {
+                model.store(pick)
+                model.open(.video(pick.bvid))
             }
             return
         }

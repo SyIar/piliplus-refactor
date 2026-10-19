@@ -54,6 +54,9 @@ final class AppModel {
     var bangumiSchedule: [String: Int] = [:]
     var lives: [LiveRoom] = []
     var dynamics: [DynamicItem] = []
+    var dynamicOffset = ""
+    var dynamicHasMore = false
+    var loadingDynamics = false
     var hotwords: [HotWord] = []
     var loadingFeed = false
     var selectedTab = 0
@@ -135,6 +138,12 @@ final class AppModel {
         }
         switch LaunchMode.screen {
         case "dynamics": selectedTab = 1
+        case "guest-dynamics":
+            selectedTab = 1
+            loggedIn = false
+            dynamics = []
+        case "search", "search-video", "search-user", "search-bangumi", "search-live", "search-article":
+            selectedTab = 3
         case "mine", "history", "later", "fav", "guest-history", "guest-later", "guest-fav":
             selectedTab = 2
         default: break
@@ -274,12 +283,54 @@ final class AppModel {
         async let words = client.hotwords()
         if let popular = try? await popular {
             hot = popular
-            dynamics = BiliClient.dynamics(from: popular)
             Task { await ImageStore.shared.prepare(urls: popular.map(\.cover), maxPixel: 560) }
         }
         lives = (try? await rooms) ?? lives
         hotwords = (try? await words) ?? hotwords
         if zoneFeed.isEmpty { await loadZone(zoneName, reset: true) }
+    }
+
+    func loadDynamics(kind: String, reset: Bool) async {
+        if LaunchMode.usesFixtures || LaunchMode.screen == "guest-dynamics" { return }
+        guard loggedIn else { return }
+        if reset {
+            dynamicOffset = ""
+            dynamicHasMore = true
+        }
+        guard dynamicHasMore, !loadingDynamics else { return }
+        loadingDynamics = true
+        defer { loadingDynamics = false }
+        do {
+            let page = try await client.followDynamics(type: SocialRequest.dynamicType(for: kind), offset: dynamicOffset)
+            if reset {
+                dynamics = page.items
+            } else {
+                let known = Set(dynamics.map(\.id))
+                dynamics.append(contentsOf: page.items.filter { !known.contains($0.id) })
+            }
+            for item in page.items {
+                if let video = item.video { store(video) }
+            }
+            dynamicOffset = page.offset
+            dynamicHasMore = page.hasMore
+            Task { await ImageStore.shared.prepare(urls: page.items.compactMap { $0.video?.cover }, maxPixel: 560) }
+        } catch {
+            if reset { show(error.localizedDescription) }
+        }
+    }
+
+    func sendComment(aid: Int, message: String, root: Int, parent: Int) async -> Bool {
+        let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        guard let csrf = csrf(for: "评论") else { return false }
+        do {
+            try await client.submit(SocialRequest.replyAdd(oid: aid, message: text, root: root, parent: parent, csrf: csrf))
+            show("评论已发送")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
     }
 
     func loadRecommend(reset: Bool) async {
