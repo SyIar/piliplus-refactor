@@ -1781,10 +1781,11 @@ if data.get("screen") != screen:
 state = data.get("state")
 rows = int(data.get("rows") or 0)
 err = str(data.get("error") or "")
+note = str(data.get("note") or "")
 titles = [str(item) for item in (data.get("titles") or [])]
 names = [str(item) for item in (data.get("names") or [])]
 bvids = [str(item) for item in (data.get("bvids") or [])]
-fixture = any("液态玻璃" in item or "fixture" in item.lower() for item in titles + names + bvids)
+fixture = any("液态玻璃" in item or "fixture" in item.lower() for item in titles + names + bvids + [note])
 def rows_ok(minimum):
     return state == "rows" and rows >= minimum and not fixture and not err
 if screen == "acct-likes":
