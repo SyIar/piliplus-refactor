@@ -36,6 +36,14 @@ struct VideoStage: View {
     @State private var subtitles: [SubtitleLine] = []
     @State private var showAudio = false
     @State private var expandedDesc = false
+    @State private var sponsorSegments: [SponsorSegment] = []
+    @State private var sponsorServer = ""
+    @State private var sponsorPrefix = ""
+    @State private var sponsorNotice: SponsorNotice?
+    @State private var sponsorHandled: Set<String> = []
+    @State private var sponsorUndone: Set<String> = []
+    @State private var sponsorPrompted: Set<String> = []
+    @State private var sponsorPrimed = false
 
     var body: some View {
         ZStack {
@@ -144,6 +152,7 @@ struct VideoStage: View {
                 showCoin: $showCoin,
                 showFav: $showFav,
                 showShare: $showShare,
+                segments: visibleSponsor,
                 onQuality: { name in Task { await switchQuality(name) } },
                 onStepPage: { delta in
                     let next = currentPage + delta
@@ -154,9 +163,16 @@ struct VideoStage: View {
                 }
             )
         }
+        .overlay(alignment: .top) {
+            if let sponsorNotice {
+                sponsorToast(sponsorNotice)
+                    .padding(.top, 46)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: fullscreen ? 0 : 0, style: .continuous))
         .gesture(playerDrag(video))
         .simultaneousGesture(TapGesture(count: 2).onEnded { doubleTap() })
+        .task(id: bvid) { await watchSponsor() }
         .onLongPressGesture(minimumDuration: 0.35) {
             model.playbackRate = 2
             model.player?.rate = 2
@@ -299,6 +315,116 @@ struct VideoStage: View {
         return subtitles.first { $0.from <= time && time <= $0.to }?.text
     }
 
+    private var visibleSponsor: [SponsorSegment] {
+        let duration = Double(video?.duration ?? 0)
+        return sponsorSegments.filter { segment in
+            guard SponsorStore.action(for: segment.category) != .ignore else { return false }
+            guard segment.videoDuration > 0, duration > 1 else { return true }
+            return abs(segment.videoDuration - duration) <= 3 || sponsorSegments.allSatisfy { abs($0.videoDuration - duration) > 3 }
+        }
+    }
+
+    private func sponsorToast(_ notice: SponsorNotice) -> some View {
+        HStack(spacing: 10) {
+            Text(notice.text)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            if notice.canSkip {
+                Button("跳过") { commitSponsorSkip(id: notice.segmentID) }
+                    .font(.subheadline.weight(.bold))
+            }
+            if notice.canUndo {
+                Button("撤销") { undoSponsorSkip(id: notice.segmentID) }
+                    .font(.subheadline.weight(.bold))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: Capsule())
+    }
+
+    private func watchSponsor() async {
+        while !Task.isCancelled {
+            primeSponsorIfNeeded()
+            applySponsor(at: model.playbackSeconds)
+            if let notice = sponsorNotice, Date() >= notice.until {
+                sponsorNotice = nil
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    private func primeSponsorIfNeeded() {
+        guard LaunchMode.screen == "sponsor", !sponsorPrimed, model.playbackSeconds > 0.3 else { return }
+        guard let segment = visibleSponsor.first(where: { SponsorStore.action(for: $0.category) == .skip }) else { return }
+        sponsorPrimed = true
+        seekSponsor(to: segment.start + 0.2)
+    }
+
+    private func applySponsor(at time: Double) {
+        guard time.isFinite else { return }
+        for segment in visibleSponsor {
+            let action = SponsorStore.action(for: segment.category)
+            guard time + 0.05 >= segment.start, time < segment.end - 0.25 else { continue }
+            if sponsorUndone.contains(segment.id) || sponsorHandled.contains(segment.id) { return }
+            if action == .skip {
+                commitSponsorSkip(id: segment.id)
+            } else if action == .prompt, !sponsorPrompted.contains(segment.id) {
+                sponsorPrompted.insert(segment.id)
+                sponsorNotice = SponsorNotice(
+                    text: "\(segment.title) \(DurationBadge.clock(Int(segment.start)))",
+                    segmentID: segment.id,
+                    canSkip: true,
+                    canUndo: false,
+                    until: Date().addingTimeInterval(8)
+                )
+                writeSponsorProof(skipped: false, toast: sponsorNotice?.text ?? "")
+            }
+            return
+        }
+    }
+
+    private func commitSponsorSkip(id: String) {
+        guard let segment = sponsorSegments.first(where: { $0.id == id }) else { return }
+        sponsorHandled.insert(id)
+        sponsorPrompted.insert(id)
+        seekSponsor(to: segment.end)
+        let text = "已跳过\(segment.title)"
+        sponsorNotice = SponsorNotice(text: text, segmentID: id, canSkip: false, canUndo: true, until: Date().addingTimeInterval(8))
+        writeSponsorProof(skipped: true, toast: text)
+    }
+
+    private func undoSponsorSkip(id: String) {
+        guard let segment = sponsorSegments.first(where: { $0.id == id }) else { return }
+        sponsorUndone.insert(id)
+        sponsorHandled.remove(id)
+        seekSponsor(to: segment.start)
+        sponsorNotice = nil
+        writeSponsorProof(skipped: false, toast: "已撤销")
+    }
+
+    private func seekSponsor(to seconds: Double) {
+        model.playbackSeconds = seconds
+        model.player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+    }
+
+    private func writeSponsorProof(skipped: Bool, toast: String) {
+        let first = visibleSponsor.first
+        SponsorProof.record([
+            "bvid": bvid,
+            "title": video?.title ?? "",
+            "prefix": sponsorPrefix,
+            "server": sponsorServer,
+            "count": visibleSponsor.count,
+            "category": first?.category ?? "",
+            "start": first?.start ?? 0,
+            "end": first?.end ?? 0,
+            "skipped": skipped,
+            "toast": toast,
+            "error": ""
+        ])
+    }
+
     private func load() async {
         if let ready = model.video(bvid), ready.playURL != nil {
             video = ready
@@ -405,6 +531,13 @@ struct VideoStage: View {
         await ImageStore.shared.prepare(urls: nextRelated.map(\.cover), maxPixel: 240)
         related = nextRelated
         related.forEach(model.store)
+        let sponsor = await SponsorClient.segments(for: bvid)
+        sponsorSegments = sponsor.items
+        sponsorServer = sponsor.server
+        sponsorPrefix = sponsor.prefix
+        if !sponsor.items.isEmpty {
+            writeSponsorProof(skipped: false, toast: "")
+        }
     }
 
     private func loadComments(reset: Bool) async {
@@ -739,6 +872,7 @@ struct PlayerControls: View {
     @Binding var showCoin: Bool
     @Binding var showFav: Bool
     @Binding var showShare: Bool
+    var segments: [SponsorSegment] = []
     var onQuality: (String) -> Void
     var onStepPage: (Int) -> Void
     private let speeds = ["0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "3.0x"]
@@ -756,7 +890,7 @@ struct PlayerControls: View {
     }
 
     /// The simulator playback shot is taken after the clock has already moved, so this pass keeps the chrome up.
-    private var pinsChrome: Bool { LaunchMode.screen == "playback" }
+    private var pinsChrome: Bool { LaunchMode.screen == "playback" || LaunchMode.screen == "sponsor" }
 
     var body: some View {
         ZStack {
@@ -950,6 +1084,14 @@ struct PlayerControls: View {
                 Rectangle()
                     .fill(Palette.bili)
                     .frame(width: max(bar, geo.size.width * fraction), height: bar)
+                ForEach(segments) { segment in
+                    let start = min(1, max(0, segment.start / duration))
+                    let end = min(1, max(start, segment.end / duration))
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(segment.color)
+                        .frame(width: max(8, geo.size.width * (end - start)), height: 8)
+                        .offset(x: geo.size.width * start, y: -2)
+                }
                 if thick {
                     Circle()
                         .fill(.white)
@@ -1186,6 +1328,14 @@ struct CommentRow: View {
         .padding(12)
         .contentPlate(radius: nested ? 14 : 20)
     }
+}
+
+private struct SponsorNotice: Equatable {
+    var text: String
+    var segmentID: String
+    var canSkip: Bool
+    var canUndo: Bool
+    var until: Date
 }
 
 extension Color {

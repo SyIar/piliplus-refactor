@@ -176,6 +176,17 @@ struct RootShell: View {
             await model.openFirstLive()
             return
         }
+        if LaunchMode.screen == "sponsor" {
+            await LaunchClock.waitForFirstFrame()
+            await openSponsorVideo()
+            return
+        }
+        if LaunchMode.screen == "sponsor-settings" {
+            await LaunchClock.waitForFirstFrame()
+            model.open(.settings)
+            model.open(.setting("空降助手"))
+            return
+        }
         if model.feed.isEmpty { await model.refreshHome() }
         await model.refreshProfile()
         switch LaunchMode.screen {
@@ -224,6 +235,30 @@ struct RootShell: View {
         default:
             break
         }
+    }
+
+    private func openSponsorVideo() async {
+        for bvid in SponsorCatalog.proofCandidates {
+            let page = await SponsorClient.segments(for: bvid)
+            guard !page.items.isEmpty else { continue }
+            guard (try? await model.client.detail(bvid: bvid)) != nil else { continue }
+            print("sponsor open \(bvid) \(page.server) \(page.items.count)")
+            model.open(.video(bvid))
+            return
+        }
+        SponsorProof.record([
+            "bvid": "",
+            "title": "",
+            "prefix": "",
+            "server": "",
+            "count": 0,
+            "category": "",
+            "start": 0,
+            "end": 0,
+            "skipped": false,
+            "toast": "",
+            "error": "没有找到带片段的视频"
+        ])
     }
 
     private func openSampleSpace() async {

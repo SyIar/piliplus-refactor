@@ -185,6 +185,21 @@ final class LiveDanmuFeed {
     }
 }
 
+private final class LiveTally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
 @MainActor
 final class LiveSocket {
     var onLine: ((LiveChatLine) -> Void)?
@@ -233,6 +248,18 @@ final class LiveSocket {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session.invalidateAndCancel()
+    }
+
+    /// Count real `DANMU_MSG` lines for a few seconds. A packed room can still be quiet.
+    static func sample(room: Int, token: String, hosts: [LiveDanmuHost], seconds: Double) async -> Int {
+        let socket = LiveSocket(room: room, token: token, hosts: hosts)
+        let tally = LiveTally()
+        socket.onLine = { _ in tally.add() }
+        socket.start()
+        try? await Task.sleep(for: .seconds(seconds))
+        let count = tally.value
+        socket.stop()
+        return count
     }
 
     private func open(_ index: Int) {

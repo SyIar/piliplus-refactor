@@ -61,6 +61,8 @@ struct SettingDetail: View {
         Group {
             if name == "关于" {
                 about
+            } else if name == "空降助手" {
+                SponsorSettings()
             } else {
                 List {
                     ForEach(Menus.settings[name] ?? []) { row in

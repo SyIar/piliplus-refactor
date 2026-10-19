@@ -841,17 +841,23 @@ capture_live_room() {
   xcrun simctl launch --terminate-running-process \
     --stdout="$OUT/perf/live-room.log" --stderr="$OUT/perf/live-room.err" \
     "$UDID" "$BUNDLE" -screen live-room -perfLabel "$LABEL"
-  local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0
-  for _ in $(seq 1 170); do
+  local stay_room="" stay_start=0 fresh=0 room=0 elapsed=0 deadline
+  deadline=$(( $(date +%s) + 160 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
     if [[ -f "$proof" ]]; then
-      cur="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("seconds", 0))' "$proof")"
-      err="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("error", ""))' "$proof")"
-      dm="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("danmaku", 0))' "$proof")"
-      fresh="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fresh", 0))' "$proof")"
-      proto="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("protocol", ""))' "$proof")"
-      title="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("title", ""))' "$proof")"
-      room="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("room", 0))' "$proof")"
-      if [[ -z "$err" && "$proto" == "hls" && -n "$title" ]]; then
+      line="$(python3 -c 'import json,sys
+def cell(value):
+    text = str("" if value is None else value).replace("\t", " ").replace("\n", " ").strip()
+    return text or "-"
+d=json.load(open(sys.argv[1]))
+vals=[d.get("seconds",0), d.get("error"), d.get("danmaku",0), d.get("fresh",0), d.get("protocol"), d.get("room",0), d.get("title")]
+print("\t".join(cell(v) for v in vals))' "$proof" 2>/dev/null || true)"
+      if [[ -z "$line" ]]; then
+        sleep 1
+        continue
+      fi
+      IFS=$'\t' read -r cur err dm fresh proto room title <<< "$line"
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]]; then
         if [[ "$room" != "$stay_room" ]]; then
           stay_room="$room"
           stay_start=$(date +%s)
@@ -861,13 +867,13 @@ capture_live_room() {
         elapsed=0
       fi
       echo "live room seconds=$cur danmaku=$dm fresh=$fresh stay=${elapsed}s protocol=${proto:-none} title=${title:-none} error=${err:-none}"
-      if [[ ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,fr,el,sec=int(float(sys.argv[1])),int(float(sys.argv[2])),int(sys.argv[3]),float(sys.argv[4]); sys.exit(0 if dm >= 20 and fr >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$fresh" "$elapsed" "$cur"; then
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,fr,el,sec=int(float(sys.argv[1])),int(float(sys.argv[2])),int(sys.argv[3]),float(sys.argv[4]); sys.exit(0 if dm >= 20 and fr >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$fresh" "$elapsed" "$cur"; then
         advanced=1
         break
       fi
       # A quiet room can sit under 20 lines for the whole stay. Keep going once
       # the stream is real, and leave a hard failure for silence or a blank player.
-      if [[ ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,el,sec=int(float(sys.argv[1])),int(sys.argv[2]),float(sys.argv[3]); sys.exit(0 if dm >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$elapsed" "$cur"; then
+      if [[ "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,el,sec=int(float(sys.argv[1])),int(sys.argv[2]),float(sys.argv[3]); sys.exit(0 if dm >= 1 and el >= 55 and sec >= 5 else 1)' "$dm" "$elapsed" "$cur"; then
         echo "warning: live room traffic stayed at $dm danmaku after ${elapsed}s; continuing because the HLS stream is playing" >&2
         advanced=1
         break
@@ -881,7 +887,7 @@ capture_live_room() {
     cat "$OUT/perf/live-room-proof.json"
     echo
   fi
-  if [[ "$advanced" -ne 1 && ( -z "$err" || "$err" == "-" ) && "$proto" == "hls" && -n "$title" && "$title" != "-" ]] && python3 -c 'import sys; dm,sec=int(float(sys.argv[1])),float(sys.argv[2]); sys.exit(0 if dm >= 1 and sec >= 5 else 1)' "$dm" "$cur"; then
+  if [[ "$advanced" -ne 1 && "$err" == "-" && "$proto" == "hls" && "$title" != "-" ]] && python3 -c 'import sys; dm,sec=int(float(sys.argv[1])),float(sys.argv[2]); sys.exit(0 if dm >= 1 and sec >= 5 else 1)' "$dm" "$cur"; then
     echo "warning: live room traffic stayed at $dm danmaku; continuing because the HLS stream is playing" >&2
     advanced=1
   fi
@@ -1016,6 +1022,66 @@ PY
   echo "saved live-room.png danmaku=$dm"
 }
 
+capture_sponsor() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/sponsor-proof.json"
+  rm -f "$proof" "$OUT/screenshots/sponsor.png"
+  : > "$OUT/perf/sponsor.log"
+  : > "$OUT/perf/sponsor.err"
+  xcrun simctl launch --terminate-running-process \
+    --stdout="$OUT/perf/sponsor.log" --stderr="$OUT/perf/sponsor.err" \
+    "$UDID" "$BUNDLE" -screen sponsor -perfLabel "$LABEL"
+  for _ in $(seq 1 90); do
+    if [[ -f "$proof" ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if int(d.get("count") or 0) >= 1 and d.get("skipped") is True and str(d.get("server") or "") and str(d.get("prefix") or "") and not d.get("error") else 1)' "$proof"; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/sponsor-proof.json"
+    echo "sponsor proof:"
+    cat "$OUT/perf/sponsor-proof.json"
+    echo
+  fi
+  if [[ "$found" -ne 1 ]]; then
+    echo "sponsor segments were not skipped on a real video" >&2
+    xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor.png" || true
+    tail -n 40 "$OUT/perf/sponsor.log" || true
+    return 1
+  fi
+  sleep 0.6
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor.png"
+  echo "saved sponsor.png"
+}
+
+capture_sponsor_settings() {
+  local dir proof found=0
+  dir="$(container)"
+  proof="$dir/Documents/sponsor-settings-proof.json"
+  rm -f "$proof" "$OUT/screenshots/sponsor-settings.png"
+  xcrun simctl launch --terminate-running-process \
+    "$UDID" "$BUNDLE" -screen sponsor-settings -perfLabel "$LABEL"
+  for _ in $(seq 1 40); do
+    if [[ -f "$proof" ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("sponsor") == "自动跳过" and d.get("screen") == "sponsor-settings" else 1)' "$proof"; then
+      found=1
+      break
+    fi
+    sleep 1
+  done
+  sleep 1
+  xcrun simctl io "$UDID" screenshot "$OUT/screenshots/sponsor-settings.png"
+  echo "saved sponsor-settings.png"
+  if [[ -f "$proof" ]]; then
+    cp "$proof" "$OUT/perf/sponsor-settings-proof.json"
+  fi
+  if [[ "$found" -ne 1 ]]; then
+    echo "sponsor settings proof missing" >&2
+    return 1
+  fi
+}
+
 echo "Screenshots on $NAME"
 suppress_apple_intelligence
 account_status=0
@@ -1023,12 +1089,13 @@ social_status=0
 space_status=0
 playback_status=0
 live_status=0
+sponsor_status=0
 capture_account_proof || account_status=1
 capture_social_proof || social_status=1
 capture_space_proof || space_status=1
 capture_live_proof || live_status=1
 catalog_status=0
-for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room; do
+for screen in home rank bangumi cinema dynamics mine search settings video login playback history later fav favsheet guest-history guest-later guest-fav guest-dynamics search-video search-user search-bangumi search-live search-article comments space space-dynamic space-fav space-bangumi space-series live live-area live-room sponsor sponsor-settings; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if [[ "$screen" == "playback" ]]; then
     if ! capture_playback; then
@@ -1064,6 +1131,17 @@ for screen in home rank bangumi cinema dynamics mine search settings video login
     fi
     continue
   fi
+  if [[ "$screen" == "sponsor" ]]; then
+    if ! capture_sponsor; then
+      echo "retrying sponsor capture" >&2
+      capture_sponsor || sponsor_status=1
+    fi
+    continue
+  fi
+  if [[ "$screen" == "sponsor-settings" ]]; then
+    capture_sponsor_settings || sponsor_status=1
+    continue
+  fi
   xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE" -screen "$screen" -perfLabel "$LABEL"
   if [[ "$screen" == "login" ]]; then sleep 20
   else sleep 12
@@ -1074,8 +1152,8 @@ done
 
 scroll_status=0
 verify_scroll || scroll_status=1
-if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 ]]; then
-  echo "home data, playback, account lists, social surfaces, user space, live, or warm scroll check failed" >&2
+if [[ "$catalog_status" -ne 0 || "$scroll_status" -ne 0 || "$account_status" -ne 0 || "$social_status" -ne 0 || "$space_status" -ne 0 || "$playback_status" -ne 0 || "$live_status" -ne 0 || "$sponsor_status" -ne 0 ]]; then
+  echo "home data, playback, account lists, social surfaces, user space, live, sponsor block, or warm scroll check failed" >&2
   exit 1
 fi
 
