@@ -94,7 +94,18 @@ struct SettingDetail: View {
             }
             .tint(model.accentColor)
         case .options, .text:
-            if row.title == "弹幕屏蔽词" {
+            if row.title == "备份设置" || row.title == "恢复设置" {
+                Button { model.open(.feature("WebDAV")) } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.title).foregroundStyle(.primary)
+                            Text(row.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    }
+                }
+            } else if row.title == "弹幕屏蔽词" {
                 Button { model.open(.setting("弹幕屏蔽词")) } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -194,13 +205,13 @@ struct SettingDetail: View {
         List {
             Section {
                 LabeledContent("名称", value: "PiliPlus")
-                LabeledContent("版本", value: "2.0.0")
+                LabeledContent("版本", value: ReleaseCheck.current)
                 LabeledContent("界面", value: "iOS 27 Liquid Glass")
                 LabeledContent("上游", value: "bggRGjQaUbCoE/PiliPlus")
             }
             Section {
                 Button("日志") { model.open(.feature("日志")) }
-                Button("检查更新") { model.show(model.flag("检查更新") ? "已是最新的 Swift 重构版" : "已关闭启动检查") }
+                Button("检查更新") { model.open(.feature("检查更新")) }
                 Button("复制 buvid") {
                     UIPasteboard.general.string = DeviceIdentity.buvid
                     model.show("已复制 buvid")

@@ -93,17 +93,55 @@ struct ProfileMark: View {
     var body: some View {
         ZStack {
             Circle().fill(Palette.bili.gradient)
-            if face.isEmpty {
-                Text(String(name.prefix(1)))
-                    .font(size > 40 ? .title2.bold() : .caption.weight(.bold))
-                    .foregroundStyle(.white)
-            } else {
-                RemoteImage(url: face, ratio: 1, maxPixel: size * 3)
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
+            Text(initial)
+                .font(size > 48 ? .title2.bold() : size > 32 ? .subheadline.bold() : .caption.weight(.bold))
+                .foregroundStyle(.white)
+            if let url = Self.faceURL(face) {
+                LoadedFace(url: url, size: size)
             }
         }
         .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+
+    private var initial: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "" }
+        return String(first)
+    }
+
+    /// Empty, blank, or non-http values stay on the letter placeholder.
+    static func faceURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              url.host != nil else { return nil }
+        return url
+    }
+}
+
+/// Draws a face only after the bitmap arrives. A miss leaves the letter visible.
+private struct LoadedFace: View {
+    let url: URL
+    var size: CGFloat
+    @State private var image: UIImage?
+
+    init(url: URL, size: CGFloat) {
+        self.url = url
+        self.size = size
+        _image = State(initialValue: ImageStore.cachedImage(url: url, maxPixel: size * 3))
+    }
+
+    var body: some View {
+        PreparedImage(image: image)
+            .frame(width: size, height: size)
+            .opacity(image == nil ? 0 : 1)
+            .task(id: url.absoluteString) {
+                guard image == nil else { return }
+                let loaded = await ImageStore.shared.image(url: url, maxPixel: size * 3)
+                guard !Task.isCancelled else { return }
+                image = loaded
+            }
     }
 }
 

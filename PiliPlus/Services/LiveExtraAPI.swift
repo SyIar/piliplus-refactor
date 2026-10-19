@@ -259,7 +259,7 @@ extension BiliClient {
                     let score = item["score"].int ?? 0
                     return RankPerson(
                         name: name,
-                        face: Self.https(item["face"].string ?? ""),
+                        face: Self.rankFace(item),
                         rank: rank,
                         detail: score > 0 ? "\(score)" : ""
                     )
@@ -339,6 +339,18 @@ extension BiliClient {
     private static func usableRooms(_ data: JSON) -> [LiveRoom] {
         guard data["code"].int == 0 else { return [] }
         return liveRooms(in: data).filter { !blockedLive($0.title, $0.uname) }
+    }
+
+    private static func rankFace(_ item: JSON) -> String {
+        let candidates = [
+            item["face"].string ?? "",
+            item["uface"].string ?? "",
+            item["avatar"].string ?? "",
+            item["user_info"]["face"].string ?? "",
+            item["user"]["face"].string ?? ""
+        ]
+        let raw = candidates.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
+        return https(raw)
     }
 
     private static func blockedLive(_ title: String, _ name: String) -> Bool {

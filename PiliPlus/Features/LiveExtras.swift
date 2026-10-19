@@ -364,9 +364,7 @@ struct LiveRankPage: View {
                             Text("\(person.rank)")
                                 .font(.subheadline.weight(.bold))
                                 .frame(width: 28)
-                            RemoteImage(url: person.face, ratio: 1, maxPixel: 120)
-                                .frame(width: 36, height: 36)
-                                .clipShape(Circle())
+                            ProfileMark(name: person.name, face: person.face, size: 36)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(person.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                                 if let score = Int(person.detail), score > 0 {
@@ -489,9 +487,7 @@ struct LiveSuperChatPage: View {
             } else {
                 List(chats) { chat in
                     HStack(alignment: .top, spacing: 12) {
-                        RemoteImage(url: chat.face, ratio: 1, maxPixel: 120)
-                            .frame(width: 36, height: 36)
-                            .clipShape(Circle())
+                        ProfileMark(name: chat.name.isEmpty ? "用户" : chat.name, face: chat.face, size: 36)
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(chat.name.isEmpty ? "用户" : chat.name)

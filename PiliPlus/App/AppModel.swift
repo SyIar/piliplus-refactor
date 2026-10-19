@@ -67,6 +67,7 @@ final class AppModel {
     var liveFocusArea = "网游"
     var liveFocusRoom = 0
     var articleFocusID = 0
+    var shareBVID = ""
     var reviewMediaID = 0
     var liveFocusUID = 0
     var liveFocusTitle = ""
