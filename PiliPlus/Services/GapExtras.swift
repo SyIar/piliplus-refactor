@@ -27,7 +27,7 @@ enum GapProof {
 enum ReleaseCheck {
     static var current: String {
         let value = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        return value.isEmpty ? "2.0.0" : value
+        return value.isEmpty ? "2.0.1" : value
     }
 
     static func latest() async throws -> ReleaseNote {
