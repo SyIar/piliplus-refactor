@@ -534,12 +534,6 @@ extension BiliClient {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func https(_ raw: String) -> String {
-        if raw.hasPrefix("http://") { return "https://" + raw.dropFirst(7) }
-        if raw.hasPrefix("//") { return "https:" + raw }
-        return raw
-    }
-
     private static func realCopy(_ text: String) -> Bool {
         let folded = text.lowercased()
         return !text.isEmpty && !text.contains("液态玻璃") && !text.contains("玻璃试验") && !folded.contains("fixture")
