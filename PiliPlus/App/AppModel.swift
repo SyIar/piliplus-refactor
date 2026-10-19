@@ -293,6 +293,37 @@ final class AppModel {
         loadingMore = false
     }
 
+    /// Moves a one-line title next to a two-line title for the home alignment shot.
+    func promoteAlignPair() async -> (short: String, long: String) {
+        func real(_ video: VideoItem) -> Bool {
+            let title = video.title
+            let folded = title.lowercased()
+            return video.bvid.hasPrefix("BV")
+                && !title.isEmpty
+                && !title.contains("液态玻璃")
+                && !title.contains("玻璃试验")
+                && !folded.contains("fixture")
+        }
+        for _ in 0..<3 {
+            let usable = feed.filter(real)
+            if usable.contains(where: { $0.title.count <= 12 }), usable.contains(where: { $0.title.count >= 16 }) {
+                break
+            }
+            await loadRecommend(reset: false)
+        }
+        let usable = feed.filter(real)
+        let short = usable.filter { $0.title.count <= 12 }.min { $0.title.count < $1.title.count }
+            ?? usable.min { $0.title.count < $1.title.count }
+        let long = usable.filter { $0.title.count >= 16 }.max { $0.title.count < $1.title.count }
+            ?? usable.max { $0.title.count < $1.title.count }
+        guard let short, let long, short.bvid != long.bvid else {
+            return (feed.first?.title ?? "", feed.dropFirst().first?.title ?? "")
+        }
+        let rest = feed.filter { $0.bvid != short.bvid && $0.bvid != long.bvid }
+        feed = [short, long] + rest
+        return (short.title, long.title)
+    }
+
     func loadZone(_ name: String, reset: Bool) async {
         if !reset {
             guard zoneHasMore, !loadingMore else { return }

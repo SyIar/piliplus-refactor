@@ -11,7 +11,9 @@ struct VideoCard: View {
             model.open(.video(video.bvid))
         } label: {
             VStack(alignment: .leading, spacing: 8) {
-                RemoteImage(url: video.cover)
+                RemoteImage(url: video.cover, ratio: 16.0 / 9.0)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: compact ? 16 : 22, style: .continuous))
                     .overlay(alignment: .bottomTrailing) {
                         DurationBadge(seconds: video.duration).padding(8)
@@ -31,7 +33,9 @@ struct VideoCard: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
+                    .frame(maxWidth: .infinity, minHeight: 0, alignment: .topLeading)
+                Spacer(minLength: 0)
                 HStack(spacing: 8) {
                     Text(video.ownerName)
                         .lineLimit(1)
@@ -47,9 +51,12 @@ struct VideoCard: View {
                 .lineLimit(1)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contextMenu {
             Button("不感兴趣", systemImage: "hand.thumbsdown") { Task { await model.dislike(video) } }
             Button("稍后再看", systemImage: "clock") { model.watchLater(video.bvid) }

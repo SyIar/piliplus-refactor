@@ -202,6 +202,7 @@ private struct RecommendGrid: View {
             }
             ForEach(model.feed) { video in
                 VideoCard(video: video)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .id(video.bvid)
                     .onAppear {
                         guard video.bvid == model.feed.last?.bvid else { return }

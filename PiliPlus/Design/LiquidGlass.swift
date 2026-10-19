@@ -115,7 +115,13 @@ struct RemoteImage: View {
     var body: some View {
         Color.clear
             .aspectRatio(ratio, contentMode: .fit)
-            .overlay { CachedImage(url: url, maxPixel: maxPixel) }
+            .overlay {
+                // The bitmap's own pixel size must not change the box.
+                GeometryReader { proxy in
+                    CachedImage(url: url, maxPixel: maxPixel)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
             .clipped()
     }
 }
@@ -158,6 +164,10 @@ private struct PreparedImage: UIViewRepresentable {
         view.contentMode = .scaleAspectFill
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
+        view.setContentHuggingPriority(.fittingSizeLevel, for: .horizontal)
+        view.setContentHuggingPriority(.fittingSizeLevel, for: .vertical)
+        view.setContentCompressionResistancePriority(.fittingSizeLevel, for: .horizontal)
+        view.setContentCompressionResistancePriority(.fittingSizeLevel, for: .vertical)
         view.image = image
         return view
     }

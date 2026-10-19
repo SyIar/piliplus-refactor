@@ -88,13 +88,17 @@ struct RootShell: View {
         case "home":
             let firstCount = model.feed.count
             await model.loadRecommend(reset: false)
+            let pair = await model.promoteAlignPair()
+            try? await Task.sleep(for: .milliseconds(500))
             HomeProof.record([
                 "source": model.feedSource,
                 "page": model.feedPage,
                 "count": model.feed.count,
                 "firstCount": firstCount,
                 "title": model.feed.first?.title ?? "",
-                "bvid": model.feed.first?.bvid ?? ""
+                "bvid": model.feed.first?.bvid ?? "",
+                "short": pair.short,
+                "long": pair.long
             ])
         case "rank":
             model.homeTab = "分区"

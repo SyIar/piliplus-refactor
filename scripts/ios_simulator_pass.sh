@@ -338,6 +338,12 @@ if screen == "home":
         and bvid.startswith("BV")
         and "液态玻璃" not in title
         and "fixture" not in bvid
+        and 1 <= len(str(data.get("short") or "")) <= 12
+        and len(str(data.get("long") or "")) >= 16
+        and str(data.get("short") or "") != str(data.get("long") or "")
+        and "液态玻璃" not in str(data.get("short") or "")
+        and "fixture" not in str(data.get("short") or "").lower()
+        and "fixture" not in str(data.get("long") or "").lower()
     )
 elif screen == "rank":
     ok = int(data.get("rid", 0)) == 1 and int(data.get("count", 0)) >= 5 and bvid.startswith("BV") and "fixture" not in bvid
