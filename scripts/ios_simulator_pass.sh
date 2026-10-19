@@ -2227,6 +2227,7 @@ for screen in hot-weekly hot-precious; do
   xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
   if ! capture_hot_ui "$screen"; then
     echo "retrying ${screen}" >&2
+    if [[ "$screen" == "hot-weekly" ]]; then sleep 8; fi
     capture_hot_ui "$screen" || hot_status=1
   fi
 done

@@ -74,7 +74,10 @@ struct BiliClient: Sendable {
         let referer = "https://www.bilibili.com/v/popular/weekly"
         var last = "这一期没有打开"
         // A long guest session can make the signed call return -352. The same signature without that cookie still opens the issue.
-        for suppressCookie in [false, true] {
+        // The third pass waits, because a burst of -352 answers often clears a moment later.
+        for attempt in 0..<3 {
+            if attempt == 2 { try? await Task.sleep(for: .seconds(3)) }
+            let suppressCookie = attempt > 0
             do {
                 let data = try await requestQuery(
                     "/x/web-interface/popular/series/one",
