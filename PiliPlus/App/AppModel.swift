@@ -10,6 +10,7 @@ enum Route: Hashable {
     case messages
     case login
     case feature(String)
+    case folder(Int)
     case user(Int, String)
 }
 
@@ -86,8 +87,20 @@ final class AppModel {
     var homeTabs = ["直播", "推荐", "热门", "分区", "番剧", "影视"]
     var navItems = ["首页", "动态", "我的"]
     var history: [VideoItem] = []
+    var historyHasMore = false
+    var historyCursorMax = 0
+    var historyCursorViewAt = 0
+    var historyBusiness = ""
+    var historyPaused = false
+    var loadingHistory = false
+    var laterVideos: [VideoItem] = []
+    var loadingLater = false
     var searchHistory: [String] = []
-    var favFolders = ["默认收藏夹", "稍后再看精选", "学习"]
+    var favFolders: [FavFolder] = []
+    var folderVideos: [Int: [VideoItem]] = [:]
+    var folderPage: [Int: Int] = [:]
+    var folderHasMore: [Int: Bool] = [:]
+    var loadingFolders = false
     var coinCount = 0
     var level = 0
     var exp = 0
@@ -122,7 +135,8 @@ final class AppModel {
         }
         switch LaunchMode.screen {
         case "dynamics": selectedTab = 1
-        case "mine": selectedTab = 2
+        case "mine", "history", "later", "fav", "guest-history", "guest-later", "guest-fav":
+            selectedTab = 2
         default: break
         }
         softHaptic.prepare()
@@ -137,7 +151,20 @@ final class AppModel {
         lives = gallery.lives
         hotwords = gallery.words
         dynamics = gallery.dynamics
-        history = Array(gallery.videos.prefix(4))
+        history = Array(gallery.videos.prefix(6)).enumerated().map { index, item in
+            var copy = item
+            copy.progress = index == 0 ? -1 : 48 + index * 20
+            copy.viewAt = 1_700_000_000 - index * 120
+            return copy
+        }
+        laterVideos = Array(gallery.videos.dropFirst(6).prefix(5))
+        later = Set(laterVideos.map(\.bvid))
+        favFolders = [
+            FavFolder(id: 11001, title: "默认收藏夹", count: 4, favored: true),
+            FavFolder(id: 11002, title: "稍后再看精选", count: 2, favored: false),
+            FavFolder(id: 11003, title: "学习", count: 3, favored: false)
+        ]
+        folderVideos[11001] = Array(gallery.videos.prefix(4))
         for item in gallery.videos { store(item) }
         loadingFeed = false
         let covers = gallery.videos.map(\.cover)
@@ -420,9 +447,6 @@ final class AppModel {
         guard !LaunchMode.perfScroll, !LaunchMode.perfStartup else { return }
         nowPlaying = video
         store(video)
-        if !history.contains(where: { $0.bvid == video.bvid }) {
-            history.insert(video, at: 0)
-        }
         guard let urlString = video.playURL, let url = URL(string: urlString) else { return }
         let audioURL = video.audioURL.flatMap(URL.init(string:))
         let headers = BiliHTTP.assetHeaders(bvid: video.bvid)
@@ -538,9 +562,19 @@ final class AppModel {
     }
 
     func toggleLike(_ bvid: String) {
-        guard requireLogin("点赞") else { return }
-        if liked.contains(bvid) { liked.remove(bvid); show("已取消点赞") }
-        else { liked.insert(bvid); disliked.remove(bvid); show("点赞成功") }
+        guard let video = video(bvid), video.aid > 0 else { show("还不能点赞"); return }
+        guard let csrf = csrf(for: "点赞") else { return }
+        let next = !liked.contains(bvid)
+        if next { liked.insert(bvid); disliked.remove(bvid) } else { liked.remove(bvid) }
+        Task {
+            do {
+                try await client.submit(AccountRequest.like(aid: video.aid, liked: next, csrf: csrf))
+                show(next ? "点赞成功" : "已取消点赞")
+            } catch {
+                if next { liked.remove(bvid) } else { liked.insert(bvid) }
+                show(error.localizedDescription)
+            }
+        }
     }
 
     func toggleDislike(_ bvid: String) {
@@ -550,31 +584,310 @@ final class AppModel {
     }
 
     func coin(_ bvid: String, count: Int, alsoLike: Bool) {
-        guard requireLogin("投币") else { return }
-        coined.insert(bvid)
-        coinCount = max(0, coinCount - count)
-        if alsoLike { liked.insert(bvid) }
-        show("投了 \(count) 枚硬币")
+        guard let video = video(bvid), video.aid > 0 else { show("还不能投币"); return }
+        guard let csrf = csrf(for: "投币") else { return }
+        let multiply = count == 2 ? 2 : 1
+        Task {
+            do {
+                try await client.submit(AccountRequest.coin(aid: video.aid, multiply: multiply, alsoLike: alsoLike, csrf: csrf))
+                coined.insert(bvid)
+                if alsoLike { liked.insert(bvid) }
+                let synced = await refreshCoins()
+                if !synced { coinCount = max(0, coinCount - multiply) }
+                show("投了 \(multiply) 枚硬币")
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
     }
 
-    func favorite(_ bvid: String, folder: String) {
-        guard requireLogin("收藏") else { return }
-        favored.insert(bvid)
-        show("已加入「\(folder)」")
+    func favoriteQuick(_ video: VideoItem) {
+        guard csrf(for: "收藏") != nil else { return }
+        Task {
+            if favFolders.isEmpty { await loadFolders(rid: video.aid) }
+            guard let folder = favFolders.first else {
+                show("还没有收藏夹")
+                return
+            }
+            if favored.contains(video.bvid) {
+                await dealFavorite(video, add: [], remove: [folder.id])
+            } else {
+                await dealFavorite(video, add: [folder.id], remove: [])
+            }
+        }
+    }
+
+    func dealFavorite(_ video: VideoItem, add: [Int], remove: [Int]) async {
+        guard video.aid > 0 else { show("还不能收藏"); return }
+        guard !add.isEmpty || !remove.isEmpty else { return }
+        if LaunchMode.accountPreview {
+            if !add.isEmpty { favored.insert(video.bvid) }
+            if add.isEmpty { favored.remove(video.bvid) }
+            show(add.isEmpty ? "已移出收藏" : "已加入收藏")
+            return
+        }
+        guard let csrf = csrf(for: "收藏") else { return }
+        do {
+            try await client.submit(AccountRequest.dealFavorite(aid: video.aid, add: add, remove: remove, csrf: csrf))
+            if !add.isEmpty { favored.insert(video.bvid) }
+            if add.isEmpty, !remove.isEmpty { favored.remove(video.bvid) }
+            for id in add {
+                if let index = favFolders.firstIndex(where: { $0.id == id }) { favFolders[index].favored = true }
+            }
+            for id in remove {
+                if let index = favFolders.firstIndex(where: { $0.id == id }) { favFolders[index].favored = false }
+                folderVideos[id]?.removeAll { $0.bvid == video.bvid }
+            }
+            show(add.isEmpty ? "已移出收藏" : "已更新收藏")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func createFolder(_ title: String) async {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        if LaunchMode.accountPreview {
+            let next = (favFolders.map(\.id).max() ?? 11000) + 1
+            favFolders.append(FavFolder(id: next, title: name, count: 0, favored: false))
+            show("已新建收藏夹")
+            return
+        }
+        guard let csrf = csrf(for: "新建收藏夹") else { return }
+        do {
+            _ = try await client.submit(AccountRequest.createFolder(title: name, csrf: csrf))
+            show("已新建收藏夹")
+            await loadFolders(rid: nil)
+        } catch {
+            show(error.localizedDescription)
+        }
     }
 
     func watchLater(_ bvid: String) {
-        guard requireLogin("添加稍后再看") else { return }
-        if later.contains(bvid) { later.remove(bvid); show("已移出稍后再看") }
-        else { later.insert(bvid); show("已添加至稍后再看") }
+        guard let video = video(bvid), video.aid > 0 else { show("还不能加入稍后再看"); return }
+        if later.contains(bvid) {
+            Task { await removeLater(video) }
+        } else {
+            guard let csrf = csrf(for: "添加稍后再看") else { return }
+            Task {
+                do {
+                    try await client.submit(AccountRequest.addWatchLater(aid: video.aid, csrf: csrf))
+                    later.insert(bvid)
+                    if !laterVideos.contains(where: { $0.bvid == bvid }) {
+                        laterVideos.insert(video, at: 0)
+                    }
+                    show("已添加至稍后再看")
+                } catch {
+                    show(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    func removeLater(_ video: VideoItem) async {
+        if LaunchMode.accountPreview {
+            later.remove(video.bvid)
+            laterVideos.removeAll { $0.bvid == video.bvid }
+            return
+        }
+        guard let csrf = csrf(for: "移出稍后再看") else { return }
+        do {
+            try await client.submit(AccountRequest.removeWatchLater(aid: video.aid, csrf: csrf))
+            later.remove(video.bvid)
+            laterVideos.removeAll { $0.bvid == video.bvid }
+            show("已移出稍后再看")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func clearLater() async {
+        if LaunchMode.accountPreview {
+            later.removeAll()
+            laterVideos.removeAll()
+            return
+        }
+        guard let csrf = csrf(for: "清空稍后再看") else { return }
+        do {
+            try await client.submit(AccountRequest.clearWatchLater(csrf: csrf))
+            later.removeAll()
+            laterVideos.removeAll()
+            show("已清空稍后再看")
+        } catch {
+            show(error.localizedDescription)
+        }
     }
 
     func triple(_ bvid: String) {
-        guard requireLogin("一键三连") else { return }
-        liked.insert(bvid)
-        coined.insert(bvid)
-        favored.insert(bvid)
-        show("三连成功")
+        guard let video = video(bvid), video.aid > 0 else { show("还不能三连"); return }
+        guard let csrf = csrf(for: "一键三连") else { return }
+        Task {
+            do {
+                let data = try await client.submit(AccountRequest.triple(aid: video.aid, csrf: csrf))
+                let likedOK = data["data"]["like"].bool ?? true
+                let coinedOK = data["data"]["coin"].bool ?? true
+                let favOK = data["data"]["fav"].bool ?? true
+                if likedOK { liked.insert(bvid) }
+                if coinedOK { coined.insert(bvid) }
+                if favOK { favored.insert(bvid) }
+                if coinedOK { await refreshCoins() }
+                show("三连成功")
+            } catch {
+                show(error.localizedDescription)
+            }
+        }
+    }
+
+    func loadHistory(reset: Bool) async {
+        if LaunchMode.accountPreview { return }
+        guard loggedIn else { return }
+        if reset {
+            historyCursorMax = 0
+            historyCursorViewAt = 0
+            historyBusiness = ""
+            historyHasMore = true
+        }
+        guard historyHasMore, !loadingHistory else { return }
+        loadingHistory = true
+        defer { loadingHistory = false }
+        do {
+            let page = try await client.history(max: historyCursorMax, viewAt: historyCursorViewAt, business: historyBusiness)
+            if reset {
+                history = page.items
+            } else {
+                let known = Set(history.map(\.bvid))
+                history.append(contentsOf: page.items.filter { !known.contains($0.bvid) })
+            }
+            for item in page.items { store(item) }
+            historyCursorMax = page.max
+            historyCursorViewAt = page.viewAt
+            historyBusiness = page.business
+            historyHasMore = !page.items.isEmpty && page.items.count >= 20 && page.max > 0
+            Task { await ImageStore.shared.prepare(urls: page.items.map(\.cover), maxPixel: 320) }
+        } catch {
+            if reset { show(error.localizedDescription) }
+        }
+    }
+
+    func deleteHistory(_ video: VideoItem) async {
+        if LaunchMode.accountPreview {
+            history.removeAll { $0.bvid == video.bvid }
+            return
+        }
+        guard video.aid > 0, let csrf = csrf(for: "删除记录") else { return }
+        do {
+            try await client.submit(AccountRequest.deleteHistory(aid: video.aid, csrf: csrf))
+            history.removeAll { $0.bvid == video.bvid }
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func clearHistory() async {
+        if LaunchMode.accountPreview {
+            history.removeAll()
+            return
+        }
+        guard let csrf = csrf(for: "清空观看记录") else { return }
+        do {
+            try await client.submit(AccountRequest.clearHistory(csrf: csrf))
+            history.removeAll()
+            historyHasMore = false
+            show("已清空观看记录")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func loadHistoryPause() async {
+        if LaunchMode.accountPreview || !loggedIn { return }
+        historyPaused = (try? await client.historyPaused()) ?? historyPaused
+    }
+
+    func setHistoryPaused(_ paused: Bool) async {
+        if LaunchMode.accountPreview {
+            historyPaused = paused
+            show(paused ? "已暂停记录观看历史" : "已继续记录观看历史")
+            return
+        }
+        guard let csrf = csrf(for: "暂停记录") else { return }
+        do {
+            try await client.submit(AccountRequest.pauseHistory(paused: paused, csrf: csrf))
+            historyPaused = paused
+            show(paused ? "已暂停记录观看历史" : "已继续记录观看历史")
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func loadLater() async {
+        if LaunchMode.accountPreview || !loggedIn { return }
+        guard !loadingLater else { return }
+        loadingLater = true
+        defer { loadingLater = false }
+        do {
+            let page = try await client.watchLater()
+            laterVideos = page
+            later = Set(page.map(\.bvid))
+            for item in page { store(item) }
+            Task { await ImageStore.shared.prepare(urls: page.map(\.cover), maxPixel: 320) }
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func loadFolders(rid: Int?) async {
+        if LaunchMode.accountPreview || !loggedIn { return }
+        guard !loadingFolders, let mid = session?.mid, mid > 0 else { return }
+        loadingFolders = true
+        defer { loadingFolders = false }
+        do {
+            favFolders = try await client.folders(mid: mid, rid: rid)
+        } catch {
+            show(error.localizedDescription)
+        }
+    }
+
+    func loadFolder(_ id: Int, reset: Bool) async {
+        if LaunchMode.accountPreview || !loggedIn { return }
+        if !reset, folderHasMore[id] == false { return }
+        let next = reset ? 1 : (folderPage[id] ?? 0) + 1
+        do {
+            let page = try await client.folderVideos(mediaID: id, page: next)
+            if reset || folderVideos[id] == nil {
+                folderVideos[id] = page.items
+            } else {
+                let known = Set((folderVideos[id] ?? []).map(\.bvid))
+                folderVideos[id, default: []].append(contentsOf: page.items.filter { !known.contains($0.bvid) })
+            }
+            folderPage[id] = next
+            folderHasMore[id] = page.hasMore
+            for item in page.items { store(item) }
+            Task { await ImageStore.shared.prepare(urls: page.items.map(\.cover), maxPixel: 320) }
+        } catch {
+            if reset { show(error.localizedDescription) }
+        }
+    }
+
+    private func csrf(for action: String) -> String? {
+        guard requireLogin(action) else { return nil }
+        guard let csrf = session?.csrf, !csrf.isEmpty else {
+            show("登录状态缺少 bili_jct")
+            return nil
+        }
+        return csrf
+    }
+
+    private func refreshCoins() async -> Bool {
+        guard let header = session?.cookieHeader else { return false }
+        guard let nav = try? await client.nav(cookieHeader: header) else { return false }
+        coinCount = nav.coins
+        if var stored = session {
+            stored.coins = nav.coins
+            session = stored
+            SessionVault.shared.replace(stored)
+        }
+        return true
     }
 
     func apply(_ stored: BiliSession) {

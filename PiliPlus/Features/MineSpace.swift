@@ -136,28 +136,57 @@ struct MineSpace: View {
         }
     }
 
+    private var needsLogin: Bool { !model.loggedIn && !LaunchMode.accountPreview }
+
     @ViewBuilder
     private var cardBody: some View {
-        if card == "我的收藏" {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    ForEach(Menus.favTabs, id: \.self) { tab in
-                        Button(tab) { model.open(.feature("我的收藏")) }
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .selectionCapsule(selected: false)
+        switch card {
+        case "我的收藏":
+            if needsLogin {
+                LoginPrompt(title: "登录后查看收藏夹", systemImage: "star")
+            } else if model.favFolders.isEmpty {
+                ContentUnavailableView("没有收藏夹", systemImage: "star", description: Text("登录后同步收藏夹"))
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(model.favFolders) { folder in
+                        Button { model.open(.folder(folder.id)) } label: {
+                            HStack {
+                                Image(systemName: "folder.fill").foregroundStyle(Palette.bili)
+                                Text(folder.title).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Text("\(folder.count)")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(14)
+                            .contentPlate(radius: 18)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
+        case "稍后再看":
+            accountSlice(model.laterVideos, title: "登录后查看稍后再看", symbol: "clock", feature: "稍后再看")
+        case "观看记录":
+            accountSlice(model.history, title: "登录后查看观看记录", symbol: "clock.arrow.circlepath", feature: "观看记录")
+        default:
+            LoginPrompt(title: "登录后查看\(card)", systemImage: "rectangle.stack")
         }
-        if model.history.isEmpty && model.feed.isEmpty {
-            ContentUnavailableView("登录后查看\(card)", systemImage: "person.crop.circle", description: Text("这里会显示与原版相同的收藏、历史、稍后再看和订阅"))
+    }
+
+    @ViewBuilder
+    private func accountSlice(_ videos: [VideoItem], title: String, symbol: String, feature: String) -> some View {
+        if needsLogin {
+            LoginPrompt(title: title, systemImage: symbol)
+        } else if videos.isEmpty {
+            ContentUnavailableView(title, systemImage: symbol, description: Text("这里还是空的"))
         } else {
-            LazyVStack(spacing: 12) {
-                ForEach(model.history.isEmpty ? Array(model.feed.prefix(6)) : model.history) { video in
+            VStack(spacing: 12) {
+                ForEach(videos.prefix(6)) { video in
                     VideoCard(video: video)
                 }
+                Button("查看全部") { model.open(.feature(feature)) }
+                    .font(.subheadline.weight(.semibold))
             }
         }
     }

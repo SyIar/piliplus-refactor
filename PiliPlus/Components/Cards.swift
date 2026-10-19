@@ -60,7 +60,7 @@ struct VideoCard: View {
         .contextMenu {
             Button("不感兴趣", systemImage: "hand.thumbsdown") { Task { await model.dislike(video) } }
             Button("稍后再看", systemImage: "clock") { model.watchLater(video.bvid) }
-            Button("收藏", systemImage: "star") { model.favorite(video.bvid, folder: model.favFolders[0]) }
+            Button("收藏", systemImage: "star") { model.favoriteQuick(video) }
             Button("分享", systemImage: "square.and.arrow.up") { model.show("已打开分享") }
             Divider()
             Button("查看 UP", systemImage: "person") { model.open(.user(video.ownerMid, video.ownerName)) }

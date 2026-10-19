@@ -7,7 +7,7 @@ struct PiliPlusApp: App {
     init() {
         setbuf(stdout, nil)
         LaunchClock.markMain()
-        if LaunchMode.screen != nil {
+        if LaunchMode.screen != nil, LaunchMode.screen != "favsheet" {
             UIView.setAnimationsEnabled(false)
         }
     }

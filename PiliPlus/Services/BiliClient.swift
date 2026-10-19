@@ -150,6 +150,141 @@ struct BiliClient: Sendable {
         }
     }
 
+    func submit(_ form: SignedForm) async throws -> JSON {
+        guard AccountRequest.isReady(form), let url = form.endpoint else {
+            throw BiliError.message("缺少 csrf")
+        }
+        let data = try await postForm(url, fields: form.fields)
+        try Self.requireOK(data)
+        return data
+    }
+
+    func fetchAccount(_ form: SignedForm) async throws -> JSON {
+        guard form.method == "GET", let url = form.endpoint else { throw BiliError.message("地址无效") }
+        let data = try await getJSON(url)
+        try Self.requireOK(data)
+        return data
+    }
+
+    func history(max: Int, viewAt: Int, business: String) async throws -> (items: [VideoItem], max: Int, viewAt: Int, business: String) {
+        let data = try await fetchAccount(AccountRequest.historyList(max: max, viewAt: viewAt, business: business))
+        let cursor = data["data"]["cursor"]
+        let items = (data["data"]["list"].array ?? []).compactMap(Self.video(fromHistory:))
+        return (
+            items,
+            cursor["max"].int ?? 0,
+            cursor["view_at"].int ?? 0,
+            cursor["business"].string ?? business
+        )
+    }
+
+    func historyPaused() async throws -> Bool {
+        let data = try await fetchAccount(AccountRequest.historyShadow())
+        return (data["data"].int ?? 0) == 1 || data["data"].bool == true
+    }
+
+    func watchLater() async throws -> [VideoItem] {
+        let data = try await fetchAccount(AccountRequest.watchLaterList())
+        return (data["data"]["list"].array ?? []).compactMap { item in
+            Self.video(fromPopular: item) ?? Self.video(fromFavorite: item)
+        }
+    }
+
+    func folders(mid: Int, rid: Int?) async throws -> [FavFolder] {
+        let data = try await fetchAccount(AccountRequest.createdFolders(mid: mid, rid: rid))
+        return (data["data"]["list"].array ?? []).compactMap(Self.folder(from:))
+    }
+
+    func folderVideos(mediaID: Int, page: Int) async throws -> (items: [VideoItem], hasMore: Bool) {
+        let data = try await fetchAccount(AccountRequest.folderContents(mediaID: mediaID, page: page))
+        let medias = data["data"]["medias"].array ?? data["data"]["list"].array ?? []
+        let items = medias.compactMap(Self.video(fromFavorite:))
+        let hasMore = data["data"]["has_more"].bool ?? (items.count >= 20)
+        return (items, hasMore)
+    }
+
+    private static func requireOK(_ data: JSON) throws {
+        let code = data["code"].int ?? -1
+        if code == -101 { throw BiliError.message("登录已失效") }
+        guard code == 0 else { throw BiliError.message(data["message"].string ?? "操作没有成功") }
+    }
+
+    static func folder(from item: JSON) -> FavFolder? {
+        let id = item["id"].int ?? item["media_id"].int ?? 0
+        let title = item["title"].string ?? ""
+        guard id > 0, !title.isEmpty else { return nil }
+        return FavFolder(
+            id: id,
+            title: unescape(title),
+            count: item["media_count"].int ?? item["count"].int ?? 0,
+            favored: (item["fav_state"].int ?? 0) == 1 || item["fav_state"].bool == true
+        )
+    }
+
+    static func video(fromHistory item: JSON) -> VideoItem? {
+        let history = item["history"]
+        let aid = history["oid"].int ?? item["aid"].int ?? 0
+        let bvid = history["bvid"].string ?? item["bvid"].string ?? ""
+        let title = item["title"].string ?? ""
+        guard aid > 0 || !bvid.isEmpty, !title.isEmpty else { return nil }
+        let business = history["business"].string ?? "archive"
+        guard business == "archive" || business == "pgc" || !bvid.isEmpty else { return nil }
+        return VideoItem(
+            bvid: bvid.isEmpty ? "av\(aid)" : bvid,
+            aid: aid,
+            cid: history["cid"].int ?? 0,
+            title: unescape(title),
+            cover: https(item["cover"].string ?? ""),
+            duration: item["duration"].int ?? 0,
+            ownerName: item["author_name"].string ?? "",
+            ownerMid: item["author_mid"].int ?? 0,
+            ownerFace: https(item["author_face"].string ?? ""),
+            desc: item["show_title"].string ?? "",
+            pubdate: item["view_at"].int ?? 0,
+            view: item["stat"]["view"].int ?? 0,
+            danmaku: item["stat"]["danmaku"].int ?? 0,
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: 0,
+            pages: [],
+            tname: item["badge"].string ?? "",
+            progress: item["progress"].int ?? 0,
+            viewAt: item["view_at"].int ?? 0
+        )
+    }
+
+    static func video(fromFavorite item: JSON) -> VideoItem? {
+        let bvid = item["bvid"].string ?? item["bv_id"].string ?? ""
+        let aid = item["id"].int ?? item["aid"].int ?? 0
+        let title = item["title"].string ?? ""
+        guard !title.isEmpty, aid > 0 || !bvid.isEmpty else { return nil }
+        let upper = item["upper"]
+        return VideoItem(
+            bvid: bvid.isEmpty ? "av\(aid)" : bvid,
+            aid: aid,
+            cid: 0,
+            title: unescape(title),
+            cover: https(item["cover"].string ?? item["pic"].string ?? ""),
+            duration: item["duration"].int ?? 0,
+            ownerName: upper["name"].string ?? item["owner"]["name"].string ?? item["author_name"].string ?? "",
+            ownerMid: upper["mid"].int ?? item["owner"]["mid"].int ?? 0,
+            ownerFace: https(upper["face"].string ?? ""),
+            desc: unescape(item["intro"].string ?? ""),
+            pubdate: item["pubtime"].int ?? item["pubdate"].int ?? 0,
+            view: item["cnt_info"]["play"].int ?? item["stat"]["view"].int ?? 0,
+            danmaku: item["cnt_info"]["danmaku"].int ?? item["stat"]["danmaku"].int ?? 0,
+            like: 0,
+            coin: 0,
+            favorite: item["cnt_info"]["collect"].int ?? 0,
+            share: 0,
+            reply: 0,
+            pages: [],
+            tname: ""
+        )
+    }
+
     private func withGuest<T>(_ work: () async throws -> T) async throws -> T {
         await GuestIdentity.prepare(session: session)
         do {

@@ -35,6 +35,9 @@ struct VideoItem: Identifiable, Hashable, Codable {
     var qualities: [String] = []
     var qualityIDs: [Int] = []
     var streamCodec: String = ""
+    /// Playback position in seconds. `-1` means the history item was finished.
+    var progress: Int = 0
+    var viewAt: Int = 0
     var collectionTitle: String = ""
     var collectionIndex: Int = 0
     var collectionCount: Int = 0
@@ -56,6 +59,13 @@ struct CollectionClip: Codable, Hashable, Identifiable {
     var bvid: String
     var title: String
     var index: Int
+}
+
+struct FavFolder: Identifiable, Hashable, Sendable {
+    var id: Int
+    var title: String
+    var count: Int
+    var favored: Bool
 }
 
 struct SeasonItem: Identifiable, Hashable {
