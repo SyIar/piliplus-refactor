@@ -21,6 +21,8 @@ struct SubtitleLine: Sendable, Hashable {
 
 enum BiliHTTP {
     static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1"
+    /// Desktop Safari. Space dynamics uses this, matching upstream `BrowserUa.pc`.
+    static let pcUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Safari/605.1.15"
     static let origin = "https://www.bilibili.com"
 
     static func referer(bvid: String) -> String {
@@ -64,6 +66,8 @@ enum GuestIdentity {
     private static let buvid4Key = "piliplus.buvid4"
     private static let bNutKey = "piliplus.b_nut"
     private static let bLsidKey = "piliplus.b_lsid"
+    private static let ticketKey = "piliplus.bili_ticket"
+    private static let ticketExpiresKey = "piliplus.bili_ticket_expires"
     private static let lock = NSLock()
 
     static func cachedHeader() -> String? {
@@ -73,11 +77,17 @@ enum GuestIdentity {
               let buvid4 = UserDefaults.standard.string(forKey: buvid4Key), !buvid4.isEmpty,
               let bNut = UserDefaults.standard.string(forKey: bNutKey), !bNut.isEmpty else { return nil }
         let lsid = UserDefaults.standard.string(forKey: bLsidKey) ?? makeLsid()
-        return "buvid3=\(buvid3); buvid4=\(buvid4); b_nut=\(bNut); b_lsid=\(lsid)"
+        var header = "buvid3=\(buvid3); buvid4=\(buvid4); b_nut=\(bNut); b_lsid=\(lsid)"
+        if let ticket = UserDefaults.standard.string(forKey: ticketKey), !ticket.isEmpty {
+            let expires = UserDefaults.standard.string(forKey: ticketExpiresKey) ?? ""
+            header += "; bili_ticket=\(ticket)"
+            if !expires.isEmpty { header += "; bili_ticket_expires=\(expires)" }
+        }
+        return header
     }
 
     static func prepare(session: URLSession) async {
-        if cachedHeader() != nil { return }
+        if cachedHeader() != nil, hasTicket { return }
         await refresh(session: session)
     }
 
@@ -97,12 +107,58 @@ enum GuestIdentity {
         if buvid3.isEmpty { buvid3 = makeBuvid3() }
         if buvid4.isEmpty { buvid4 = makeBuvid4() }
         let lsid = makeLsid()
+        let ticket = try? await webTicket(session: session)
         lock.lock()
         UserDefaults.standard.set(buvid3, forKey: buvid3Key)
         UserDefaults.standard.set(buvid4, forKey: buvid4Key)
         UserDefaults.standard.set(bNut, forKey: bNutKey)
         UserDefaults.standard.set(lsid, forKey: bLsidKey)
+        if let ticket {
+            UserDefaults.standard.set(ticket.token, forKey: ticketKey)
+            UserDefaults.standard.set(ticket.expires, forKey: ticketExpiresKey)
+        }
         lock.unlock()
+    }
+
+    private static var hasTicket: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let ticket = UserDefaults.standard.string(forKey: ticketKey) ?? ""
+        return !ticket.isEmpty
+    }
+
+    /// `POST /bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket`.
+    private static func webTicket(session: URLSession) async throws -> (token: String, expires: String) {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let hex = WebTicket.hexSign(timestamp: timestamp)
+        let fields = [
+            "key_id": "ec02",
+            "hexsign": hex,
+            "context[ts]": "\(timestamp)",
+            "csrf": ""
+        ]
+        let query = fields.keys.sorted().map { key in
+            "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(fields[key, default: ""]))"
+        }.joined(separator: "&")
+        guard let url = URL(string: "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket?\(query)") else {
+            throw BiliError.message("地址无效")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Referer")
+        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw BiliError.status(http.statusCode)
+        }
+        let json = JSON(try JSONSerialization.jsonObject(with: data))
+        guard json["code"].int == 0 else { throw BiliError.message(json["message"].string ?? "无法获取 bili_ticket") }
+        let token = json["data"]["ticket"].string ?? ""
+        guard !token.isEmpty else { throw BiliError.message("bili_ticket 为空") }
+        let created = json["data"]["created_at"].int ?? timestamp
+        let ttl = json["data"]["ttl"].int ?? 259_200
+        return (token, String(created + ttl))
     }
 
     private static func spi(session: URLSession) async throws -> (buvid3: String, buvid4: String) {

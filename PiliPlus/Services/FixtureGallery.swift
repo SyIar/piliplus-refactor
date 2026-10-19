@@ -66,7 +66,8 @@ enum FixtureGallery {
                 video: video,
                 like: video.like,
                 comment: video.reply,
-                repost: video.share
+                repost: video.share,
+                mid: video.ownerMid
             )
         }
         return (videos, lives, words, dynamics)

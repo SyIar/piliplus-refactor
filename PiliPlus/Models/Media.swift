@@ -133,6 +133,27 @@ struct DynamicItem: Identifiable, Hashable {
     var like: Int
     var comment: Int
     var repost: Int
+    var mid: Int = 0
+}
+
+struct SpaceProfile: Hashable, Sendable {
+    var mid: Int
+    var name: String
+    var face: String
+    var sign: String
+    var level: Int
+    var following: Int
+    var fans: Int
+    var likes: Int
+    var followed: Bool
+}
+
+struct SpaceSeries: Identifiable, Hashable, Sendable {
+    var id: String
+    var title: String
+    var cover: String
+    var count: Int
+    var kind: String
 }
 
 struct LiveRoom: Identifiable, Hashable {

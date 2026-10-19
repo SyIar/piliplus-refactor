@@ -249,56 +249,6 @@ struct FeaturePageView: View {
     }
 }
 
-struct MemberPage: View {
-    @Environment(AppModel.self) private var model
-    let mid: Int
-    let name: String
-    @State private var tab = "投稿"
-    var body: some View {
-        ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 12) {
-                        Circle().fill(Palette.bili.gradient).frame(width: 64, height: 64)
-                            .overlay(Text(String(name.prefix(1))).font(.title.bold()).foregroundStyle(.white))
-                        VStack(alignment: .leading) {
-                            Text(name).font(.title2.bold())
-                            Text("UID \(mid)").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    HStack {
-                        ForEach(["关注", "私信", "拉黑", "分享"], id: \.self) { item in
-                            Button(item) { model.show(item == "关注" ? (model.requireLogin("关注") ? "已关注 \(name)" : "") : item) }
-                                .font(.caption.weight(.bold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .selectionCapsule(selected: false)
-                        }
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            ForEach(Menus.memberTabs, id: \.self) { item in
-                                Button(item) { tab = item }
-                                    .font(.caption.weight(tab == item ? .bold : .regular))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 7)
-                                    .foregroundStyle(tab == item ? .white : .primary)
-                                    .background { if tab == item { Capsule().fill(Palette.bili) } }
-                            }
-                        }
-                    }
-                    ForEach(model.feed.filter { $0.ownerName == name || tab != "投稿" }.prefix(8)) { video in
-                        VideoCard(video: video)
-                    }
-                }
-                .padding(16)
-        }
-        .scrollEdgeSoft()
-        .navigationTitle(name)
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 struct LiveStage: View {
     @Environment(AppModel.self) private var model
     let roomID: Int

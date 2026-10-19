@@ -319,6 +319,19 @@ final class AppModel {
         }
     }
 
+    func followUser(mid: Int, follow: Bool) async -> Bool {
+        guard mid > 0 else { return false }
+        guard let csrf = csrf(for: follow ? "关注" : "取消关注") else { return false }
+        do {
+            try await client.submit(SpaceRequest.relation(mid: mid, follow: follow, csrf: csrf))
+            show(follow ? "已关注" : "已取消关注")
+            return true
+        } catch {
+            show(error.localizedDescription)
+            return false
+        }
+    }
+
     func sendComment(aid: Int, message: String, root: Int, parent: Int) async -> Bool {
         let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
@@ -556,7 +569,11 @@ final class AppModel {
         let codec = LaunchMode.playbackCodec(preferred: values["首选解码格式"] ?? "av1")
         let audio = values["默认音质"] ?? "高码率"
         let tryLook = flag("免登录1080P") || qn >= 80
+        // The screenshot pass only waits about two minutes. Stop hunting after
+        // one slow streak and open a video so the player can still start.
+        let deadline = Date().addingTimeInterval(45)
         for item in (feed + rank).prefix(6) where !item.bvid.isEmpty {
+            if LaunchMode.screen == "playback", Date() >= deadline { break }
             guard let detail = try? await client.detail(bvid: item.bvid) else { continue }
             let cid = detail.pages.first?.cid ?? detail.cid
             guard cid > 0 else { continue }

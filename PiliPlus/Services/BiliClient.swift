@@ -647,7 +647,14 @@ struct BiliClient: Sendable {
         )
     }
 
-    private func requestQuery(_ path: String, params: [String: String], signed: Bool, referer: String? = nil) async throws -> JSON {
+    private func requestQuery(
+        _ path: String,
+        params: [String: String],
+        signed: Bool,
+        referer: String? = nil,
+        origin: String? = nil,
+        userAgent: String? = nil
+    ) async throws -> JSON {
         let fields = signed ? try await wbiSign(params) : params
         let stripped = CharacterSet(charactersIn: "!'()*")
         let query = fields.keys.sorted().map { key in
@@ -660,7 +667,7 @@ struct BiliClient: Sendable {
         guard let url = URL(string: "https://api.bilibili.com\(path)?\(query)") else {
             throw BiliError.message("地址无效")
         }
-        return try await getJSON(url, referer: referer)
+        return try await getJSON(url, referer: referer, origin: origin, userAgent: userAgent)
     }
 
     func liveRooms() async throws -> [LiveRoom] {
@@ -689,6 +696,327 @@ struct BiliClient: Sendable {
         return (items, next, hasMore && !items.isEmpty)
     }
 
+    func spaceProfile(mid: Int) async throws -> SpaceProfile {
+        let data = try await loadPublic(SpaceRequest.profile(mid: mid), referer: "https://space.bilibili.com/\(mid)")
+        let card = data["data"]["card"]
+        let name = card["name"].string ?? ""
+        guard !name.isEmpty else { throw BiliError.message("空间资料是空的") }
+        return SpaceProfile(
+            mid: card["mid"].int ?? mid,
+            name: name,
+            face: Self.https(card["face"].string ?? ""),
+            sign: card["sign"].string ?? "",
+            level: card["level_info"]["current_level"].int ?? 0,
+            following: card["attention"].int ?? 0,
+            fans: card["fans"].int ?? data["data"]["follower"].int ?? 0,
+            likes: data["data"]["like_num"].int ?? card["likes"].int ?? 0,
+            followed: data["data"]["following"].bool ?? false
+        )
+    }
+
+    func spaceVideos(mid: Int, page: Int, order: String) async throws -> (items: [VideoItem], total: Int, source: String) {
+        let referer = "https://space.bilibili.com/\(mid)/video"
+        let origin = "https://space.bilibili.com"
+        do {
+            var params = SpaceRequest.videos(mid: mid, page: page, order: order).fields
+            params["tid"] = "0"
+            params["keyword"] = ""
+            params["index"] = "0"
+            params["platform"] = "web"
+            params["web_location"] = "1550101"
+            params["order_avoided"] = "true"
+            params["dm_img_list"] = "[]"
+            params["dm_img_str"] = BiliHTTP.randomToken(minCount: 16, maxCount: 64)
+            params["dm_cover_img_str"] = BiliHTTP.randomToken(minCount: 32, maxCount: 128)
+            params["dm_img_inter"] = "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}"
+            let data = try await withGuest {
+                let data = try await requestQuery(
+                    "/x/space/wbi/arc/search",
+                    params: params,
+                    signed: true,
+                    referer: referer,
+                    origin: origin
+                )
+                let code = data["code"].int ?? -1
+                if code == -352 || code == 412 { throw BiliError.risk(code) }
+                return data
+            }
+            try Self.requireOK(data)
+            let page = Self.spaceVideoPage(data)
+            if !page.items.isEmpty { return (page.items, page.total, "wbi") }
+            throw BiliError.message("投稿是空的")
+        } catch {
+            let minimal = [
+                "mid": "\(mid)",
+                "pn": "\(max(1, page))",
+                "ps": "30",
+                "order": order,
+                "tid": "0",
+                "platform": "web",
+                "web_location": "1550101",
+                "order_avoided": "true"
+            ]
+            if let signed = try? await wbiJSON("/x/space/wbi/arc/search", params: minimal, referer: referer, origin: origin) {
+                let parsed = Self.spaceVideoPage(signed)
+                if (signed["code"].int ?? -1) == 0, !parsed.items.isEmpty {
+                    return (parsed.items, parsed.total, "wbi")
+                }
+            }
+            if let fallback = try? await unsignedSpaceVideos(mid: mid, page: page, order: order, referer: referer, origin: origin),
+               !fallback.items.isEmpty {
+                return (fallback.items, fallback.total, "arc")
+            }
+            if page == 1,
+               let collected = try? await seasonArchiveFallback(mid: mid, referer: referer, origin: origin),
+               !collected.items.isEmpty {
+                return (collected.items, collected.total, "season")
+            }
+            throw error
+        }
+    }
+
+    /// First public collection, used when both contribution searches are blocked.
+    private func seasonArchiveFallback(mid: Int, referer: String, origin: String) async throws -> (items: [VideoItem], total: Int) {
+        let rows = try await spaceSeries(mid: mid, page: 1)
+        guard let first = rows.first(where: { $0.kind == "合集" }) else { throw BiliError.message("没有合集") }
+        let raw = first.id.split(separator: "-").dropFirst().joined(separator: "-")
+        guard let seasonID = Int(raw), seasonID > 0 else { throw BiliError.message("合集编号无效") }
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                "/x/polymer/web-space/seasons_archives_list",
+                params: [
+                    "mid": "\(mid)",
+                    "season_id": "\(seasonID)",
+                    "sort_reverse": "false",
+                    "page_num": "1",
+                    "page_size": "30"
+                ],
+                signed: false,
+                referer: referer,
+                origin: origin
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        let list = data["data"]["archives"].array ?? data["data"]["list"].array ?? []
+        let items = list.compactMap { item -> VideoItem? in
+            if let video = Self.video(fromSpace: item) { return video }
+            if let video = Self.video(fromSpace: item["archive"]) { return video }
+            if var video = Self.video(fromPopular: item) {
+                if video.cover.isEmpty { video.cover = Self.https(item["cover"].string ?? "") }
+                return video
+            }
+            return Self.video(fromPopular: item["archive"])
+        }
+        guard !items.isEmpty else { throw BiliError.message("合集里没有视频") }
+        let total = data["data"]["page"]["total"].int ?? data["data"]["page"]["count"].int ?? items.count
+        return (items, total)
+    }
+
+    /// Older contribution search. Used only after the WBI route is rejected.
+    private func unsignedSpaceVideos(
+        mid: Int,
+        page: Int,
+        order: String,
+        referer: String,
+        origin: String
+    ) async throws -> (items: [VideoItem], total: Int) {
+        let params = [
+            "mid": "\(mid)",
+            "pn": "\(max(1, page))",
+            "ps": "30",
+            "tid": "0",
+            "order": order,
+            "index": "1",
+            "order_avoided": "true",
+            "platform": "web"
+        ]
+        let data = try await withGuest {
+            let data = try await requestQuery(
+                "/x/space/arc/search",
+                params: params,
+                signed: false,
+                referer: referer,
+                origin: origin
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        return Self.spaceVideoPage(data)
+    }
+
+    private static func spaceVideoPage(_ data: JSON) -> (items: [VideoItem], total: Int) {
+        let list = data["data"]["list"]["vlist"].array ?? []
+        let total = data["data"]["page"]["count"].int ?? list.count
+        return (list.compactMap(video(fromSpace:)), total)
+    }
+
+    /// Upstream `Constants.dynFeatures` for `/x/polymer/web-dynamic/v1/feed/space`.
+    private static let dynFeatures = "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,onlyfansAssetsV2,forwardListHidden,ugcDelete,onlyfansQaCard,commentsNewVersion,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardVote,eva3CardUser"
+
+    func spaceDynamics(mid: Int, offset: String) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool, source: String, guestRefused: Bool) {
+        await refreshGuest()
+        let params = [
+            "offset": offset,
+            "host_mid": "\(mid)",
+            "timezone_offset": "-480",
+            "features": Self.dynFeatures,
+            "platform": "web",
+            "web_location": "333.1387",
+            "dm_img_list": "[]",
+            "dm_img_str": BiliHTTP.randomToken(minCount: 16, maxCount: 64),
+            "dm_cover_img_str": BiliHTTP.randomToken(minCount: 32, maxCount: 128),
+            "dm_img_inter": "{\"ds\":[],\"wh\":[0,0,0],\"of\":[0,0,0]}",
+            "x-bili-device-req-json": "{\"platform\":\"web\",\"device\":\"pc\",\"spmid\":\"333.1387\"}"
+        ]
+        let referer = "https://space.bilibili.com/\(mid)/dynamic"
+        let origin = "https://space.bilibili.com"
+        do {
+            let data = try await wbiJSON(
+                "/x/polymer/web-dynamic/v1/feed/space",
+                params: params,
+                referer: referer,
+                origin: origin,
+                userAgent: BiliHTTP.pcUserAgent
+            )
+            try Self.requireOK(data)
+            let page = Self.polymerDynamics(data)
+            return (page.items, page.offset, page.hasMore, "wbi", false)
+        } catch let error as BiliError where Self.refusesGuests(error) {
+            if !Self.hasLogin {
+                return ([], "", false, "wbi", true)
+            }
+            throw error
+        }
+    }
+
+    private static var hasLogin: Bool {
+        let csrf = SessionVault.shared.current()?.csrf ?? ""
+        return !csrf.isEmpty
+    }
+
+    private static func refusesGuests(_ error: BiliError) -> Bool {
+        switch error {
+        case .status(412), .status(-101), .risk:
+            return true
+        case .status:
+            return false
+        case .message(let text):
+            return text.contains("登录") || text.contains("412") || text.contains("-352")
+        }
+    }
+
+    private func wbiJSON(
+        _ path: String,
+        params: [String: String],
+        referer: String,
+        origin: String,
+        userAgent: String? = nil
+    ) async throws -> JSON {
+        try await withGuest {
+            let data = try await requestQuery(
+                path,
+                params: params,
+                signed: true,
+                referer: referer,
+                origin: origin,
+                userAgent: userAgent
+            )
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 || code == -101 { throw BiliError.risk(code) }
+            return data
+        }
+    }
+
+    private static func polymerDynamics(_ data: JSON) -> (items: [DynamicItem], offset: String, hasMore: Bool) {
+        let items = (data["data"]["items"].array ?? []).compactMap(dynamic(fromPolymer:))
+        let next = data["data"]["offset"].string ?? ""
+        let hasMore = data["data"]["has_more"].bool ?? !next.isEmpty
+        return (items, next, hasMore && !items.isEmpty)
+    }
+
+    /// `dynamic_svr/space_history` still returns cards when the polymer route answers 412.
+    private func legacySpaceDynamics(
+        mid: Int,
+        offset: String,
+        referer: String,
+        origin: String
+    ) async throws -> (items: [DynamicItem], offset: String, hasMore: Bool) {
+        let cursor = offset.isEmpty ? "0" : offset
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?")
+        let encoded = cursor.addingPercentEncoding(withAllowedCharacters: allowed) ?? cursor
+        guard let url = URL(string: "https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history?host_uid=\(mid)&offset_dynamic_id=\(encoded)&need_top=1&platform=web") else {
+            throw BiliError.message("地址无效")
+        }
+        let data = try await withGuest {
+            let data = try await getJSON(url, referer: referer, origin: origin)
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        let cards = data["data"]["cards"].array ?? []
+        let items = cards.compactMap(Self.dynamic(fromLegacy:))
+        let nextValue = data["data"]["next_offset"]
+        let next = nextValue.string ?? (nextValue.int.map(String.init) ?? "")
+        let hasMore = (data["data"]["has_more"].int ?? 0) == 1 || data["data"]["has_more"].bool == true
+        return (items, next == "0" ? "" : next, hasMore && !items.isEmpty)
+    }
+
+    func spaceFolders(mid: Int) async throws -> (folders: [FavFolder], raw: Int) {
+        let data = try await loadPublic(SpaceRequest.folders(mid: mid), referer: "https://space.bilibili.com/\(mid)", origin: "https://space.bilibili.com")
+        let list = data["data"]["list"].array ?? data["data"].array ?? []
+        let folders = list.compactMap { item -> FavFolder? in
+            let attr = item["attr"].int ?? 0
+            guard attr & 1 == 0 else { return nil }
+            return Self.folder(from: item)
+        }
+        return (folders, list.count)
+    }
+
+    func spaceBangumi(mid: Int, page: Int) async throws -> [SeasonItem] {
+        let data = try await loadPublic(
+            SpaceRequest.bangumi(mid: mid, page: page),
+            referer: "https://space.bilibili.com/\(mid)/bangumi",
+            origin: "https://space.bilibili.com"
+        )
+        return (data["data"]["list"].array ?? []).compactMap(Self.season(fromFollow:))
+    }
+
+    func spaceSeries(mid: Int, page: Int) async throws -> [SpaceSeries] {
+        let data = try await loadPublic(
+            SpaceRequest.series(mid: mid, page: page),
+            referer: "https://space.bilibili.com/\(mid)",
+            origin: "https://space.bilibili.com"
+        )
+        let lists = data["data"]["items_lists"]
+        var rows: [SpaceSeries] = []
+        for item in lists["seasons_list"].array ?? [] {
+            if let row = Self.series(from: item, kind: "合集", idKey: "season_id") { rows.append(row) }
+        }
+        for item in lists["series_list"].array ?? [] {
+            if let row = Self.series(from: item, kind: "系列", idKey: "series_id") { rows.append(row) }
+        }
+        return rows
+    }
+
+    private func loadPublic(_ form: SignedForm, referer: String, origin: String? = nil) async throws -> JSON {
+        guard let url = form.endpoint else { throw BiliError.message("地址无效") }
+        let data = try await withGuest {
+            let data = try await getJSON(url, referer: referer, origin: origin)
+            let code = data["code"].int ?? -1
+            if code == -352 || code == 412 { throw BiliError.risk(code) }
+            return data
+        }
+        try Self.requireOK(data)
+        return data
+    }
+
     static func dynamics(from videos: [VideoItem]) -> [DynamicItem] {
         videos.enumerated().map { index, video in
             DynamicItem(
@@ -701,7 +1029,8 @@ struct BiliClient: Sendable {
                 video: video,
                 like: video.like,
                 comment: video.reply,
-                repost: video.share
+                repost: video.share,
+                mid: video.ownerMid
             )
         }
     }
@@ -845,8 +1174,24 @@ struct BiliClient: Sendable {
         return try await getJSON(url, includeSession: includeSession, cookieOverride: cookieOverride)
     }
 
-    private func getJSON(_ url: URL, includeSession: Bool = true, cookieOverride: String? = nil, referer: String? = nil) async throws -> JSON {
-        try await send(url, method: "GET", body: nil, includeSession: includeSession, cookieOverride: cookieOverride, referer: referer)
+    private func getJSON(
+        _ url: URL,
+        includeSession: Bool = true,
+        cookieOverride: String? = nil,
+        referer: String? = nil,
+        origin: String? = nil,
+        userAgent: String? = nil
+    ) async throws -> JSON {
+        try await send(
+            url,
+            method: "GET",
+            body: nil,
+            includeSession: includeSession,
+            cookieOverride: cookieOverride,
+            referer: referer,
+            origin: origin,
+            userAgent: userAgent
+        )
     }
 
     private func getData(_ url: URL, includeSession: Bool) async throws -> Data {
@@ -899,7 +1244,9 @@ struct BiliClient: Sendable {
         contentType: String? = nil,
         includeSession: Bool,
         cookieOverride: String?,
-        referer: String? = nil
+        referer: String? = nil,
+        origin: String? = nil,
+        userAgent: String? = nil
     ) async throws -> JSON {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -909,6 +1256,12 @@ struct BiliClient: Sendable {
         }
         if let referer {
             request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        if let origin {
+            request.setValue(origin, forHTTPHeaderField: "Origin")
+        }
+        if let userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
         applyCommonHeaders(&request, includeSession: includeSession, cookieOverride: cookieOverride)
         let (data, response) = try await session.data(for: request)
@@ -920,8 +1273,12 @@ struct BiliClient: Sendable {
     }
 
     private func applyCommonHeaders(_ request: inout URLRequest, includeSession: Bool, cookieOverride: String?) {
-        request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
+        if request.value(forHTTPHeaderField: "User-Agent") == nil {
+            request.setValue(BiliHTTP.userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        if request.value(forHTTPHeaderField: "Origin") == nil {
+            request.setValue(BiliHTTP.origin, forHTTPHeaderField: "Origin")
+        }
         request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
         request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
         if request.value(forHTTPHeaderField: "Referer") == nil {
@@ -1031,6 +1388,63 @@ struct BiliClient: Sendable {
 
     static func video(fromRelated item: JSON) -> VideoItem? {
         video(fromPopular: item)
+    }
+
+    static func video(fromSpace item: JSON) -> VideoItem? {
+        let bvid = item["bvid"].string ?? ""
+        let title = unescape(item["title"].string ?? "")
+        guard !bvid.isEmpty, !title.isEmpty else { return nil }
+        return VideoItem(
+            bvid: bvid,
+            aid: item["aid"].int ?? 0,
+            cid: 0,
+            title: title,
+            cover: https(item["pic"].string ?? ""),
+            duration: parseClock(item["length"].string ?? ""),
+            ownerName: item["author"].string ?? "",
+            ownerMid: item["mid"].int ?? 0,
+            ownerFace: "",
+            desc: unescape(item["description"].string ?? ""),
+            pubdate: item["created"].int ?? 0,
+            view: flexibleCount(item["play"]),
+            danmaku: flexibleCount(item["video_review"]),
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: item["comment"].int ?? 0,
+            pages: [],
+            tname: ""
+        )
+    }
+
+    static func season(fromFollow item: JSON) -> SeasonItem? {
+        let id = item["season_id"].int ?? 0
+        let title = plain(item["title"].string ?? "")
+        guard id > 0, !title.isEmpty else { return nil }
+        let episode = item["new_ep"]
+        return SeasonItem(
+            seasonID: id,
+            title: title,
+            cover: https(item["cover"].string ?? ""),
+            badge: item["season_type_name"].string ?? "",
+            subtitle: plain(episode["index_show"].string ?? episode["display"].string ?? ""),
+            view: item["stat"]["follow"].int ?? 0
+        )
+    }
+
+    static func series(from item: JSON, kind: String, idKey: String) -> SpaceSeries? {
+        let meta = item["meta"]
+        let id = meta[idKey].int ?? item[idKey].int ?? 0
+        let title = meta["name"].string ?? item["name"].string ?? ""
+        guard id > 0, !title.isEmpty else { return nil }
+        return SpaceSeries(
+            id: "\(kind)-\(id)",
+            title: unescape(title),
+            cover: https(meta["cover"].string ?? item["cover"].string ?? ""),
+            count: meta["total"].int ?? item["total"].int ?? 0,
+            kind: kind
+        )
     }
 
     static func video(fromSearch item: JSON) -> VideoItem? {
@@ -1172,8 +1586,79 @@ struct BiliClient: Sendable {
             video: clip,
             like: stat["like"]["count"].int ?? 0,
             comment: stat["comment"]["count"].int ?? 0,
-            repost: stat["forward"]["count"].int ?? 0
+            repost: stat["forward"]["count"].int ?? 0,
+            mid: author["mid"].int ?? 0
         )
+    }
+
+    static func dynamic(fromLegacy item: JSON) -> DynamicItem? {
+        let desc = item["desc"]
+        let id = desc["dynamic_id_str"].string ?? String(desc["dynamic_id"].int ?? 0)
+        guard !id.isEmpty, id != "0" else { return nil }
+        let cardText = item["card"].string ?? ""
+        let card: JSON
+        if let data = cardText.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) {
+            card = JSON(object)
+        } else {
+            card = JSON(NSNull())
+        }
+        let profile = desc["user_profile"]["info"]
+        let text = unescape(
+            card["dynamic"].string
+                ?? card["desc"].string
+                ?? card["title"].string
+                ?? card["item"]["description"].string
+                ?? card["item"]["content"].string
+                ?? ""
+        )
+        guard !text.isEmpty else { return nil }
+        let stamp = desc["timestamp"].int ?? 0
+        let bvid = card["bvid"].string ?? desc["bvid"].string ?? ""
+        let videoTitle = unescape(card["title"].string ?? "")
+        let clip: VideoItem? = bvid.isEmpty || videoTitle.isEmpty ? nil : VideoItem(
+            bvid: bvid,
+            aid: card["aid"].int ?? desc["rid"].int ?? 0,
+            cid: 0,
+            title: videoTitle,
+            cover: https(card["pic"].string ?? ""),
+            duration: card["duration"].int ?? 0,
+            ownerName: profile["uname"].string ?? "",
+            ownerMid: profile["uid"].int ?? desc["uid"].int ?? 0,
+            ownerFace: https(profile["face"].string ?? ""),
+            desc: "",
+            pubdate: stamp,
+            view: card["stat"]["view"].int ?? 0,
+            danmaku: card["stat"]["danmaku"].int ?? 0,
+            like: 0,
+            coin: 0,
+            favorite: 0,
+            share: 0,
+            reply: 0,
+            pages: [],
+            tname: ""
+        )
+        return DynamicItem(
+            id: id,
+            name: profile["uname"].string ?? "用户",
+            face: https(profile["face"].string ?? ""),
+            text: text,
+            time: stamp > 0 ? Self.shortStamp(stamp) : "",
+            kind: clip == nil ? "动态" : "投稿",
+            video: clip,
+            like: desc["like"].int ?? 0,
+            comment: item["desc"]["comment"].int ?? 0,
+            repost: desc["repost"].int ?? 0,
+            mid: profile["uid"].int ?? desc["uid"].int ?? 0
+        )
+    }
+
+    private static func shortStamp(_ stamp: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(stamp))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M-d HH:mm"
+        return formatter.string(from: date)
     }
 
     private static func archiveJSON(in item: JSON) -> JSON {

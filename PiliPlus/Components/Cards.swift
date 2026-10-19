@@ -6,56 +6,60 @@ struct VideoCard: View {
     var compact = false
 
     var body: some View {
-        Button {
-            model.store(video)
-            model.open(.video(video.bvid))
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                RemoteImage(url: video.cover, ratio: 16.0 / 9.0)
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: compact ? 16 : 22, style: .continuous))
-                    .overlay(alignment: .bottomTrailing) {
-                        DurationBadge(seconds: video.duration).padding(8)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        if video.pageCount > 1 {
-                            Text("\(video.pageCount)P")
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(.black.opacity(0.45), in: Capsule())
-                                .foregroundStyle(.white)
-                                .padding(8)
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                model.store(video)
+                model.open(.video(video.bvid))
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    RemoteImage(url: video.cover, ratio: 16.0 / 9.0)
+                        .frame(maxWidth: .infinity)
+                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: compact ? 16 : 22, style: .continuous))
+                        .overlay(alignment: .bottomTrailing) {
+                            DurationBadge(seconds: video.duration).padding(8)
                         }
-                    }
-                Text(video.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(2, reservesSpace: true)
-                    .frame(maxWidth: .infinity, minHeight: 0, alignment: .topLeading)
-                Spacer(minLength: 0)
-                HStack(spacing: 8) {
+                        .overlay(alignment: .topLeading) {
+                            if video.pageCount > 1 {
+                                Text("\(video.pageCount)P")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(.black.opacity(0.45), in: Capsule())
+                                    .foregroundStyle(.white)
+                                    .padding(8)
+                            }
+                        }
+                    Text(video.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2, reservesSpace: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                Button {
+                    guard video.ownerMid > 0 else { return }
+                    model.open(.user(video.ownerMid, video.ownerName))
+                } label: {
                     Text(video.ownerName)
                         .lineLimit(1)
-                        .layoutPriority(-1)
-                    Spacer(minLength: 0)
-                    Label(CountText.format(video.view), systemImage: "play.fill")
-                        .lineLimit(1)
-                        .fixedSize()
-                    Label(CountText.format(video.danmaku), systemImage: "text.bubble.fill")
-                        .lineLimit(1)
-                        .fixedSize()
+                        .foregroundStyle(.secondary)
                 }
-                .lineLimit(1)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
+                .layoutPriority(-1)
+                Spacer(minLength: 0)
+                if video.view > 0 { cardCount("play.fill", CountText.format(video.view)) }
+                if video.danmaku > 0 { cardCount("text.bubble.fill", CountText.format(video.danmaku)) }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .lineLimit(1)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contextMenu {
             Button("不感兴趣", systemImage: "hand.thumbsdown") { Task { await model.dislike(video) } }
@@ -65,6 +69,14 @@ struct VideoCard: View {
             Divider()
             Button("查看 UP", systemImage: "person") { model.open(.user(video.ownerMid, video.ownerName)) }
         }
+    }
+
+    private func cardCount(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: symbol)
+            Text(text).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
