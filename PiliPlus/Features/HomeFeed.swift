@@ -47,11 +47,7 @@ private struct HomeToolbar: ToolbarContent {
             Button {
                 if model.loggedIn { model.open(.feature("编辑资料")) } else { model.open(.login) }
             } label: {
-                Text(String(model.userName.prefix(1)))
-                    .font(.caption.weight(.bold))
-                    .frame(width: 28, height: 28)
-                    .background(Palette.bili.gradient, in: Circle())
-                    .foregroundStyle(.white)
+                ProfileMark(name: model.userName, face: model.userFace, size: 28)
             }
             .accessibilityLabel("个人资料")
         }

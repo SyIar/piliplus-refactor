@@ -45,11 +45,7 @@ struct RootShell: View {
             }
         }
         .tabBarMinimizeBehavior(model.flag("首页底栏收起") ? .onScrollDown : .never)
-        .tabViewBottomAccessory {
-            if let video = model.nowPlaying {
-                NowPlayingPill(video: video)
-            }
-        }
+        .modifier(NowPlayingAccessory(video: model.nowPlaying))
         .overlay(alignment: .top) {
             if let toast = model.toast {
                 ToastBanner(text: toast)
@@ -68,10 +64,12 @@ struct RootShell: View {
             model.applyFixtures()
             if LaunchMode.screen == "search" { model.open(.search) }
             if LaunchMode.screen == "settings" { model.open(.settings) }
+            if LaunchMode.screen == "login" { model.open(.login) }
             if LaunchMode.screen == "video", let first = model.feed.first { model.open(.video(first.bvid)) }
             return
         }
         if model.feed.isEmpty { await model.refreshHome() }
+        await model.refreshProfile()
     }
 
     @ViewBuilder
@@ -86,6 +84,23 @@ struct RootShell: View {
         case .login: LoginGate()
         case .feature(let title): FeaturePageView(title: title)
         case .user(let mid, let name): MemberPage(mid: mid, name: name)
+        }
+    }
+}
+
+/// An empty `tabViewBottomAccessory` still draws a glass capsule and lets lists
+/// scroll underneath the tab bar. Install the accessory only while something is playing.
+private struct NowPlayingAccessory: ViewModifier {
+    let video: VideoItem?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let video {
+            content.tabViewBottomAccessory {
+                NowPlayingPill(video: video)
+            }
+        } else {
+            content
         }
     }
 }

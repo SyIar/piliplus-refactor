@@ -62,6 +62,8 @@ final class AppModel {
     var later: Set<String> = []
     var loggedIn = false
     var userName = "点击登录"
+    var userFace = ""
+    var session: BiliSession?
     var anonymity = false
     var theme: ThemeChoice = .system
     var toggles: [String: Bool] = [:]
@@ -93,6 +95,16 @@ final class AppModel {
     init() {
         load()
         if toggles.isEmpty { seedDefaults() }
+        if let stored = KeychainStore.load() {
+            SessionVault.shared.install(stored)
+            apply(stored)
+        } else if loggedIn {
+            // Older builds stored a local name without a cookie.
+            loggedIn = false
+            userName = "点击登录"
+            clearProfile()
+            save()
+        }
         switch LaunchMode.screen {
         case "dynamics": selectedTab = 1
         case "mine": selectedTab = 2
@@ -317,26 +329,115 @@ final class AppModel {
         show("三连成功")
     }
 
-    func login(as name: String) {
-        loggedIn = true
-        userName = name
-        level = 4
-        coinCount = 286
-        exp = 8420
-        nextExp = 10800
-        following = 128
-        followers = 36
-        dynamicCount = 12
-        show("已登录 \(name)")
-        save()
+    func apply(_ stored: BiliSession) {
+        session = stored
+        loggedIn = stored.hasLoginCookie
+        userName = stored.name.isEmpty ? "已登录" : stored.name
+        userFace = stored.face
+        level = stored.level
+        coinCount = stored.coins
+        exp = stored.exp
+        nextExp = max(stored.nextExp, 1)
+        following = stored.following
+        followers = stored.followers
+        dynamicCount = stored.dynamicCount
     }
 
-    func logout() {
+    func clearProfile() {
+        session = nil
+        userFace = ""
+        level = 0
+        coinCount = 0
+        exp = 0
+        nextExp = 200
+        following = 0
+        followers = 0
+        dynamicCount = 0
+    }
+
+    /// Saves cookies, then replaces the placeholder profile with `nav` and `nav/stat`.
+    func adopt(_ incoming: BiliSession) async {
+        var stored = incoming
+        let header = stored.cookieHeader
+        do {
+            let nav = try await client.nav(cookieHeader: header)
+            guard nav.isLogin else {
+                show("登录未通过，请检查 SESSDATA 和 bili_jct")
+                return
+            }
+            stored.mid = nav.mid == 0 ? stored.mid : nav.mid
+            stored.name = nav.name
+            stored.face = nav.face
+            stored.level = nav.level
+            stored.exp = nav.exp
+            stored.nextExp = nav.nextExp
+            stored.coins = nav.coins
+            SessionVault.shared.install(stored)
+            if let stat = try? await client.navStat() {
+                stored.following = stat.following
+                stored.followers = stat.followers
+                stored.dynamicCount = stat.dynamicCount
+            }
+            SessionVault.shared.replace(stored)
+            apply(stored)
+            save()
+            show("已登录 \(userName)")
+        } catch {
+            SessionVault.shared.replace(stored)
+            apply(stored)
+            save()
+            show("已保存登录，资料稍后同步")
+        }
+    }
+
+    func refreshProfile() async {
+        guard loggedIn else {
+            await client.refreshMixinKey()
+            return
+        }
+        guard let header = session?.cookieHeader else { return }
+        do {
+            let nav = try await client.nav(cookieHeader: header)
+            guard nav.isLogin else {
+                logout(remote: false, announce: false)
+                show("登录已失效")
+                return
+            }
+            var stored = session ?? BiliSession.make(cookies: [:], mid: nav.mid)
+            stored.mid = nav.mid
+            stored.name = nav.name
+            stored.face = nav.face
+            stored.level = nav.level
+            stored.exp = nav.exp
+            stored.nextExp = nav.nextExp
+            stored.coins = nav.coins
+            SessionVault.shared.install(stored)
+            if let stat = try? await client.navStat() {
+                stored.following = stat.following
+                stored.followers = stat.followers
+                stored.dynamicCount = stat.dynamicCount
+            }
+            SessionVault.shared.replace(stored)
+            apply(stored)
+            save()
+        } catch {
+            // Keep the keychain profile when the network is down.
+        }
+    }
+
+    func logout(remote: Bool = true, announce: Bool = true) {
+        let csrf = session?.csrf ?? ""
+        let header = session?.cookieHeader ?? ""
+        SessionVault.shared.replace(nil)
+        clearProfile()
         loggedIn = false
         userName = "点击登录"
         anonymity = false
-        show("已退出登录")
         save()
+        if announce { show("已退出登录") }
+        if remote, !csrf.isEmpty {
+            Task { await client.logout(csrf: csrf, cookieHeader: header) }
+        }
     }
 
     private let defaultsKey = "piliplus.settings.v1"

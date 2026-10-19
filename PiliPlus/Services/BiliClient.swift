@@ -135,13 +135,200 @@ struct BiliClient: Sendable {
         }
     }
 
-    private func getJSON(_ string: String) async throws -> JSON {
-        guard let url = URL(string: string) else { throw BiliError.message("地址无效") }
-        return try await getJSON(url)
+    func nav(cookieHeader: String? = nil) async throws -> NavSnapshot {
+        let data = try await getJSON(
+            "https://api.bilibili.com/x/web-interface/nav",
+            includeSession: cookieHeader == nil,
+            cookieOverride: cookieHeader
+        )
+        let payload = data["data"]
+        if let mixin = mixinKey(from: payload) {
+            WBICache.save(mixin)
+        }
+        let code = data["code"].int ?? -1
+        let loggedIn = payload["isLogin"].bool == true && code == 0
+        if !loggedIn && code != 0 && code != -101 {
+            throw BiliError.message(data["message"].string ?? "无法读取账号")
+        }
+        let level = payload["level_info"]
+        return NavSnapshot(
+            isLogin: loggedIn,
+            mid: payload["mid"].int ?? 0,
+            name: payload["uname"].string ?? "",
+            face: Self.https(payload["face"].string ?? ""),
+            level: level["current_level"].int ?? 0,
+            exp: level["current_exp"].int ?? 0,
+            nextExp: level["next_exp"].int ?? 0,
+            coins: payload["money"].int ?? 0,
+            mixinKey: mixinKey(from: payload) ?? ""
+        )
     }
 
-    private func getJSON(_ url: URL) async throws -> JSON {
-        let (data, response) = try await session.data(from: url)
+    func navStat() async throws -> (following: Int, followers: Int, dynamicCount: Int) {
+        let data = try await getJSON("https://api.bilibili.com/x/web-interface/nav/stat")
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "无法读取账号数据")
+        }
+        let payload = data["data"]
+        return (
+            payload["following"].int ?? 0,
+            payload["follower"].int ?? 0,
+            payload["dynamic_count"].int ?? 0
+        )
+    }
+
+    /// TV/HD QR used by upstream `LoginHttp.getHDcode`. Does not send the current session cookie.
+    func requestQRCode() async throws -> (url: String, authCode: String) {
+        let signed = AppSign.sign([
+            "local_id": "0",
+            "platform": "android",
+            "mobi_app": "android_hd"
+        ])
+        let data = try await postQuery(
+            "https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code",
+            fields: signed,
+            includeSession: false
+        )
+        guard data["code"].int == 0 else {
+            throw BiliError.message(data["message"].string ?? "无法获取二维码")
+        }
+        let url = data["data"]["url"].string ?? ""
+        let authCode = data["data"]["auth_code"].string ?? ""
+        guard !url.isEmpty, !authCode.isEmpty else { throw BiliError.message("二维码数据为空") }
+        return (url, authCode)
+    }
+
+    func pollQR(authCode: String) async throws -> QRPoll {
+        let signed = AppSign.sign([
+            "auth_code": authCode,
+            "local_id": "0"
+        ])
+        let data = try await postQuery(
+            "https://passport.bilibili.com/x/passport-tv-login/qrcode/poll",
+            fields: signed,
+            includeSession: false
+        )
+        let code = data["code"].int ?? -1
+        let message = data["message"].string ?? ""
+        if code == 86038 { return .expired(message.isEmpty ? "二维码已过期" : message) }
+        if code != 0 { return .pending(message.isEmpty ? "等待扫码" : message) }
+        let payload = data["data"]
+        let cookies = cookies(from: payload["cookie_info"]["cookies"])
+        guard cookies["SESSDATA"] != nil else { throw BiliError.message("扫码结果没有 SESSDATA") }
+        let session = BiliSession.make(
+            cookies: cookies,
+            accessToken: payload["access_token"].string ?? payload["token_info"]["access_token"].string,
+            refreshToken: payload["refresh_token"].string ?? payload["token_info"]["refresh_token"].string,
+            mid: payload["mid"].int ?? Int(cookies["DedeUserID"] ?? "") ?? 0
+        )
+        return .confirmed(session)
+    }
+
+    func logout(csrf: String, cookieHeader: String) async {
+        guard !csrf.isEmpty else { return }
+        guard let url = URL(string: "https://passport.bilibili.com/login/exit/v2") else { return }
+        _ = try? await postForm(
+            url,
+            fields: ["biliCSRF": csrf],
+            cookieOverride: cookieHeader,
+            includeCSRF: false
+        )
+    }
+
+    /// Sorted, WBI-signed query. Mixin key comes from today's `nav` response.
+    func wbiSign(_ params: [String: String]) async throws -> [String: String] {
+        let mixin = try await mixinKey()
+        guard !mixin.isEmpty else { throw BiliError.message("缺少 WBI 签名密钥") }
+        return WBISigner.sign(params, mixinKey: mixin)
+    }
+
+    func refreshMixinKey() async {
+        _ = try? await mixinKey()
+    }
+
+    private func mixinKey() async throws -> String {
+        if let cached = WBICache.load() { return cached }
+        _ = try await nav()
+        return WBICache.load() ?? ""
+    }
+
+    private func mixinKey(from payload: JSON) -> String? {
+        let img = payload["wbi_img"]["img_url"].string ?? ""
+        let sub = payload["wbi_img"]["sub_url"].string ?? ""
+        guard !img.isEmpty, !sub.isEmpty else { return nil }
+        let key = WBISigner.mixinKey(imgURL: img, subURL: sub)
+        return key.isEmpty ? nil : key
+    }
+
+    private func cookies(from list: JSON) -> [String: String] {
+        var cookies: [String: String] = [:]
+        for item in list.array ?? [] {
+            guard let name = item["name"].string, let value = item["value"].string, !name.isEmpty else { continue }
+            cookies[name] = value
+        }
+        return cookies
+    }
+
+    private func getJSON(_ string: String, includeSession: Bool = true, cookieOverride: String? = nil) async throws -> JSON {
+        guard let url = URL(string: string) else { throw BiliError.message("地址无效") }
+        return try await getJSON(url, includeSession: includeSession, cookieOverride: cookieOverride)
+    }
+
+    private func getJSON(_ url: URL, includeSession: Bool = true, cookieOverride: String? = nil) async throws -> JSON {
+        try await send(url, method: "GET", body: nil, includeSession: includeSession, cookieOverride: cookieOverride)
+    }
+
+    private func postQuery(_ string: String, fields: [String: String], includeSession: Bool) async throws -> JSON {
+        let query = fields.keys.sorted().map { key in
+            "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(fields[key, default: ""]))"
+        }.joined(separator: "&")
+        guard let url = URL(string: string + "?" + query) else { throw BiliError.message("地址无效") }
+        return try await send(url, method: "POST", body: nil, includeSession: includeSession, cookieOverride: nil)
+    }
+
+    /// Form POST. Adds `csrf` from the current session unless a cookie override is used.
+    func postForm(
+        _ url: URL,
+        fields: [String: String],
+        cookieOverride: String? = nil,
+        includeCSRF: Bool = true
+    ) async throws -> JSON {
+        var fields = fields
+        if includeCSRF, fields["csrf"] == nil, let csrf = SessionVault.shared.current()?.csrf, !csrf.isEmpty {
+            fields["csrf"] = csrf
+        }
+        let body = fields.keys.sorted().map { key in
+            "\(PercentEncoding.encodeURIComponent(key))=\(PercentEncoding.encodeURIComponent(fields[key, default: ""]))"
+        }.joined(separator: "&")
+        return try await send(
+            url,
+            method: "POST",
+            body: Data(body.utf8),
+            contentType: "application/x-www-form-urlencoded",
+            includeSession: cookieOverride == nil,
+            cookieOverride: cookieOverride
+        )
+    }
+
+    private func send(
+        _ url: URL,
+        method: String,
+        body: Data?,
+        contentType: String? = nil,
+        includeSession: Bool,
+        cookieOverride: String?
+    ) async throws -> JSON {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        if let contentType {
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        }
+        let header = cookieOverride ?? (includeSession ? SessionVault.shared.cookieHeader() : nil)
+        if let header, !header.isEmpty {
+            request.setValue(header, forHTTPHeaderField: "Cookie")
+        }
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw BiliError.message("网络 \(http.statusCode)")
         }
@@ -261,11 +448,34 @@ struct BiliClient: Sendable {
     }
 }
 
+struct NavSnapshot: Sendable {
+    var isLogin: Bool
+    var mid: Int
+    var name: String
+    var face: String
+    var level: Int
+    var exp: Int
+    var nextExp: Int
+    var coins: Int
+    var mixinKey: String
+}
+
+enum QRPoll: Sendable {
+    case pending(String)
+    case confirmed(BiliSession)
+    case expired(String)
+}
+
 struct JSON: @unchecked Sendable {
     let raw: Any
     init(_ raw: Any) { self.raw = raw }
 
     var string: String? { raw as? String }
+    var bool: Bool? {
+        if let value = raw as? Bool { return value }
+        if let value = raw as? NSNumber { return value.boolValue }
+        return nil
+    }
     var int: Int? {
         if let value = raw as? Int { return value }
         if let value = raw as? Int64 { return Int(value) }

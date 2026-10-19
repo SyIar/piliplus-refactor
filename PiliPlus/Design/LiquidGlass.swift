@@ -71,6 +71,28 @@ struct DurationBadge: View {
     }
 }
 
+struct ProfileMark: View {
+    let name: String
+    var face: String = ""
+    var size: CGFloat = 28
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Palette.bili.gradient)
+            if face.isEmpty {
+                Text(String(name.prefix(1)))
+                    .font(size > 40 ? .title2.bold() : .caption.weight(.bold))
+                    .foregroundStyle(.white)
+            } else {
+                RemoteImage(url: face, ratio: 1, maxPixel: size * 3)
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 struct RemoteImage: View {
     let url: String
     var ratio: CGFloat = 16 / 9
