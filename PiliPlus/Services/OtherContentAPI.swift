@@ -287,9 +287,22 @@ extension BiliClient {
     }
 
     func publicNotes() async throws -> (notes: [PublicNote], note: String) {
-        let videos = try await popular(page: 1)
         var last = "没有公开笔记"
-        for video in videos.prefix(12) where video.aid > 0 && Self.realCopy(video.title) {
+        for page in 1...3 {
+            let videos: [VideoItem]
+            do {
+                videos = try await popular(page: page)
+            } catch {
+                last = error.localizedDescription
+                continue
+            }
+            if let found = await notes(on: videos, last: &last) { return found }
+        }
+        return ([], last)
+    }
+
+    private func notes(on videos: [VideoItem], last: inout String) async -> (notes: [PublicNote], note: String)? {
+        for video in videos where video.aid > 0 && Self.realCopy(video.title) {
             let data: JSON
             do {
                 data = try await openGET(
@@ -304,7 +317,7 @@ extension BiliClient {
             let message = data["data"]["message"].string ?? data["message"].string ?? last
             let notes = (data["data"]["list"].array ?? []).compactMap { row -> PublicNote? in
                 let title = row["title"].string ?? ""
-                let author = row["author"]["name"].string ?? ""
+                let author = row["author"]["name"].string ?? row["author"]["uname"].string ?? ""
                 guard Self.realCopy(title), Self.realCopy(author), let id = row["cvid"].int else { return nil }
                 return PublicNote(
                     id: id,
@@ -317,7 +330,7 @@ extension BiliClient {
             if !notes.isEmpty { return (notes, "") }
             if !message.isEmpty { last = message }
         }
-        return ([], last)
+        return nil
     }
 
     func videoSummary(bvid: String, cid: Int, upMid: Int) async -> SummaryPage {
